@@ -9,6 +9,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Arrange uploaded files
+        run: |
+          D=app/src/main/java/com/example/powerlocks
+          mkdir -p $D app/src/main/res/values app/src/main/res/drawable app/src/main/res/mipmap-anydpi-v26 app/src/main/res/xml
+          cp -f ./*.kt $D/ 2>/dev/null || true
+          if [ -f AndroidManifest.xml ]; then cp -f AndroidManifest.xml app/src/main/AndroidManifest.xml; fi
+          if [ -f colors.xml ]; then cp -f colors.xml app/src/main/res/values/colors.xml; fi
+          if [ -f ic_launcher_foreground.xml ]; then cp -f ic_launcher_foreground.xml app/src/main/res/drawable/ic_launcher_foreground.xml; fi
+          if [ -f ic_launcher.xml ]; then cp -f ic_launcher.xml app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml; fi
+          if [ -f service_config.xml ]; then cp -f service_config.xml app/src/main/res/xml/service_config.xml; fi
+          ls -R app/src/main | head -50
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
