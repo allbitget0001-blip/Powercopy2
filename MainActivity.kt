@@ -20,6 +20,7 @@ class MainActivity : Activity() {
     private lateinit var content: FrameLayout
     private val navItems = ArrayList<LinearLayout>()
     private val navLabels = ArrayList<TextView>()
+    private val navIcons = ArrayList<IconView>()
     private var tab = 0
     private var home: HomeScreen? = null
 
@@ -48,7 +49,7 @@ class MainActivity : Activity() {
         C.load(this)
         tab = savedInstanceState?.getInt("tab") ?: 0
         window.statusBarColor = C.bg
-        window.navigationBarColor = C.card
+        window.navigationBarColor = C.bg
 
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED
@@ -110,42 +111,47 @@ class MainActivity : Activity() {
     }
 
     private fun buildNav(): View {
+        val wrap = LinearLayout(this)
+        wrap.orientation = LinearLayout.VERTICAL
+        wrap.setBackgroundColor(C.bg)
+        val line = View(this)
+        line.setBackgroundColor(C.card)
+        wrap.addView(line, lp(MATCH, dp(1)))
         val bar = LinearLayout(this)
         bar.orientation = LinearLayout.HORIZONTAL
-        bar.setBackgroundColor(C.card)
-        bar.setPadding(dp(8), dp(8), dp(8), dp(8))
-        bar.elevation = dp(8).toFloat()
+        bar.setPadding(dp(8), dp(10), dp(8), dp(10))
         val labels = listOf(
             L.t("Home", "হোম"),
             L.t("Schedule", "সময়সূচি"),
-            L.t("Stats", "পরিসংখ্যান"),
+            L.t("Statistics", "পরিসংখ্যান"),
             L.t("Settings", "সেটিংস")
         )
-        val icons = listOf("🏠", "🗓", "📊", "⚙️")
+        val kinds = listOf(Ic.HOME, Ic.CAL, Ic.BARS, Ic.GEAR)
         for (i in 0..3) {
             val item = LinearLayout(this)
             item.orientation = LinearLayout.VERTICAL
             item.gravity = Gravity.CENTER
-            item.setPadding(0, dp(6), 0, dp(6))
-            val ic = tv(icons[i], 20f)
-            ic.gravity = Gravity.CENTER
-            item.addView(ic)
-            val lb = tv(labels[i], 11f, C.muted, 1)
+            item.setPadding(0, dp(4), 0, dp(4))
+            val ic = IconView(this, kinds[i], C.muted)
+            item.addView(ic, lp(dp(26), dp(26)))
+            val lb = tv(labels[i], 12f, C.muted, 1)
             lb.gravity = Gravity.CENTER
-            item.addView(lb)
+            item.addView(lb, lp(WRAP, WRAP, t = dp(4)))
             item.setOnClickListener { if (tab != i) go(i) }
             navItems.add(item)
             navLabels.add(lb)
-            bar.addView(item, lp(0, WRAP, l = dp(2), r = dp(2), weight = 1f))
+            navIcons.add(ic)
+            bar.addView(item, lp(0, WRAP, weight = 1f))
         }
-        return bar
+        wrap.addView(bar, lp(MATCH, WRAP))
+        return wrap
     }
 
     private fun refreshNav() {
         for (i in navItems.indices) {
             val sel = i == tab
-            navItems[i].background = withRipple(rounded(if (sel) C.card2 else Color.TRANSPARENT, dp(16).toFloat()))
             navLabels[i].setTextColor(if (sel) C.primary else C.muted)
+            navIcons[i].color = if (sel) C.primary else C.muted
         }
     }
 }

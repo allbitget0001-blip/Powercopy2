@@ -23,114 +23,120 @@ import java.util.Calendar
 // =====================================================================
 class HomeScreen(private val a: MainActivity) {
     private lateinit var ring: RingView
-    private lateinit var statusText: TextView
-    private lateinit var statusDot: View
-    private lateinit var statusBox: LinearLayout
-    private lateinit var endsText: TextView
+    private lateinit var pill: TextView
+    private lateinit var titleText: TextView
+    private lateinit var subText: TextView
     private lateinit var previewText: TextView
-    private lateinit var startBtn: TextView
-    private lateinit var stopBtn: TextView
+    private lateinit var schedPill: TextView
+    private lateinit var startBtn: LinearLayout
+    private lateinit var stopBtn: LinearLayout
     private lateinit var warnBox: LinearLayout
     private val chips = ArrayList<TextView>()
     private val quick = listOf(5, 10, 15, 30, 60)
     private var warnSig = ""
-    private var pulse: ObjectAnimator? = null
     private var lastStatus: PStatus? = null
     private var lastActive: Boolean? = null
+    private var lastSched: Boolean? = null
 
     private fun quickLabel(m: Int): String = L.num(L.t("$m min", "$m মিনিট"))
 
     fun build(): View {
         val (sv, col) = a.page()
 
-        // header
+        // ---- header ----
         val header = LinearLayout(a)
         header.gravity = Gravity.CENTER_VERTICAL
-        val logo = a.tv("🔒", 22f)
-        logo.gravity = Gravity.CENTER
-        val lg = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(C.primary, C.mint))
-        lg.cornerRadius = a.dp(14).toFloat()
-        logo.background = lg
-        header.addView(logo, lp(a.dp(46), a.dp(46)))
+        val tile = LinearLayout(a)
+        tile.gravity = Gravity.CENTER
+        tile.background = rounded(Color.parseColor("#14392A"), a.dp(16).toFloat())
+        tile.addView(IconView(a, Ic.SHIELD, C.primary), lp(a.dp(30), a.dp(30)))
+        header.addView(tile, lp(a.dp(52), a.dp(52)))
         val names = LinearLayout(a)
         names.orientation = LinearLayout.VERTICAL
-        names.addView(a.tv("PowerLock", 22f, C.text, 1))
-        names.addView(a.tv(L.t("Premium Edition", "প্রিমিয়াম এডিশন"), 12f, C.muted))
-        header.addView(names, lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, l = a.dp(12), weight = 1f))
-        statusBox = LinearLayout(a)
-        statusBox.gravity = Gravity.CENTER_VERTICAL
-        statusBox.setPadding(a.dp(12), a.dp(8), a.dp(14), a.dp(8))
-        statusDot = View(a)
-        statusBox.addView(statusDot, lp(a.dp(8), a.dp(8), r = a.dp(8)))
-        statusText = a.tv("", 12f, C.text, 1)
-        statusBox.addView(statusText)
-        header.addView(statusBox)
+        names.addView(a.tv("PowerLock", 24f, C.text, 1))
+        val sub = a.tv(L.t("PREMIUM EDITION", "প্রিমিয়াম এডিশন"), 12f, C.muted, 1)
+        sub.letterSpacing = 0.1f
+        names.addView(sub)
+        header.addView(names, lp(0, WRAP, l = a.dp(14), weight = 1f))
+        pill = a.tv("", 13f, C.primary, 1)
+        pill.letterSpacing = 0.05f
+        pill.setPadding(a.dp(14), a.dp(8), a.dp(14), a.dp(8))
+        header.addView(pill)
         col.addView(header)
 
         warnBox = LinearLayout(a)
         warnBox.orientation = LinearLayout.VERTICAL
         col.addView(warnBox, lp(MATCH, WRAP, t = a.dp(14)))
 
-        // ring
+        // ---- status card ----
+        val sc = a.card(20)
+        sc.gravity = Gravity.CENTER_HORIZONTAL
+        sc.background = rounded(C.card, a.dp(28).toFloat())
+        val lbl = a.tv(L.t("POWER LOCK STATUS", "পাওয়ার লক স্ট্যাটাস"), 12f, C.muted, 1)
+        lbl.letterSpacing = 0.12f
+        lbl.gravity = Gravity.CENTER
+        sc.addView(lbl)
         ring = RingView(a)
-        val rlp = lp(a.dp(250), a.dp(250), t = a.dp(18))
-        rlp.gravity = Gravity.CENTER_HORIZONTAL
-        col.addView(ring, rlp)
-        endsText = a.tv("", 15f, C.mint, 1)
-        endsText.gravity = Gravity.CENTER
-        col.addView(endsText, lp(MATCH, WRAP, t = a.dp(14)))
+        sc.addView(ring, lp(a.dp(170), a.dp(170), t = a.dp(16)))
+        titleText = a.tv("", 26f, C.text, 1)
+        titleText.gravity = Gravity.CENTER
+        sc.addView(titleText, lp(MATCH, WRAP, t = a.dp(16)))
+        subText = a.tv("", 15f, C.muted)
+        subText.gravity = Gravity.CENTER
+        sc.addView(subText, lp(MATCH, WRAP, t = a.dp(6)))
+        startBtn = a.bigButton(Ic.LOCK, L.t("Start Power Lock", "পাওয়ার লক শুরু"), C.primary, C.onPrimary)
+        startBtn.setOnClickListener { onStart() }
+        sc.addView(startBtn, lp(MATCH, a.dp(60), t = a.dp(20)))
+        stopBtn = a.bigButton(Ic.LOCK, L.t("Stop Power Lock", "পাওয়ার লক বন্ধ"), Color.TRANSPARENT, C.danger, C.danger)
+        stopBtn.setOnClickListener { onStop() }
+        sc.addView(stopBtn, lp(MATCH, a.dp(60), t = a.dp(20)))
+        col.addView(sc, lp(MATCH, WRAP, t = a.dp(16)))
 
-        // quick timer
-        val qc = a.card()
-        qc.addView(a.section(L.t("Quick timer", "দ্রুত টাইমার")))
+        // ---- duration ----
+        col.addView(a.heading(L.t("Select Lock Duration", "লক সময় বাছুন")), lp(MATCH, WRAP, t = a.dp(26), b = a.dp(4)))
         val row1 = LinearLayout(a)
         val row2 = LinearLayout(a)
         for ((i, m) in quick.withIndex()) {
             val c = a.chip(quickLabel(m), false)
             c.setOnClickListener { pick(m) }
             chips.add(c)
-            val rm = if (i == 2) 0 else a.dp(8)
+            val rm = if (i == 2) 0 else a.dp(10)
             val target = if (i < 3) row1 else row2
-            target.addView(c, lp(0, WRAP, r = rm, t = a.dp(10), weight = 1f))
+            target.addView(c, lp(0, a.dp(56), r = rm, t = a.dp(10), weight = 1f))
         }
         val custom = a.chip(L.t("Custom", "কাস্টম"), false)
         custom.setOnClickListener { customDialog() }
         chips.add(custom)
-        row2.addView(custom, lp(0, WRAP, t = a.dp(10), weight = 1f))
-        qc.addView(row1)
-        qc.addView(row2)
+        row2.addView(custom, lp(0, a.dp(56), t = a.dp(10), weight = 1f))
+        col.addView(row1)
+        col.addView(row2)
         previewText = a.tv("", 13f, C.muted)
-        qc.addView(previewText, lp(MATCH, WRAP, t = a.dp(14)))
-        col.addView(qc, lp(MATCH, WRAP, t = a.dp(16)))
+        col.addView(previewText, lp(MATCH, WRAP, t = a.dp(12)))
 
-        // buttons
-        startBtn = a.primaryBtn(L.t("Start Protection", "প্রটেকশন শুরু করুন"))
-        startBtn.setOnClickListener { onStart() }
-        col.addView(startBtn, lp(MATCH, a.dp(56), t = a.dp(16)))
-        stopBtn = a.outlineBtn(L.t("Stop Protection", "প্রটেকশন বন্ধ করুন"), C.danger)
-        stopBtn.setOnClickListener { onStop() }
-        col.addView(stopBtn, lp(MATCH, a.dp(52), t = a.dp(10)))
-
-        // shortcuts
-        val sc = LinearLayout(a)
-        val items = listOf(
-            Triple("🗓", L.t("Weekly Schedule", "সাপ্তাহিক সময়সূচি"), 1),
-            Triple("📊", L.t("Statistics", "পরিসংখ্যান"), 2),
-            Triple("⚙️", L.t("Settings", "সেটিংস"), 3)
-        )
-        for ((i, trip) in items.withIndex()) {
-            val c = a.card(12)
-            c.gravity = Gravity.CENTER_HORIZONTAL
-            val ic = a.tv(trip.first, 22f)
-            ic.gravity = Gravity.CENTER
-            c.addView(ic)
-            val lb = a.tv(trip.second, 12f, C.muted, 1)
-            lb.gravity = Gravity.CENTER
-            c.addView(lb, lp(MATCH, WRAP, t = a.dp(6)))
-            c.setOnClickListener { a.go(trip.third) }
-            sc.addView(c, lp(0, MATCH, r = if (i < 2) a.dp(10) else 0, weight = 1f))
-        }
-        col.addView(sc, lp(MATCH, WRAP, t = a.dp(16)))
+        // ---- schedule card ----
+        val scd = a.card(20)
+        scd.addView(a.tv(L.t("Schedule", "সময়সূচি"), 22f, C.text, 1))
+        val r1 = LinearLayout(a)
+        r1.gravity = Gravity.CENTER_VERTICAL
+        r1.setPadding(0, a.dp(18), 0, a.dp(18))
+        r1.addView(IconView(a, Ic.CAL, C.primary), lp(a.dp(28), a.dp(28), r = a.dp(14)))
+        r1.addView(a.tv(L.t("Weekly Schedule", "সাপ্তাহিক সময়সূচি"), 17f, C.text), lp(0, WRAP, weight = 1f))
+        schedPill = a.tv("", 14f, C.primary, 1)
+        schedPill.setPadding(a.dp(16), a.dp(8), a.dp(16), a.dp(8))
+        r1.addView(schedPill)
+        r1.setOnClickListener { a.go(1) }
+        scd.addView(r1)
+        val dv = View(a)
+        dv.setBackgroundColor(C.border)
+        scd.addView(dv, lp(MATCH, a.dp(1)))
+        val r2 = LinearLayout(a)
+        r2.gravity = Gravity.CENTER_VERTICAL
+        r2.setPadding(0, a.dp(18), 0, a.dp(2))
+        r2.addView(a.tv(L.t("Statistics", "পরিসংখ্যান"), 17f, C.muted), lp(0, WRAP, weight = 1f))
+        r2.addView(a.tv(L.t("View details →", "বিস্তারিত →"), 16f, C.primary, 1))
+        r2.setOnClickListener { a.go(2) }
+        scd.addView(r2)
+        col.addView(scd, lp(MATCH, WRAP, t = a.dp(22)))
 
         refreshChips()
         tick()
@@ -164,33 +170,33 @@ class HomeScreen(private val a: MainActivity) {
         if (st == lastStatus) return
         lastStatus = st
         val color = when (st) {
-            PStatus.ACTIVE -> C.mint
+            PStatus.ACTIVE -> C.primary
             PStatus.SCHEDULED -> Color.parseColor("#5AC8FA")
-            PStatus.COMPLETED -> C.primary
+            PStatus.COMPLETED -> C.mint
             PStatus.READY -> C.muted
         }
-        statusText.text = when (st) {
-            PStatus.ACTIVE -> L.t("ACTIVE", "সক্রিয়")
+        pill.text = when (st) {
+            PStatus.ACTIVE -> L.t("PROTECTED", "সুরক্ষিত")
             PStatus.SCHEDULED -> L.t("SCHEDULED", "নির্ধারিত")
             PStatus.COMPLETED -> L.t("COMPLETED", "সম্পন্ন")
             PStatus.READY -> L.t("READY", "প্রস্তুত")
         }
-        statusText.setTextColor(color)
-        statusDot.background = rounded(color, a.dp(4).toFloat())
-        statusBox.background = rounded(C.card, a.dp(20).toFloat(), color, a.dp(1))
-        if (st == PStatus.ACTIVE) {
-            if (pulse == null) {
-                val p = ObjectAnimator.ofFloat(statusDot, "alpha", 1f, 0.25f)
-                p.duration = 900
-                p.repeatMode = ValueAnimator.REVERSE
-                p.repeatCount = ValueAnimator.INFINITE
-                p.start()
-                pulse = p
-            }
+        pill.setTextColor(color)
+        pill.background = rounded(tint(color, 40), a.dp(20).toFloat())
+    }
+
+    private fun updateSchedPill() {
+        val on = Store.schedules(a).any { it.enabled }
+        if (lastSched == on) return
+        lastSched = on
+        if (on) {
+            schedPill.text = L.t("Enabled", "চালু")
+            schedPill.setTextColor(C.primary)
+            schedPill.background = rounded(tint(C.primary, 40), a.dp(20).toFloat())
         } else {
-            pulse?.cancel()
-            pulse = null
-            statusDot.alpha = 1f
+            schedPill.text = L.t("Off", "বন্ধ")
+            schedPill.setTextColor(C.muted)
+            schedPill.background = rounded(C.card2, a.dp(20).toFloat())
         }
     }
 
@@ -199,38 +205,46 @@ class HomeScreen(private val a: MainActivity) {
         val active = Store.isActive(a)
         val st = statusOf(a, active, now)
         applyStatus(st)
+        updateSchedPill()
         val p = Store.lock(a)
         val end = p.getLong("end", 0)
         var total = p.getLong("total", 1)
         if (total < 1) total = 1
         if (active) {
             val left = end - now
+            ring.active = true
+            ring.icon = Ic.LOCK
             ring.main = fmtHms(left)
+            ring.mainColor = C.text
             ring.sub = L.t("remaining", "বাকি")
             var frac = left.toFloat() / total.toFloat()
             if (frac < 0f) frac = 0f
             if (frac > 1f) frac = 1f
             ring.animateTo(frac)
-            endsText.text = L.t("Ends at ", "শেষ হবে ") + fmtClock(end)
+            titleText.text = L.t("Protection is Active", "প্রটেকশন সক্রিয়")
+            subText.text = L.t("Ends at ", "শেষ হবে ") + fmtClock(end)
             previewText.text = L.t("Session in progress · ", "সেশন চলছে · ") + fmtDur(total)
         } else {
             val sel = a.selectedMin * 60_000L
-            ring.main = fmtHms(sel)
-            ring.sub = L.t("selected", "নির্বাচিত")
+            ring.active = false
+            ring.icon = Ic.SHIELD
+            ring.main = if (st == PStatus.COMPLETED) L.t("DONE", "সম্পন্ন") else L.t("OFF", "বন্ধ")
+            ring.mainColor = C.primary
+            ring.sub = ""
             ring.animateTo(0f)
-            endsText.text = when (st) {
-                PStatus.COMPLETED -> L.t("Session completed ✓", "সেশন সম্পন্ন ✓")
+            titleText.text = if (st == PStatus.COMPLETED) L.t("Session Completed", "সেশন সম্পন্ন")
+            else L.t("Protection is Off", "প্রটেকশন বন্ধ আছে")
+            subText.text = when (st) {
                 PStatus.SCHEDULED -> nextText(now)
-                else -> L.t("Choose a duration to begin", "শুরু করতে সময় বাছুন")
+                PStatus.COMPLETED -> L.t("You can start a new session", "নতুন সেশন শুরু করতে পারেন")
+                else -> L.t("Start protection to activate PowerLock", "পাওয়ার লক চালু করতে প্রটেকশন শুরু করুন")
             }
             val ends = fmtClock(now + sel)
             previewText.text = L.t("Duration ${fmtDur(sel)} · ends at $ends", "সময় ${fmtDur(sel)} · শেষ হবে $ends")
         }
         ring.invalidate()
-        startBtn.isEnabled = !active
-        startBtn.alpha = if (active) 0.35f else 1f
-        stopBtn.isEnabled = active
-        stopBtn.alpha = if (active) 1f else 0.35f
+        startBtn.visibility = if (active) View.GONE else View.VISIBLE
+        stopBtn.visibility = if (active) View.VISIBLE else View.GONE
         if (lastActive != active) {
             lastActive = active
             refreshChips()
@@ -243,7 +257,9 @@ class HomeScreen(private val a: MainActivity) {
         c.background = rounded(Color.parseColor("#2A2415"), a.dp(18).toFloat(), C.warn, a.dp(1))
         val r = LinearLayout(a)
         r.gravity = Gravity.CENTER_VERTICAL
-        r.addView(a.tv(icon, 22f), lp(WRAP, WRAP, r = a.dp(12)))
+        val ic = a.tv(icon, 22f, C.warn, 1)
+        ic.gravity = Gravity.CENTER
+        r.addView(ic, lp(a.dp(28), WRAP, r = a.dp(12)))
         val col = LinearLayout(a)
         col.orientation = LinearLayout.VERTICAL
         col.addView(a.tv(title, 14f, C.warn, 1))
@@ -264,7 +280,7 @@ class HomeScreen(private val a: MainActivity) {
         if (!acc) {
             warnBox.addView(
                 warnCard(
-                    "⚠️",
+                    "!",
                     L.t("Accessibility is off", "Accessibility বন্ধ আছে"),
                     L.t("Protection cannot work. Tap to enable.", "প্রটেকশন কাজ করবে না। চালু করতে চাপুন।")
                 ) { a.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
@@ -274,7 +290,7 @@ class HomeScreen(private val a: MainActivity) {
         if (!bat) {
             warnBox.addView(
                 warnCard(
-                    "🔋",
+                    "!",
                     L.t("Battery optimization is on", "ব্যাটারি অপটিমাইজেশন চালু"),
                     L.t("The system may stop PowerLock. Tap to allow.", "সিস্টেম PowerLock বন্ধ করে দিতে পারে। অনুমতি দিতে চাপুন।")
                 ) {
@@ -412,7 +428,7 @@ class ScheduleScreen(private val a: MainActivity) {
         if (items.isEmpty()) {
             val c = a.card(24)
             c.gravity = Gravity.CENTER_HORIZONTAL
-            c.addView(a.tv("🗓", 34f))
+            c.addView(IconView(a, Ic.CAL, C.primary), lp(a.dp(56), a.dp(56)))
             val t = a.tv(L.t("No schedules yet", "এখনো কোনো সময়সূচি নেই"), 15f, C.muted, 1)
             t.gravity = Gravity.CENTER
             c.addView(t, lp(MATCH, WRAP, t = a.dp(8)))
@@ -577,9 +593,9 @@ class StatsScreen(private val a: MainActivity) {
 
         col.addView(a.tv(L.t("Statistics", "পরিসংখ্যান"), 24f, C.text, 1), lp(MATCH, WRAP, b = a.dp(14)))
 
-        fun statCard(icon: String, label: String, value: String): View {
+        fun statCard(icon: Ic, label: String, value: String): View {
             val c = a.card(14)
-            c.addView(a.tv(icon, 18f))
+            c.addView(IconView(a, icon, C.primary), lp(a.dp(24), a.dp(24)))
             c.addView(a.tv(value, 19f, C.text, 1), lp(MATCH, WRAP, t = a.dp(6)))
             c.addView(a.tv(label, 12f, C.muted))
             return c
@@ -593,16 +609,16 @@ class StatsScreen(private val a: MainActivity) {
         }
 
         pair(
-            statCard("☀️", L.t("Today", "আজ"), fmtDur(Store.sumRange(all, today, end))),
-            statCard("📅", L.t("Last 7 days", "গত ৭ দিন"), fmtDur(Store.sumRange(all, week, end)))
+            statCard(Ic.CLOCK, L.t("Today", "আজ"), fmtDur(Store.sumRange(all, today, end))),
+            statCard(Ic.CAL, L.t("Last 7 days", "গত ৭ দিন"), fmtDur(Store.sumRange(all, week, end)))
         )
         pair(
-            statCard("🗓", L.t("This month", "এই মাস"), fmtDur(Store.sumRange(all, month, end))),
-            statCard("✅", L.t("Completed sessions", "সম্পন্ন সেশন"), L.num(completed.toString()))
+            statCard(Ic.CAL, L.t("This month", "এই মাস"), fmtDur(Store.sumRange(all, month, end))),
+            statCard(Ic.CHECK, L.t("Completed sessions", "সম্পন্ন সেশন"), L.num(completed.toString()))
         )
         pair(
-            statCard("⏱", L.t("Average session", "গড় সেশন"), fmtDur(avg)),
-            statCard("🏆", L.t("Longest session", "সবচেয়ে বড় সেশন"), fmtDur(longest))
+            statCard(Ic.BARS, L.t("Average session", "গড় সেশন"), fmtDur(avg)),
+            statCard(Ic.SHIELD, L.t("Longest session", "সবচেয়ে বড় সেশন"), fmtDur(longest))
         )
 
         // chart

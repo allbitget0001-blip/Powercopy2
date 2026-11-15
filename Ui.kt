@@ -8,6 +8,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.SweepGradient
 import android.graphics.Typeface
@@ -30,12 +31,16 @@ const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
 /** Emerald Dark palette. */
 object C {
-    var bg = Color.parseColor("#101713")
-    var card = Color.parseColor("#1A2620")
-    var card2 = Color.parseColor("#24352C")
-    val primary = Color.parseColor("#16C784")
+    var bg = Color.parseColor("#0A120E")
+    var card = Color.parseColor("#10231A")
+    var card2 = Color.parseColor("#17301F")
+    var chipFill = Color.parseColor("#12231B")
+    val border = Color.parseColor("#1F4A38")
+    val selFill = Color.parseColor("#17694B")
+    val primary = Color.parseColor("#1FCB85")
     val mint = Color.parseColor("#A8F0D1")
     val text = Color.parseColor("#F2FBF6")
+    val textSoft = Color.parseColor("#D5E8DE")
     val muted = Color.parseColor("#8FA89B")
     val danger = Color.parseColor("#FF6B6B")
     val warn = Color.parseColor("#FFB84D")
@@ -45,15 +50,19 @@ object C {
         val amoled = Store.settings(ctx).getInt("theme", 0) == 1
         if (amoled) {
             bg = Color.BLACK
-            card = Color.parseColor("#0F1A14")
-            card2 = Color.parseColor("#1B2B22")
+            card = Color.parseColor("#0C1812")
+            card2 = Color.parseColor("#132A1D")
+            chipFill = Color.parseColor("#0E1B14")
         } else {
-            bg = Color.parseColor("#101713")
-            card = Color.parseColor("#1A2620")
-            card2 = Color.parseColor("#24352C")
+            bg = Color.parseColor("#0A120E")
+            card = Color.parseColor("#10231A")
+            card2 = Color.parseColor("#17301F")
+            chipFill = Color.parseColor("#12231B")
         }
     }
 }
+
+fun tint(color: Int, alpha: Int): Int = (alpha shl 24) or (color and 0x00FFFFFF)
 
 fun Context.dp(v: Int): Int = (v * resources.displayMetrics.density + 0.5f).toInt()
 
@@ -118,16 +127,38 @@ fun Context.outlineBtn(label: String, color: Int): TextView {
 }
 
 fun Context.styleChip(v: TextView, selected: Boolean) {
-    v.setTextColor(if (selected) C.onPrimary else C.muted)
-    v.background = withRipple(rounded(if (selected) C.primary else C.card2, dp(14).toFloat()))
+    v.setTextColor(if (selected) C.text else C.textSoft)
+    v.background = withRipple(
+        rounded(
+            if (selected) C.selFill else C.chipFill,
+            dp(18).toFloat(),
+            if (selected) C.primary else C.border,
+            if (selected) dp(2) else dp(1)
+        )
+    )
 }
 
 fun Context.chip(label: String, selected: Boolean): TextView {
-    val v = tv(label, 14f, C.muted, 1)
+    val v = tv(label, 15f, C.textSoft, 1)
     v.gravity = Gravity.CENTER
-    v.setPadding(dp(8), dp(12), dp(8), dp(12))
+    v.setPadding(dp(6), dp(14), dp(6), dp(14))
     styleChip(v, selected)
     return v
+}
+
+fun Context.heading(t: String): TextView = tv(t, 22f, C.text, 1)
+
+fun Context.bigButton(kind: Ic, label: String, fill: Int, fg: Int, stroke: Int = 0): LinearLayout {
+    val b = LinearLayout(this)
+    b.orientation = LinearLayout.HORIZONTAL
+    b.gravity = Gravity.CENTER
+    b.background = withRipple(rounded(fill, dp(32).toFloat(), stroke, if (stroke != 0) dp(1) else 0))
+    b.addView(IconView(this, kind, fg), lp(dp(24), dp(24), r = dp(10)))
+    val t = tv(label.uppercase(), 16f, fg, 1)
+    t.letterSpacing = 0.04f
+    b.addView(t)
+    b.isClickable = true
+    return b
 }
 
 fun Context.toggle(checked: Boolean, onChange: (Boolean) -> Unit): Switch {
@@ -184,16 +215,131 @@ fun Context.page(): Pair<ScrollView, LinearLayout> {
     return Pair(sv, col)
 }
 
-/** Large circular countdown. */
+enum class Ic { HOME, CAL, BARS, GEAR, SHIELD, LOCK, CLOCK, CHECK }
+
+/** Line icons drawn with Canvas (no image files needed). */
+object Icons {
+    fun draw(cv: Canvas, kind: Ic, cx: Float, cy: Float, s: Float, p: Paint) {
+        val l = cx - s / 2f
+        val t = cy - s / 2f
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = s * 0.085f
+        p.strokeCap = Paint.Cap.ROUND
+        p.strokeJoin = Paint.Join.ROUND
+        val path = Path()
+        fun x(u: Float): Float = l + s * u
+        fun y(u: Float): Float = t + s * u
+        when (kind) {
+            Ic.HOME -> {
+                path.moveTo(x(0.14f), y(0.50f))
+                path.lineTo(x(0.50f), y(0.18f))
+                path.lineTo(x(0.86f), y(0.50f))
+                path.moveTo(x(0.24f), y(0.44f))
+                path.lineTo(x(0.24f), y(0.82f))
+                path.lineTo(x(0.76f), y(0.82f))
+                path.lineTo(x(0.76f), y(0.44f))
+                path.moveTo(x(0.42f), y(0.82f))
+                path.lineTo(x(0.42f), y(0.60f))
+                path.lineTo(x(0.58f), y(0.60f))
+                path.lineTo(x(0.58f), y(0.82f))
+                cv.drawPath(path, p)
+            }
+            Ic.CAL -> {
+                cv.drawRoundRect(RectF(x(0.16f), y(0.22f), x(0.84f), y(0.84f)), s * 0.1f, s * 0.1f, p)
+                cv.drawLine(x(0.16f), y(0.42f), x(0.84f), y(0.42f), p)
+                cv.drawLine(x(0.34f), y(0.12f), x(0.34f), y(0.30f), p)
+                cv.drawLine(x(0.66f), y(0.12f), x(0.66f), y(0.30f), p)
+                cv.drawLine(x(0.30f), y(0.60f), x(0.42f), y(0.60f), p)
+                cv.drawLine(x(0.58f), y(0.60f), x(0.70f), y(0.60f), p)
+                cv.drawLine(x(0.30f), y(0.74f), x(0.42f), y(0.74f), p)
+            }
+            Ic.BARS -> {
+                p.strokeWidth = s * 0.15f
+                cv.drawLine(x(0.25f), y(0.80f), x(0.25f), y(0.55f), p)
+                cv.drawLine(x(0.50f), y(0.80f), x(0.50f), y(0.25f), p)
+                cv.drawLine(x(0.75f), y(0.80f), x(0.75f), y(0.42f), p)
+            }
+            Ic.GEAR -> {
+                cv.drawCircle(cx, cy, s * 0.14f, p)
+                cv.drawCircle(cx, cy, s * 0.30f, p)
+                p.strokeWidth = s * 0.12f
+                for (i in 0 until 8) {
+                    val a = Math.toRadians(45.0 * i)
+                    val ca = Math.cos(a).toFloat()
+                    val sa = Math.sin(a).toFloat()
+                    cv.drawLine(cx + ca * s * 0.32f, cy + sa * s * 0.32f, cx + ca * s * 0.42f, cy + sa * s * 0.42f, p)
+                }
+            }
+            Ic.SHIELD -> {
+                path.moveTo(x(0.50f), y(0.10f))
+                path.lineTo(x(0.82f), y(0.22f))
+                path.lineTo(x(0.82f), y(0.48f))
+                path.cubicTo(x(0.82f), y(0.70f), x(0.66f), y(0.82f), x(0.50f), y(0.90f))
+                path.cubicTo(x(0.34f), y(0.82f), x(0.18f), y(0.70f), x(0.18f), y(0.48f))
+                path.lineTo(x(0.18f), y(0.22f))
+                path.close()
+                path.moveTo(x(0.36f), y(0.50f))
+                path.lineTo(x(0.46f), y(0.60f))
+                path.lineTo(x(0.66f), y(0.38f))
+                cv.drawPath(path, p)
+            }
+            Ic.LOCK -> {
+                cv.drawRoundRect(RectF(x(0.22f), y(0.46f), x(0.78f), y(0.86f)), s * 0.08f, s * 0.08f, p)
+                path.moveTo(x(0.34f), y(0.46f))
+                path.lineTo(x(0.34f), y(0.34f))
+                path.arcTo(RectF(x(0.34f), y(0.14f), x(0.66f), y(0.54f)), 180f, 180f)
+                path.lineTo(x(0.66f), y(0.46f))
+                cv.drawPath(path, p)
+                p.style = Paint.Style.FILL
+                cv.drawCircle(x(0.50f), y(0.64f), s * 0.05f, p)
+                p.style = Paint.Style.STROKE
+            }
+            Ic.CLOCK -> {
+                cv.drawCircle(cx, cy, s * 0.36f, p)
+                cv.drawLine(cx, cy, cx, y(0.28f), p)
+                cv.drawLine(cx, cy, x(0.66f), y(0.58f), p)
+            }
+            Ic.CHECK -> {
+                cv.drawCircle(cx, cy, s * 0.36f, p)
+                path.moveTo(x(0.34f), y(0.52f))
+                path.lineTo(x(0.46f), y(0.64f))
+                path.lineTo(x(0.68f), y(0.38f))
+                cv.drawPath(path, p)
+            }
+        }
+    }
+}
+
+class IconView(ctx: Context, private val kind: Ic, color: Int) : View(ctx) {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    var color: Int = color
+        set(v) {
+            field = v
+            invalidate()
+        }
+
+    override fun onDraw(canvas: Canvas) {
+        paint.color = color
+        val s = Math.min(width, height).toFloat() * 0.86f
+        Icons.draw(canvas, kind, width / 2f, height / 2f, s, paint)
+    }
+}
+
+/** Large circular status ring: outline + icon + "OFF" when idle, countdown arc when active. */
 class RingView(ctx: Context) : View(ctx) {
-    var main: String = "00:00:00"
+    var main: String = "OFF"
     var sub: String = ""
+    var active = false
+    var mainColor = C.primary
+    var icon: Ic = Ic.SHIELD
     private var shown = 0f
     private var target = -1f
     private var anim: ValueAnimator? = null
     private val track = Paint(Paint.ANTI_ALIAS_FLAG)
     private val arc = Paint(Paint.ANTI_ALIAS_FLAG)
     private val glow = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val inner = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val tMain = Paint(Paint.ANTI_ALIAS_FLAG)
     private val tSub = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rect = RectF()
@@ -205,7 +351,6 @@ class RingView(ctx: Context) : View(ctx) {
         glow.style = Paint.Style.STROKE
         glow.strokeCap = Paint.Cap.ROUND
         tMain.textAlign = Paint.Align.CENTER
-        tMain.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
         tSub.textAlign = Paint.Align.CENTER
         tSub.typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
     }
@@ -237,25 +382,49 @@ class RingView(ctx: Context) : View(ctx) {
     override fun onDraw(canvas: Canvas) {
         val w = width.toFloat()
         val h = height.toFloat()
-        val stroke = w * 0.05f
-        val pad = stroke * 1.6f
+        val cx = w / 2f
+        val cy = h / 2f
+        val pad = w * 0.07f
         rect.set(pad, pad, w - pad, h - pad)
-        track.strokeWidth = stroke
-        track.color = C.card2
-        canvas.drawOval(rect, track)
-        if (shown > 0.002f) {
-            glow.strokeWidth = stroke * 1.9f
-            glow.alpha = 50
-            canvas.drawArc(rect, -90f, 360f * shown, false, glow)
-            arc.strokeWidth = stroke
-            canvas.drawArc(rect, -90f, 360f * shown, false, arc)
+
+        if (active) {
+            val stroke = w * 0.055f
+            track.strokeWidth = stroke
+            track.color = C.card2
+            canvas.drawOval(rect, track)
+            if (shown > 0.002f) {
+                glow.strokeWidth = stroke * 1.9f
+                glow.alpha = 50
+                canvas.drawArc(rect, -90f, 360f * shown, false, glow)
+                arc.strokeWidth = stroke
+                canvas.drawArc(rect, -90f, 360f * shown, false, arc)
+            }
+        } else {
+            inner.color = tint(C.bg, 150)
+            canvas.drawCircle(cx, cy, (w - 2f * pad) / 2f, inner)
+            track.strokeWidth = w * 0.016f
+            track.color = C.primary
+            canvas.drawOval(rect, track)
         }
-        tMain.color = C.text
-        tMain.textSize = w * 0.15f
-        canvas.drawText(main, w / 2f, h / 2f + w * 0.03f, tMain)
-        tSub.color = C.muted
-        tSub.textSize = w * 0.058f
-        canvas.drawText(sub, w / 2f, h / 2f + w * 0.14f, tSub)
+
+        iconPaint.color = C.primary
+        Icons.draw(canvas, icon, cx, cy - w * 0.20f, w * 0.21f, iconPaint)
+
+        tMain.color = mainColor
+        if (active) {
+            tMain.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+            tMain.textSize = w * 0.135f
+            canvas.drawText(main, cx, cy + w * 0.10f, tMain)
+        } else {
+            tMain.typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            tMain.textSize = w * 0.20f
+            canvas.drawText(main, cx, cy + w * 0.15f, tMain)
+        }
+        if (sub.isNotEmpty()) {
+            tSub.color = C.muted
+            tSub.textSize = w * 0.058f
+            canvas.drawText(sub, cx, cy + w * 0.22f, tSub)
+        }
     }
 }
 
