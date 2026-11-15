@@ -172,7 +172,10 @@ object Store {
     fun startSession(ctx: Context, durationMs: Long, src: String): Boolean {
         if (isActive(ctx)) return false
         val now = System.currentTimeMillis()
+        val st = settings(ctx)
         lock(ctx).edit()
+            .putBoolean("s_strict", st.getBoolean("strict", false))
+            .putBoolean("s_guard", st.getBoolean("guard", true))
             .putBoolean("active", true)
             .putLong("start", now)
             .putLong("end", now + durationMs)
@@ -184,8 +187,12 @@ object Store {
         return true
     }
 
+    /** True while a running session was started in strict mode (no early stop). */
+    fun isStrict(ctx: Context): Boolean = isActive(ctx) && lock(ctx).getBoolean("s_strict", false)
+
     fun stopSession(ctx: Context) {
         if (!isActive(ctx)) return
+        if (lock(ctx).getBoolean("s_strict", false)) return
         val p = lock(ctx)
         val now = System.currentTimeMillis()
         val start = p.getLong("start", now)

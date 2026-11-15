@@ -210,6 +210,7 @@ class HomeScreen(private val a: MainActivity) {
         val end = p.getLong("end", 0)
         var total = p.getLong("total", 1)
         if (total < 1) total = 1
+        val strict = active && p.getBoolean("s_strict", false)
         if (active) {
             val left = end - now
             ring.active = true
@@ -222,7 +223,9 @@ class HomeScreen(private val a: MainActivity) {
             if (frac > 1f) frac = 1f
             ring.animateTo(frac)
             titleText.text = L.t("Protection is Active", "প্রটেকশন সক্রিয়")
-            subText.text = L.t("Ends at ", "শেষ হবে ") + fmtClock(end)
+            val endAt = fmtClock(end)
+            subText.text = if (strict) L.t("Strict mode · locked until $endAt", "স্ট্রিক্ট মোড · $endAt পর্যন্ত লক")
+            else L.t("Ends at $endAt", "শেষ হবে $endAt")
             previewText.text = L.t("Session in progress · ", "সেশন চলছে · ") + fmtDur(total)
         } else {
             val sel = a.selectedMin * 60_000L
@@ -244,7 +247,7 @@ class HomeScreen(private val a: MainActivity) {
         }
         ring.invalidate()
         startBtn.visibility = if (active) View.GONE else View.VISIBLE
-        stopBtn.visibility = if (active) View.VISIBLE else View.GONE
+        stopBtn.visibility = if (active && !strict) View.VISIBLE else View.GONE
         if (lastActive != active) {
             lastActive = active
             refreshChips()
@@ -314,13 +317,25 @@ class HomeScreen(private val a: MainActivity) {
         val ms = a.selectedMin * 60_000L
         val ends = fmtClock(System.currentTimeMillis() + ms)
         val d = fmtDur(ms)
+        val strictOn = Store.settings(a).getBoolean("strict", false)
+        val extra = if (strictOn) {
+            L.t(
+                "\n\nStrict mode is ON: you will NOT be able to stop early.",
+                "\n\nস্ট্রিক্ট মোড চালু: সময় শেষ না হওয়া পর্যন্ত বন্ধ করা যাবে না।"
+            )
+        } else {
+            L.t(
+                "\n\nStopping early needs a confirmation code.",
+                "\n\nআগে বন্ধ করতে কনফার্মেশন কোড লাগবে।"
+            )
+        }
         a.dlg()
             .setTitle(L.t("Start protection?", "প্রটেকশন শুরু করবেন?"))
             .setMessage(
                 L.t(
-                    "The power menu will be blocked for $d, until $ends.\n\nStopping early needs a confirmation code.",
-                    "$d ধরে পাওয়ার মেনু ব্লক থাকবে, $ends পর্যন্ত।\n\nআগে বন্ধ করতে কনফার্মেশন কোড লাগবে।"
-                )
+                    "The power menu will be blocked for $d, until $ends.",
+                    "$d ধরে পাওয়ার মেনু ব্লক থাকবে, $ends পর্যন্ত।"
+                ) + extra
             )
             .setPositiveButton(L.t("Start", "শুরু করুন")) { _, _ ->
                 Store.startSession(a, ms, "manual")
@@ -333,6 +348,10 @@ class HomeScreen(private val a: MainActivity) {
 
     private fun onStop() {
         if (!Store.isActive(a)) return
+        if (Store.isStrict(a)) {
+            a.toast(L.t("Strict mode: cannot stop before the timer ends", "স্ট্রিক্ট মোড: সময় শেষ না হওয়া পর্যন্ত বন্ধ করা যাবে না"))
+            return
+        }
         val code = (100000..999999).random().toString()
         val box = LinearLayout(a)
         box.orientation = LinearLayout.VERTICAL
@@ -723,6 +742,36 @@ class SettingsScreen(private val a: MainActivity) {
         tr.addView(t1, lp(0, WRAP, t = a.dp(10), weight = 1f))
         theme.addView(tr)
         col.addView(theme, lp(MATCH, WRAP, b = a.dp(12)))
+
+        // strict protection
+        val strictCard = a.card()
+        strictCard.addView(a.section(L.t("Strict protection", "কঠোর সুরক্ষা")))
+        val locked = Store.isActive(a)
+        val prefs = Store.settings(a)
+        val sw1 = a.toggle(prefs.getBoolean("strict", false)) { v -> prefs.edit().putBoolean("strict", v).apply() }
+        val sw2 = a.toggle(prefs.getBoolean("guard", true)) { v -> prefs.edit().putBoolean("guard", v).apply() }
+        if (locked) {
+            sw1.isEnabled = false
+            sw2.isEnabled = false
+        }
+        strictCard.addView(
+            a.row(
+                L.t("Strict mode", "স্ট্রিক্ট মোড"),
+                L.t("No early stop. Locked until the timer ends.", "আগে বন্ধ করা যাবে না। সময় শেষ না হওয়া পর্যন্ত লক।"),
+                sw1
+            )
+        )
+        strictCard.addView(
+            a.row(
+                L.t("Protect app settings", "অ্যাপ সেটিংস সুরক্ষা"),
+                L.t("Block App info and Accessibility pages while the timer runs.", "টাইমার চলাকালীন App info ও Accessibility পাতা খোলা যাবে না।"),
+                sw2
+            )
+        )
+        val note = if (locked) L.t("Locked while a session is active.", "সেশন চলাকালীন বদলানো যাবে না।")
+        else L.t("Changes apply from the next session.", "পরিবর্তন পরের সেশন থেকে কার্যকর হবে।")
+        strictCard.addView(a.tv(note, 12f, if (locked) C.warn else C.muted), lp(MATCH, WRAP, t = a.dp(6)))
+        col.addView(strictCard, lp(MATCH, WRAP, b = a.dp(12)))
 
         // general
         val gen = a.card()

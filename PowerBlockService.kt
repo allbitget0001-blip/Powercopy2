@@ -40,7 +40,7 @@ class PowerBlockService : AccessibilityService() {
                     performGlobalAction(GLOBAL_ACTION_BACK)
                     performGlobalAction(GLOBAL_ACTION_HOME)
                 }
-            } else if (isGuarded(pkg)) {
+            } else if (p.getBoolean("s_guard", true) && isGuarded(pkg)) {
                 val root = rootInActiveWindow
                 if (root != null && root.findAccessibilityNodeInfosByText("PowerLock").isNotEmpty()) {
                     val now = SystemClock.uptimeMillis()
