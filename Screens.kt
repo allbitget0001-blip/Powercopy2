@@ -716,6 +716,159 @@ class SettingsScreen(private val a: MainActivity) {
         }
     }
 
+    // ---------- Diagnostics section ----------
+
+    private fun buildDiagnostics(): View {
+        val entries = Diag.entries(a)
+        val blocks = entries.filter { it.kind == "BLOCK" }
+        val blockedLock = blocks.any { it.locked }
+        val blockedOpen = blocks.any { !it.locked }
+        val menuLock = entries.any { it.kind == "WINDOW" && isMenuEntry(it) && it.locked }
+        val acc = Perm.accessibilityOn(a)
+
+        val card = a.card()
+        card.addView(a.section(L.t("Diagnostics", "ডায়াগনস্টিক")))
+
+        // one clear status
+        val title: String
+        val sub: String
+        val color: Int
+        if (!acc) {
+            title = L.t("Setup needed", "সেটআপ দরকার")
+            sub = L.t("Turn on Accessibility for PowerLock.", "PowerLock-এর জন্য Accessibility চালু করুন।")
+            color = C.danger
+        } else if (blockedLock) {
+            title = L.t("All good", "সব ঠিক আছে")
+            sub = L.t("Works on the lock screen too.", "লক স্ক্রিনেও কাজ করছে।")
+            color = C.primary
+        } else if (blockedOpen) {
+            title = L.t("Almost there", "প্রায় ঠিক")
+            sub = L.t("Lock screen is not tested yet.", "লক স্ক্রিন এখনো টেস্ট হয়নি।")
+            color = C.warn
+        } else {
+            title = L.t("Not tested yet", "এখনো টেস্ট হয়নি")
+            sub = L.t("Start a lock and open the power menu.", "লক চালু করে পাওয়ার মেনু খুলুন।")
+            color = C.muted
+        }
+        val box = LinearLayout(a)
+        box.orientation = LinearLayout.VERTICAL
+        box.setPadding(a.dp(14), a.dp(12), a.dp(14), a.dp(12))
+        box.background = rounded(tint(color, 30), a.dp(16).toFloat(), color, a.dp(1))
+        box.addView(a.tv(title, 18f, color, 1))
+        box.addView(a.tv(sub, 13f, C.textSoft), lp(MATCH, WRAP, t = a.dp(2)))
+        card.addView(box, lp(MATCH, WRAP, t = a.dp(10)))
+
+        // 3 simple checks
+        fun mark(state: Int): TextView = when (state) {
+            1 -> a.tv("✔", 18f, C.primary, 1)
+            0 -> a.tv("✘", 18f, C.danger, 1)
+            else -> a.tv("?", 18f, C.warn, 1)
+        }
+        val works = L.t("Works", "কাজ করছে")
+        val notTested = L.t("Not tested", "টেস্ট হয়নি")
+        val fixAcc: () -> Unit = { launch(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+        card.addView(
+            a.row(
+                "Accessibility",
+                if (acc) L.t("On", "চালু") else L.t("Off · tap to fix", "বন্ধ · ঠিক করতে চাপুন"),
+                mark(if (acc) 1 else 0),
+                if (acc) null else fixAcc
+            )
+        )
+        card.addView(a.row(L.t("Unlocked phone", "আনলক অবস্থা"), if (blockedOpen) works else notTested, mark(if (blockedOpen) 1 else 2)))
+        val lockState = if (blockedLock) 1 else if (menuLock) 0 else 2
+        val lockSub = if (blockedLock) works
+        else if (menuLock) L.t("Not blocked · was a timer running?", "ব্লক হয়নি · টাইমার চালু ছিল?")
+        else notTested
+        card.addView(a.row(L.t("Lock screen", "লক স্ক্রিন"), lockSub, mark(lockState)))
+
+        // last 3 power menu events
+        val shown = entries.reversed().filter { it.kind == "BLOCK" || isMenuEntry(it) }.take(3)
+        if (shown.isNotEmpty()) {
+            card.addView(a.tv(L.t("Recent", "সাম্প্রতিক"), 12f, C.muted, 1), lp(MATCH, WRAP, t = a.dp(8)))
+            for (en in shown) card.addView(diagRow(en))
+        }
+
+        card.addView(
+            a.tv(
+                L.t(
+                    "Test: start a lock, lock the phone, hold the power button, then unlock and check here.",
+                    "টেস্ট: লক চালু করে ফোন লক করুন, পাওয়ার বাটন ধরুন, তারপর আনলক করে এখানে দেখুন।"
+                ),
+                12f, C.muted
+            ),
+            lp(MATCH, WRAP, t = a.dp(10))
+        )
+
+        val br = LinearLayout(a)
+        val copy = a.outlineBtn(L.t("Copy report", "রিপোর্ট কপি"), C.primary)
+        copy.setOnClickListener { copyReport() }
+        val refresh = a.outlineBtn(L.t("Refresh", "রিফ্রেশ"), C.muted)
+        refresh.setOnClickListener { a.go(3) }
+        br.addView(copy, lp(0, a.dp(46), r = a.dp(10), weight = 1f))
+        br.addView(refresh, lp(0, a.dp(46), weight = 1f))
+        card.addView(br, lp(MATCH, WRAP, t = a.dp(12)))
+
+        val clear = a.tv(L.t("Clear log", "লগ মুছুন"), 13f, C.muted, 1)
+        clear.gravity = Gravity.CENTER
+        clear.setPadding(0, a.dp(12), 0, a.dp(2))
+        clear.setOnClickListener {
+            Diag.clear(a)
+            a.go(3)
+        }
+        card.addView(clear, lp(MATCH, WRAP))
+        return card
+    }
+
+    private fun diagRow(en: DiagEntry): View {
+        val isBlock = en.kind == "BLOCK"
+        val label = if (isBlock) L.t("Power menu blocked", "পাওয়ার মেনু ব্লক হয়েছে")
+        else L.t("Power menu opened", "পাওয়ার মেনু খুলেছে")
+        val color = if (isBlock) C.primary else C.warn
+        val r = LinearLayout(a)
+        r.gravity = Gravity.CENTER_VERTICAL
+        r.setPadding(0, a.dp(8), 0, a.dp(8))
+        val dot = View(a)
+        dot.background = rounded(color, a.dp(4).toFloat())
+        r.addView(dot, lp(a.dp(8), a.dp(8), r = a.dp(10)))
+        val col = LinearLayout(a)
+        col.orientation = LinearLayout.VERTICAL
+        col.addView(a.tv(label, 14f, C.text, 1))
+        col.addView(a.tv(L.num(en.time), 11f, C.muted))
+        r.addView(col, lp(0, WRAP, weight = 1f))
+        val badge = a.tv(
+            if (en.locked) L.t("LOCK SCREEN", "লক স্ক্রিন") else L.t("UNLOCKED", "আনলক"),
+            10f, if (en.locked) C.mint else C.muted, 1
+        )
+        badge.setPadding(a.dp(10), a.dp(5), a.dp(10), a.dp(5))
+        badge.background = rounded(tint(if (en.locked) C.primary else C.muted, 35), a.dp(10).toFloat())
+        r.addView(badge)
+        return r
+    }
+
+    private fun copyReport() {
+        val e = Diag.entries(a)
+        val sb = StringBuilder()
+        sb.append("PowerLock diagnostics\n")
+        sb.append("Device: ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE}\n")
+        sb.append("App: $APP_VERSION\n")
+        sb.append("Accessibility: ${Perm.accessibilityOn(a)}\n")
+        sb.append("Battery ok: ${Perm.batteryOk(a)}\n")
+        sb.append("Blocked when unlocked: ${e.any { it.kind == "BLOCK" && !it.locked }}\n")
+        sb.append("Blocked on lock screen: ${e.any { it.kind == "BLOCK" && it.locked }}\n")
+        sb.append("--- events (newest first) ---\n")
+        for (x in e.reversed().take(30)) {
+            sb.append("${x.time} ${x.kind} ${x.cls} [${x.text}] lock=${x.locked}\n")
+        }
+        try {
+            val cm = a.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText("PowerLock report", sb.toString()))
+            a.toast(L.t("Report copied", "রিপোর্ট কপি হয়েছে"))
+        } catch (ex: Exception) {
+            Log.e(TAG, "copy failed", ex)
+        }
+    }
+
     fun build(): View {
         val (sv, col) = a.page()
         col.addView(a.tv(L.t("Settings", "সেটিংস"), 24f, C.text, 1), lp(MATCH, WRAP, b = a.dp(14)))
@@ -822,17 +975,8 @@ class SettingsScreen(private val a: MainActivity) {
         }
         col.addView(perm, lp(MATCH, WRAP, b = a.dp(12)))
 
-        // diagnostics (opens its own screen)
-        val diagCard = a.card()
-        diagCard.addView(a.section(L.t("Diagnostics", "ডায়াগনস্টিক")))
-        diagCard.addView(
-            a.row(
-                L.t("Check if protection works", "প্রটেকশন ঠিকমতো কাজ করছে কিনা দেখুন"),
-                L.t("Includes a lock screen test", "লক স্ক্রিন টেস্টসহ"),
-                a.tv("›", 22f, C.muted)
-            ) { a.go(4) }
-        )
-        col.addView(diagCard, lp(MATCH, WRAP, b = a.dp(12)))
+        // diagnostics (its own section, inside Settings)
+        col.addView(buildDiagnostics(), lp(MATCH, WRAP, b = a.dp(12)))
 
         // about
         val about = a.card()
@@ -852,256 +996,5 @@ class SettingsScreen(private val a: MainActivity) {
         )
         col.addView(about)
         return sv
-    }
-}
-
-// =====================================================================
-// DIAGNOSTICS (separate screen, opened from Settings)
-// =====================================================================
-class DiagnosticsScreen(private val a: MainActivity) {
-    private lateinit var topBox: LinearLayout
-    private lateinit var listBox: LinearLayout
-    private var showAll = false
-    private var lastSig = ""
-
-    private fun sig(): String {
-        val e = Diag.entries(a)
-        val last = e.lastOrNull()
-        return "${e.size}|${last?.time}|${last?.kind}|${Perm.accessibilityOn(a)}|${Perm.batteryOk(a)}|${Perm.notificationsOn(a)}|$showAll|${L.bn}"
-    }
-
-    private fun launch(i: Intent) {
-        try {
-            a.startActivity(i)
-        } catch (e: Exception) {
-            Log.e(TAG, "launch failed", e)
-        }
-    }
-
-    fun tick() {
-        if (sig() != lastSig) refresh()
-    }
-
-    fun build(): View {
-        val (sv, col) = a.page()
-
-        val bar = LinearLayout(a)
-        bar.gravity = Gravity.CENTER_VERTICAL
-        val back = a.tv("←", 28f, C.primary, 1)
-        back.setPadding(0, 0, a.dp(16), 0)
-        back.setOnClickListener { a.go(3) }
-        bar.addView(back)
-        bar.addView(a.tv(L.t("Diagnostics", "ডায়াগনস্টিক"), 24f, C.text, 1))
-        col.addView(bar)
-        col.addView(
-            a.tv(
-                L.t("A simple check to see if PowerLock is working.", "PowerLock ঠিকমতো কাজ করছে কিনা দেখার সহজ উপায়।"),
-                13f, C.muted
-            ),
-            lp(MATCH, WRAP, t = a.dp(4), b = a.dp(16))
-        )
-
-        topBox = LinearLayout(a)
-        topBox.orientation = LinearLayout.VERTICAL
-        col.addView(topBox)
-
-        // how to test
-        val how = a.card()
-        how.addView(a.section(L.t("Test the lock screen", "লক স্ক্রিন টেস্ট করুন")))
-        val steps = listOf(
-            L.t("Start a 2 minute lock on Home.", "হোম থেকে ২ মিনিটের লক চালু করুন।"),
-            L.t("Press the power button once to lock the phone.", "পাওয়ার বাটন একবার চেপে ফোন লক করুন।"),
-            L.t("Wake the screen and long-press the power button.", "স্ক্রিন জ্বালিয়ে পাওয়ার বাটন ধরে রাখুন।"),
-            L.t("Unlock the phone and come back here.", "ফোন আনলক করে এখানে ফিরে আসুন।")
-        )
-        for ((i, st) in steps.withIndex()) {
-            val r = LinearLayout(a)
-            r.gravity = Gravity.CENTER_VERTICAL
-            r.setPadding(0, a.dp(10), 0, 0)
-            val n = a.tv(L.num((i + 1).toString()), 13f, C.onPrimary, 1)
-            n.gravity = Gravity.CENTER
-            n.background = rounded(C.primary, a.dp(12).toFloat())
-            r.addView(n, lp(a.dp(24), a.dp(24), r = a.dp(12)))
-            r.addView(a.tv(st, 14f, C.textSoft), lp(0, WRAP, weight = 1f))
-            how.addView(r)
-        }
-        col.addView(how, lp(MATCH, WRAP, t = a.dp(14)))
-
-        listBox = LinearLayout(a)
-        listBox.orientation = LinearLayout.VERTICAL
-        col.addView(listBox, lp(MATCH, WRAP, t = a.dp(14)))
-
-        val br = LinearLayout(a)
-        val refreshBtn = a.outlineBtn(L.t("Refresh", "রিফ্রেশ"), C.primary)
-        refreshBtn.setOnClickListener { refresh() }
-        val clearBtn = a.outlineBtn(L.t("Clear log", "লগ মুছুন"), C.muted)
-        clearBtn.setOnClickListener {
-            Diag.clear(a)
-            refresh()
-        }
-        br.addView(refreshBtn, lp(0, a.dp(48), r = a.dp(10), weight = 1f))
-        br.addView(clearBtn, lp(0, a.dp(48), weight = 1f))
-        col.addView(br, lp(MATCH, WRAP, t = a.dp(14)))
-        val copyBtn = a.primaryBtn(L.t("Copy report to share", "রিপোর্ট কপি করুন"))
-        copyBtn.setOnClickListener { copyReport() }
-        col.addView(copyBtn, lp(MATCH, a.dp(52), t = a.dp(10)))
-
-        refresh()
-        return sv
-    }
-
-    private fun refresh() {
-        lastSig = sig()
-        val entries = Diag.entries(a)
-        val blocks = entries.filter { it.kind == "BLOCK" }
-        val blockedLock = blocks.any { it.locked }
-        val blockedOpen = blocks.any { !it.locked }
-        val menuLock = entries.any { it.kind == "WINDOW" && isMenuEntry(it) && it.locked }
-        val acc = Perm.accessibilityOn(a)
-        val bat = Perm.batteryOk(a)
-        val notif = Perm.notificationsOn(a)
-
-        // ---- summary ----
-        topBox.removeAllViews()
-        val sumTitle: String
-        val sumSub: String
-        val sumColor: Int
-        if (!acc) {
-            sumTitle = L.t("Setup needed", "সেটআপ দরকার")
-            sumSub = L.t("Turn on Accessibility for PowerLock.", "PowerLock-এর জন্য Accessibility চালু করুন।")
-            sumColor = C.danger
-        } else if (blockedLock) {
-            sumTitle = L.t("All good", "সব ঠিক আছে")
-            sumSub = L.t("Works on the lock screen too.", "লক স্ক্রিনেও কাজ করছে।")
-            sumColor = C.primary
-        } else if (blockedOpen) {
-            sumTitle = L.t("Almost there", "প্রায় ঠিক")
-            sumSub = L.t("Works when unlocked. Lock screen is not tested yet.", "আনলক অবস্থায় কাজ করছে। লক স্ক্রিন এখনো টেস্ট হয়নি।")
-            sumColor = C.warn
-        } else {
-            sumTitle = L.t("Not tested yet", "এখনো টেস্ট হয়নি")
-            sumSub = L.t("Start a lock and open the power menu to test.", "লক চালু করে পাওয়ার মেনু খুলে টেস্ট করুন।")
-            sumColor = C.muted
-        }
-        val sum = a.card(18)
-        sum.background = rounded(tint(sumColor, 30), a.dp(20).toFloat(), sumColor, a.dp(1))
-        sum.addView(a.tv(sumTitle, 22f, sumColor, 1))
-        sum.addView(a.tv(sumSub, 14f, C.textSoft), lp(MATCH, WRAP, t = a.dp(4)))
-        topBox.addView(sum, lp(MATCH, WRAP, b = a.dp(12)))
-
-        // ---- checklist ----
-        val cc = a.card()
-        cc.addView(a.section(L.t("Checklist", "চেকলিস্ট")))
-        fun checkRow(title: String, state: Int, sub: String, onClick: (() -> Unit)?) {
-            val mark = when (state) {
-                1 -> a.tv("✔", 18f, C.primary, 1)
-                0 -> a.tv("✘", 18f, C.danger, 1)
-                else -> a.tv("?", 18f, C.warn, 1)
-            }
-            cc.addView(a.row(title, sub, mark, onClick))
-        }
-        val fixAcc: () -> Unit = { launch(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
-        val fixBat: () -> Unit = { launch(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
-        val fixNotif: () -> Unit = {
-            if (Build.VERSION.SDK_INT >= 33) a.requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 1)
-        }
-        checkRow(
-            "Accessibility", if (acc) 1 else 0,
-            if (acc) L.t("Turned on", "চালু আছে") else L.t("Turned off · tap to fix", "বন্ধ · ঠিক করতে চাপুন"),
-            if (acc) null else fixAcc
-        )
-        checkRow(
-            L.t("Battery", "ব্যাটারি"), if (bat) 1 else 0,
-            if (bat) L.t("Not restricted", "সীমাবদ্ধ নয়") else L.t("Restricted · tap to fix", "সীমাবদ্ধ · ঠিক করতে চাপুন"),
-            if (bat) null else fixBat
-        )
-        checkRow(
-            L.t("Notifications", "নোটিফিকেশন"), if (notif) 1 else 0,
-            if (notif) L.t("Allowed", "অনুমোদিত") else L.t("Blocked · tap to fix", "বন্ধ · ঠিক করতে চাপুন"),
-            if (notif) null else fixNotif
-        )
-        checkRow(
-            L.t("Power menu blocked (unlocked)", "পাওয়ার মেনু ব্লক (আনলক)"), if (blockedOpen) 1 else 2,
-            if (blockedOpen) L.t("Verified", "যাচাই হয়েছে") else L.t("Not tested yet", "এখনো টেস্ট হয়নি"),
-            null
-        )
-        val lockState = if (blockedLock) 1 else if (menuLock) 0 else 2
-        val lockSub = if (blockedLock) L.t("Verified", "যাচাই হয়েছে")
-        else if (menuLock) L.t("Menu opened but was not blocked (is a timer running?)", "মেনু খুলেছে কিন্তু ব্লক হয়নি (টাইমার চালু ছিল?)")
-        else L.t("Not tested yet", "এখনো টেস্ট হয়নি")
-        checkRow(L.t("Power menu blocked (lock screen)", "পাওয়ার মেনু ব্লক (লক স্ক্রিন)"), lockState, lockSub, null)
-        topBox.addView(cc)
-
-        // ---- recent activity ----
-        listBox.removeAllViews()
-        val lc = a.card()
-        lc.addView(a.section(L.t("Recent activity", "সাম্প্রতিক ঘটনা")))
-        val sw = a.toggle(showAll) { v ->
-            showAll = v
-            listBox.post { refresh() }
-        }
-        lc.addView(a.row(L.t("Show all system events", "সব সিস্টেম ঘটনা দেখান"), null, sw))
-        val shown = entries.reversed().filter { showAll || it.kind == "BLOCK" || isMenuEntry(it) }.take(15)
-        if (shown.isEmpty()) {
-            val e = a.tv(L.t("Nothing recorded yet", "এখনো কিছু রেকর্ড হয়নি"), 14f, C.muted)
-            e.gravity = Gravity.CENTER
-            lc.addView(e, lp(MATCH, WRAP, t = a.dp(10), b = a.dp(6)))
-        } else {
-            for (en in shown) lc.addView(entryRow(en))
-        }
-        listBox.addView(lc)
-    }
-
-    private fun entryRow(en: DiagEntry): View {
-        val isBlock = en.kind == "BLOCK"
-        val isMenu = !isBlock && isMenuEntry(en)
-        val title = if (isBlock) L.t("Power menu blocked", "পাওয়ার মেনু ব্লক করা হয়েছে")
-        else if (isMenu) L.t("Power menu opened", "পাওয়ার মেনু খুলেছে")
-        else L.t("System window", "সিস্টেম উইন্ডো")
-        val color = if (isBlock) C.primary else if (isMenu) C.warn else C.muted
-
-        val r = LinearLayout(a)
-        r.gravity = Gravity.CENTER_VERTICAL
-        r.setPadding(0, a.dp(10), 0, a.dp(10))
-        val dot = View(a)
-        dot.background = rounded(color, a.dp(5).toFloat())
-        r.addView(dot, lp(a.dp(10), a.dp(10), r = a.dp(12)))
-        val col = LinearLayout(a)
-        col.orientation = LinearLayout.VERTICAL
-        col.addView(a.tv(title, 14f, if (isBlock || isMenu) C.text else C.muted, 1))
-        val sub = L.num(en.time) + (if (en.cls.isNotEmpty()) " · " + en.cls else "")
-        col.addView(a.tv(sub, 11f, C.muted))
-        r.addView(col, lp(0, WRAP, weight = 1f))
-        val badge = a.tv(
-            if (en.locked) L.t("LOCK SCREEN", "লক স্ক্রিন") else L.t("UNLOCKED", "আনলক"),
-            10f, if (en.locked) C.mint else C.muted, 1
-        )
-        badge.setPadding(a.dp(10), a.dp(5), a.dp(10), a.dp(5))
-        badge.background = rounded(tint(if (en.locked) C.primary else C.muted, 35), a.dp(10).toFloat())
-        r.addView(badge)
-        return r
-    }
-
-    private fun copyReport() {
-        val e = Diag.entries(a)
-        val sb = StringBuilder()
-        sb.append("PowerLock diagnostics\n")
-        sb.append("Device: ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE}\n")
-        sb.append("App: $APP_VERSION\n")
-        sb.append("Accessibility: ${Perm.accessibilityOn(a)}\n")
-        sb.append("Battery ok: ${Perm.batteryOk(a)}\n")
-        sb.append("Blocked when unlocked: ${e.any { it.kind == "BLOCK" && !it.locked }}\n")
-        sb.append("Blocked on lock screen: ${e.any { it.kind == "BLOCK" && it.locked }}\n")
-        sb.append("--- events (newest first) ---\n")
-        for (x in e.reversed().take(30)) {
-            sb.append("${x.time} ${x.kind} ${x.cls} [${x.text}] lock=${x.locked}\n")
-        }
-        try {
-            val cm = a.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            cm.setPrimaryClip(ClipData.newPlainText("PowerLock report", sb.toString()))
-            a.toast(L.t("Report copied", "রিপোর্ট কপি হয়েছে"))
-        } catch (ex: Exception) {
-            Log.e(TAG, "copy failed", ex)
-        }
     }
 }

@@ -23,7 +23,6 @@ class MainActivity : Activity() {
     private val navIcons = ArrayList<IconView>()
     private var tab = 0
     private var home: HomeScreen? = null
-    private var diag: DiagnosticsScreen? = null
 
     /** Selected quick-timer duration in minutes (persisted). */
     var selectedMin: Int
@@ -37,7 +36,6 @@ class MainActivity : Activity() {
             try {
                 Store.finalizeIfExpired(this@MainActivity)
                 home?.tick()
-                diag?.tick()
             } catch (e: Exception) {
                 android.util.Log.e(TAG, "tick failed", e)
             }
@@ -96,7 +94,6 @@ class MainActivity : Activity() {
         tab = i
         content.removeAllViews()
         home = null
-        diag = null
         val v: View = when (i) {
             0 -> {
                 val h = HomeScreen(this)
@@ -105,11 +102,6 @@ class MainActivity : Activity() {
             }
             1 -> ScheduleScreen(this).build()
             2 -> StatsScreen(this).build()
-            4 -> {
-                val d = DiagnosticsScreen(this)
-                diag = d
-                d.build()
-            }
             else -> SettingsScreen(this).build()
         }
         v.alpha = 0f
@@ -157,7 +149,7 @@ class MainActivity : Activity() {
 
     private fun refreshNav() {
         for (i in navItems.indices) {
-            val sel = i == (if (tab == 4) 3 else tab)
+            val sel = i == tab
             navLabels[i].setTextColor(if (sel) C.primary else C.muted)
             navIcons[i].color = if (sel) C.primary else C.muted
         }
