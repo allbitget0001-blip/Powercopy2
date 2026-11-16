@@ -5,12 +5,6 @@ import android.app.AlertDialog
 import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Canvas
-import android.graphics.ColorFilter
-import android.graphics.LinearGradient
-import android.graphics.PixelFormat
-import android.graphics.RadialGradient
-import android.graphics.Rect
-import android.graphics.Shader
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
@@ -21,7 +15,6 @@ import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
-import android.graphics.drawable.LayerDrawable
 import android.graphics.drawable.RippleDrawable
 import android.text.InputType
 import android.view.Gravity
@@ -106,7 +99,7 @@ fun Context.tv(t: String, size: Float = 14f, color: Int = C.text, style: Int = 0
 fun Context.card(pad: Int = 16): LinearLayout {
     val v = LinearLayout(this)
     v.orientation = LinearLayout.VERTICAL
-    v.background = glass(20)
+    v.background = rounded(C.card, dp(20).toFloat())
     v.setPadding(dp(pad), dp(pad), dp(pad), dp(pad))
     return v
 }
@@ -135,7 +128,14 @@ fun Context.outlineBtn(label: String, color: Int): TextView {
 
 fun Context.styleChip(v: TextView, selected: Boolean) {
     v.setTextColor(if (selected) C.text else C.textSoft)
-    v.background = withRipple(glass(18, if (selected) 1 else 0))
+    v.background = withRipple(
+        rounded(
+            if (selected) C.selFill else C.chipFill,
+            dp(18).toFloat(),
+            if (selected) C.primary else C.border,
+            if (selected) dp(2) else dp(1)
+        )
+    )
 }
 
 fun Context.chip(label: String, selected: Boolean): TextView {
@@ -152,7 +152,7 @@ fun Context.bigButton(kind: Ic, label: String, fill: Int, fg: Int, stroke: Int =
     val b = LinearLayout(this)
     b.orientation = LinearLayout.HORIZONTAL
     b.gravity = Gravity.CENTER
-    b.background = withRipple(if (fill == C.primary) glossy(C.primary, C.mint, 32) else glass(32, 3))
+    b.background = withRipple(rounded(fill, dp(32).toFloat(), stroke, if (stroke != 0) dp(1) else 0))
     b.addView(IconView(this, kind, fg), lp(dp(24), dp(24), r = dp(10)))
     val t = tv(label.uppercase(), 16f, fg, 1)
     t.letterSpacing = 0.04f
@@ -473,128 +473,3 @@ class BarChartView(ctx: Context) : View(ctx) {
     }
 }
 
-// =====================================================================
-// GLASS EFFECT
-// =====================================================================
-
-/** Frosted-glass panel: translucent gradient fill + light gradient border. */
-class GlassDrawable(
-    private val radius: Float,
-    private val tintColor: Int,
-    private val fillA1: Int,
-    private val fillA2: Int,
-    private val borderColor: Int,
-    private val borderA1: Int,
-    private val borderA2: Int,
-    private val strokePx: Float
-) : Drawable() {
-    private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val line = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val rect = RectF()
-
-    init {
-        line.style = Paint.Style.STROKE
-        line.strokeWidth = strokePx
-    }
-
-    override fun onBoundsChange(b: Rect) {
-        super.onBoundsChange(b)
-        val l = b.left.toFloat()
-        val t = b.top.toFloat()
-        val r = b.right.toFloat()
-        val bt = b.bottom.toFloat()
-        fill.shader = LinearGradient(
-            l, t, r, bt,
-            intArrayOf(tint(tintColor, fillA1), tint(tintColor, fillA2)),
-            null, Shader.TileMode.CLAMP
-        )
-        line.shader = LinearGradient(
-            l, t, r, bt,
-            intArrayOf(tint(borderColor, borderA1), tint(borderColor, borderA2)),
-            null, Shader.TileMode.CLAMP
-        )
-        rect.set(l + strokePx / 2f, t + strokePx / 2f, r - strokePx / 2f, bt - strokePx / 2f)
-    }
-
-    override fun draw(canvas: Canvas) {
-        canvas.drawRoundRect(rect, radius, radius, fill)
-        canvas.drawRoundRect(rect, radius, radius, line)
-    }
-
-    override fun setAlpha(alpha: Int) {
-        fill.alpha = alpha
-        line.alpha = alpha
-        invalidateSelf()
-    }
-
-    override fun setColorFilter(colorFilter: ColorFilter?) {
-        fill.colorFilter = colorFilter
-        line.colorFilter = colorFilter
-        invalidateSelf()
-    }
-
-    @Suppress("OVERRIDE_DEPRECATION")
-    override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
-}
-
-/** Soft emerald light blobs on the dark background, so the glass panels have something to frost. */
-class GlowDrawable : Drawable() {
-    private val p1 = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val p2 = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val p3 = Paint(Paint.ANTI_ALIAS_FLAG)
-
-    override fun onBoundsChange(b: Rect) {
-        super.onBoundsChange(b)
-        val w = b.width().toFloat()
-        val h = b.height().toFloat()
-        val teal = Color.parseColor("#0FA3B1")
-        p1.shader = RadialGradient(
-            w * 0.95f, h * 0.06f, w * 0.95f,
-            intArrayOf(tint(C.primary, 95), tint(C.primary, 0)), null, Shader.TileMode.CLAMP
-        )
-        p2.shader = RadialGradient(
-            w * 0.02f, h * 0.60f, w * 0.85f,
-            intArrayOf(tint(teal, 70), tint(teal, 0)), null, Shader.TileMode.CLAMP
-        )
-        p3.shader = RadialGradient(
-            w * 0.75f, h * 0.98f, w * 0.85f,
-            intArrayOf(tint(C.mint, 45), tint(C.mint, 0)), null, Shader.TileMode.CLAMP
-        )
-    }
-
-    override fun draw(canvas: Canvas) {
-        canvas.drawColor(C.bg)
-        canvas.drawRect(bounds, p1)
-        canvas.drawRect(bounds, p2)
-        canvas.drawRect(bounds, p3)
-    }
-
-    override fun setAlpha(alpha: Int) {}
-
-    override fun setColorFilter(colorFilter: ColorFilter?) {}
-
-    @Suppress("OVERRIDE_DEPRECATION")
-    override fun getOpacity(): Int = PixelFormat.OPAQUE
-}
-
-/** kind: 0 normal, 1 selected (emerald), 2 strong (big cards / bars), 3 danger (red). */
-fun Context.glass(radiusDp: Int, kind: Int = 0): Drawable {
-    val r = dp(radiusDp).toFloat()
-    val w = dp(1).toFloat()
-    return when (kind) {
-        1 -> GlassDrawable(r, C.primary, 120, 55, C.primary, 255, 130, dp(2).toFloat())
-        2 -> GlassDrawable(r, C.mint, 40, 12, Color.WHITE, 120, 16, w)
-        3 -> GlassDrawable(r, C.danger, 40, 14, C.danger, 220, 120, w)
-        else -> GlassDrawable(r, C.mint, 26, 8, Color.WHITE, 90, 12, w)
-    }
-}
-
-/** Glossy gradient button background (top highlight). */
-fun Context.glossy(c1: Int, c2: Int, radiusDp: Int): Drawable {
-    val r = dp(radiusDp).toFloat()
-    val g1 = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(c1, c2))
-    g1.cornerRadius = r
-    val g2 = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(tint(Color.WHITE, 90), tint(Color.WHITE, 0)))
-    g2.cornerRadius = r
-    return LayerDrawable(arrayOf<Drawable>(g1, g2))
-}

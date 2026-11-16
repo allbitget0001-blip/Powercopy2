@@ -48,7 +48,7 @@ class HomeScreen(private val a: MainActivity) {
         header.gravity = Gravity.CENTER_VERTICAL
         val tile = LinearLayout(a)
         tile.gravity = Gravity.CENTER
-        tile.background = a.glass(16, 1)
+        tile.background = rounded(Color.parseColor("#14392A"), a.dp(16).toFloat())
         tile.addView(IconView(a, Ic.SHIELD, C.primary), lp(a.dp(30), a.dp(30)))
         header.addView(tile, lp(a.dp(52), a.dp(52)))
         val names = LinearLayout(a)
@@ -71,7 +71,7 @@ class HomeScreen(private val a: MainActivity) {
         // ---- status card ----
         val sc = a.card(20)
         sc.gravity = Gravity.CENTER_HORIZONTAL
-        sc.background = a.glass(28, 2)
+        sc.background = rounded(C.card, a.dp(28).toFloat())
         val lbl = a.tv(L.t("POWER LOCK STATUS", "পাওয়ার লক স্ট্যাটাস"), 12f, C.muted, 1)
         lbl.letterSpacing = 0.12f
         lbl.gravity = Gravity.CENTER
@@ -182,7 +182,7 @@ class HomeScreen(private val a: MainActivity) {
             PStatus.READY -> L.t("READY", "প্রস্তুত")
         }
         pill.setTextColor(color)
-        pill.background = GlassDrawable(a.dp(20).toFloat(), color, 70, 25, color, 200, 60, a.dp(1).toFloat())
+        pill.background = rounded(tint(color, 40), a.dp(20).toFloat())
     }
 
     private fun updateSchedPill() {
@@ -192,11 +192,11 @@ class HomeScreen(private val a: MainActivity) {
         if (on) {
             schedPill.text = L.t("Enabled", "চালু")
             schedPill.setTextColor(C.primary)
-            schedPill.background = a.glass(20, 1)
+            schedPill.background = rounded(tint(C.primary, 40), a.dp(20).toFloat())
         } else {
             schedPill.text = L.t("Off", "বন্ধ")
             schedPill.setTextColor(C.muted)
-            schedPill.background = a.glass(20, 0)
+            schedPill.background = rounded(C.card2, a.dp(20).toFloat())
         }
     }
 

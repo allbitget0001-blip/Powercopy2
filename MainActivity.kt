@@ -59,7 +59,7 @@ class MainActivity : Activity() {
 
         val root = LinearLayout(this)
         root.orientation = LinearLayout.VERTICAL
-        root.background = GlowDrawable()
+        root.setBackgroundColor(C.bg)
         root.fitsSystemWindows = true
         content = FrameLayout(this)
         root.addView(content, lp(MATCH, 0, weight = 1f))
@@ -113,11 +113,13 @@ class MainActivity : Activity() {
     private fun buildNav(): View {
         val wrap = LinearLayout(this)
         wrap.orientation = LinearLayout.VERTICAL
-        wrap.setPadding(dp(14), dp(4), dp(14), dp(10))
+        wrap.setBackgroundColor(C.bg)
+        val line = View(this)
+        line.setBackgroundColor(C.card)
+        wrap.addView(line, lp(MATCH, dp(1)))
         val bar = LinearLayout(this)
         bar.orientation = LinearLayout.HORIZONTAL
-        bar.background = glass(28, 2)
-        bar.setPadding(dp(8), dp(8), dp(8), dp(8))
+        bar.setPadding(dp(8), dp(10), dp(8), dp(10))
         val labels = listOf(
             L.t("Home", "হোম"),
             L.t("Schedule", "সময়সূচি"),
@@ -129,7 +131,7 @@ class MainActivity : Activity() {
             val item = LinearLayout(this)
             item.orientation = LinearLayout.VERTICAL
             item.gravity = Gravity.CENTER
-            item.setPadding(0, dp(8), 0, dp(8))
+            item.setPadding(0, dp(4), 0, dp(4))
             val ic = IconView(this, kinds[i], C.muted)
             item.addView(ic, lp(dp(26), dp(26)))
             val lb = tv(labels[i], 12f, C.muted, 1)
@@ -139,7 +141,7 @@ class MainActivity : Activity() {
             navItems.add(item)
             navLabels.add(lb)
             navIcons.add(ic)
-            bar.addView(item, lp(0, WRAP, l = dp(2), r = dp(2), weight = 1f))
+            bar.addView(item, lp(0, WRAP, weight = 1f))
         }
         wrap.addView(bar, lp(MATCH, WRAP))
         return wrap
@@ -148,8 +150,7 @@ class MainActivity : Activity() {
     private fun refreshNav() {
         for (i in navItems.indices) {
             val sel = i == tab
-            navItems[i].background = if (sel) glass(20, 1) else null
-            navLabels[i].setTextColor(if (sel) C.text else C.muted)
+            navLabels[i].setTextColor(if (sel) C.primary else C.muted)
             navIcons[i].color = if (sel) C.primary else C.muted
         }
     }
