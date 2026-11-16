@@ -129,11 +129,8 @@ class PowerBlockService : AccessibilityService() {
         performGlobalAction(GLOBAL_ACTION_BACK)
         handler.postDelayed({ if (isProtecting()) performGlobalAction(GLOBAL_ACTION_BACK) }, 250)
         handler.postDelayed({ if (isProtecting()) performGlobalAction(GLOBAL_ACTION_HOME) }, 600)
-        Diag.add(this, stamp("BLOCK"))
+        Diag.add(this, "BLOCK", "", "", isLocked())
     }
-
-    private fun stamp(tag: String): String =
-        SimpleDateFormat("HH:mm:ss", Locale.US).format(Date()) + " >> " + tag
 
     private fun buildOverlay(): View {
         val root = LinearLayout(this)
@@ -191,16 +188,21 @@ class PowerBlockService : AccessibilityService() {
 
     // ---------- diagnostics ----------
 
+    private fun isLocked(): Boolean =
+        try {
+            (getSystemService(KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked
+        } catch (ex: Exception) {
+            false
+        }
+
     private fun logEvent(e: AccessibilityEvent, pkg: String) {
         try {
-            val locked = (getSystemService(KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked
             val cls = (e.className?.toString() ?: "-").substringAfterLast('.')
             val sb = StringBuilder()
-            for (t in e.text) sb.append(t).append('|')
-            var txt = sb.toString()
-            if (txt.length > 50) txt = txt.substring(0, 50)
-            val time = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
-            Diag.add(this, "$time ${pkg.substringAfterLast('.')} $cls [$txt] lock=$locked")
+            for (t in e.text) sb.append(t).append(' ')
+            var txt = sb.toString().trim()
+            if (txt.length > 60) txt = txt.substring(0, 60)
+            Diag.add(this, "WINDOW", cls, txt, isLocked())
         } catch (ex: Exception) {
             Log.e(TAG, "logEvent failed", ex)
         }
