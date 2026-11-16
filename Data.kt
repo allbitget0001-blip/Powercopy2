@@ -306,3 +306,25 @@ object Store {
         settings(ctx).edit().putString("schedules", arr.toString()).apply()
     }
 }
+
+// ---------- diagnostics log (shown in Settings) ----------
+
+object Diag {
+    private const val KEY = "diag"
+
+    @Synchronized
+    fun add(ctx: Context, line: String) {
+        val p = Store.lock(ctx)
+        val old = p.getString(KEY, "") ?: ""
+        val lines = old.split("\n").filter { it.isNotEmpty() }.toMutableList()
+        lines.add(line)
+        while (lines.size > 14) lines.removeAt(0)
+        p.edit().putString(KEY, lines.joinToString("\n")).apply()
+    }
+
+    fun get(ctx: Context): String = Store.lock(ctx).getString(KEY, "") ?: ""
+
+    fun clear(ctx: Context) {
+        Store.lock(ctx).edit().remove(KEY).apply()
+    }
+}

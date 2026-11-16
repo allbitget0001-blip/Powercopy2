@@ -6,6 +6,7 @@ import android.app.AlertDialog
 import android.app.TimePickerDialog
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
@@ -817,6 +818,31 @@ class SettingsScreen(private val a: MainActivity) {
             }
         }
         col.addView(perm, lp(MATCH, WRAP, b = a.dp(12)))
+
+        // diagnostics
+        val diag = a.card()
+        diag.addView(a.section(L.t("Diagnostics", "ডায়াগনস্টিক")))
+        diag.addView(
+            a.tv(
+                L.t(
+                    "Last system UI events PowerLock saw. If the lock screen still is not blocked, send a screenshot of this.",
+                    "PowerLock সিস্টেম UI-তে শেষ যা যা দেখেছে। লক স্ক্রিনে কাজ না করলে এর স্ক্রিনশট পাঠান।"
+                ),
+                12f, C.muted
+            ),
+            lp(MATCH, WRAP, t = a.dp(6))
+        )
+        val logText = Diag.get(a)
+        val logView = a.tv(if (logText.isEmpty()) L.t("(no events yet)", "(এখনো কিছু নেই)") else logText, 11f, C.textSoft)
+        logView.typeface = Typeface.MONOSPACE
+        diag.addView(logView, lp(MATCH, WRAP, t = a.dp(10)))
+        val clearBtn = a.outlineBtn(L.t("Refresh / Clear log", "রিফ্রেশ / লগ মুছুন"), C.primary)
+        clearBtn.setOnClickListener {
+            Diag.clear(a)
+            a.go(3)
+        }
+        diag.addView(clearBtn, lp(MATCH, a.dp(46), t = a.dp(12)))
+        col.addView(diag, lp(MATCH, WRAP, b = a.dp(12)))
 
         // about
         val about = a.card()
