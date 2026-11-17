@@ -747,30 +747,43 @@ class SettingsScreen(private val a: MainActivity) {
         return v
     }
 
-    /** Selectable tile: preview on top, label below. */
-    private fun optionTile(preview: View, label: String, selected: Boolean): LinearLayout {
-        val t = LinearLayout(a)
-        t.orientation = LinearLayout.VERTICAL
-        t.gravity = Gravity.CENTER
-        t.setPadding(a.dp(8), a.dp(18), a.dp(8), a.dp(16))
-        t.addView(preview, lp(a.dp(44), a.dp(44)))
-        val l = a.tv(label, 14f, if (selected) C.text else C.textSoft, 1)
-        l.gravity = Gravity.CENTER
-        t.addView(l, lp(WRAP, WRAP, t = a.dp(10)))
-        paintTile(t, selected, false)
-        t.pressFeedback()
-        return t
+    /** One selectable option as its own full-width section: preview, title, subtitle, tick. */
+    private fun optionCard(preview: View, label: String, sub: String, selected: Boolean): LinearLayout {
+        val c = LinearLayout(a)
+        c.gravity = Gravity.CENTER_VERTICAL
+        c.setPadding(a.dp(16), a.dp(14), a.dp(18), a.dp(14))
+        c.addView(preview, lp(a.dp(46), a.dp(46), r = a.dp(14)))
+        val texts = LinearLayout(a)
+        texts.orientation = LinearLayout.VERTICAL
+        texts.addView(a.tv(label, 16f, C.textSoft, 1))
+        texts.addView(a.tv(sub, 12f, C.muted), lp(MATCH, WRAP, t = a.dp(2)))
+        c.addView(texts, lp(0, WRAP, weight = 1f))
+        val mark = a.tv("✓", 15f, Color.TRANSPARENT, 1)
+        mark.gravity = Gravity.CENTER
+        c.addView(mark, lp(a.dp(28), a.dp(28)))
+        paintCard(c, selected, false)
+        c.pressFeedback()
+        return c
     }
 
-    private fun paintTile(t: LinearLayout, selected: Boolean, animate: Boolean) {
-        val label = t.getChildAt(1) as TextView
+    private fun paintCard(c: LinearLayout, selected: Boolean, animate: Boolean) {
+        val texts = c.getChildAt(1) as LinearLayout
+        val label = texts.getChildAt(0) as TextView
+        val mark = c.getChildAt(2) as TextView
         val toFill = if (selected) C.selFill else C.chipFill
         val toStroke = if (selected) C.primary else C.border
         val toText = if (selected) C.text else C.textSoft
         val toW = if (selected) a.dp(2) else a.dp(1)
         val g = GradientDrawable()
-        g.cornerRadius = a.dp(20).toFloat()
-        t.background = withRipple(g)
+        g.cornerRadius = a.dp(22).toFloat()
+        c.background = withRipple(g)
+        mark.background = rounded(
+            if (selected) C.primary else Color.TRANSPARENT,
+            a.dp(14).toFloat(),
+            if (selected) C.primary else C.muted,
+            a.dp(2)
+        )
+        mark.setTextColor(if (selected) C.onPrimary else Color.TRANSPARENT)
         if (!animate) {
             g.setColor(toFill)
             g.setStroke(toW, toStroke)
@@ -794,35 +807,42 @@ class SettingsScreen(private val a: MainActivity) {
         }
         an.start()
         if (selected) {
-            t.animate().scaleX(1.05f).scaleY(1.05f).setDuration(Motion.FAST).withEndAction {
-                t.animate().scaleX(1f).scaleY(1f).setDuration(Motion.MED).setInterpolator(Motion.EASE).start()
-            }.start()
+            mark.scaleX = 0.5f
+            mark.scaleY = 0.5f
+            mark.animate().scaleX(1f).scaleY(1f).setDuration(Motion.MED).setInterpolator(Motion.EASE).start()
         }
     }
 
-    /** Two tiles in a row. onPick(i) runs once, after the highlight animation has played. */
-    private fun tileRow(previews: List<View>, labels: List<String>, selected: Int, onPick: (Int) -> Unit): LinearLayout {
-        val row = LinearLayout(a)
-        val tiles = ArrayList<LinearLayout>()
+    /** Stacked option cards. onPick(i) runs once, after the highlight animation has played. */
+    private fun optionGroup(
+        previews: List<View>,
+        labels: List<String>,
+        subs: List<String>,
+        selected: Int,
+        onPick: (Int) -> Unit
+    ): LinearLayout {
+        val box = LinearLayout(a)
+        box.orientation = LinearLayout.VERTICAL
+        val cards = ArrayList<LinearLayout>()
         var current = selected
         var busy = false
         for (i in previews.indices) {
-            val tile = optionTile(previews[i], labels[i], i == selected)
-            tiles.add(tile)
-            tile.setOnClickListener {
+            val card = optionCard(previews[i], labels[i], subs[i], i == selected)
+            cards.add(card)
+            card.setOnClickListener {
                 if (!busy && i != current) {
                     busy = true
                     current = i
-                    for (j in tiles.indices) paintTile(tiles[j], j == i, true)
-                    tile.postDelayed({
+                    for (j in cards.indices) paintCard(cards[j], j == i, true)
+                    card.postDelayed({
                         onPick(i)
                         busy = false
                     }, 260)
                 }
             }
-            row.addView(tile, lp(0, WRAP, r = if (i < previews.size - 1) a.dp(12) else 0, weight = 1f))
+            box.addView(card, lp(MATCH, WRAP, t = if (i == 0) 0 else a.dp(10)))
         }
-        return row
+        return box
     }
 
     /** One strict-protection option as its own glowing card. */
@@ -887,44 +907,46 @@ class SettingsScreen(private val a: MainActivity) {
         val (sv, col) = a.page()
         col.addView(a.tv(L.t("Settings", "সেটিংস"), 24f, C.text, 1), lp(MATCH, WRAP, b = a.dp(14)))
 
-        // language: two tiles
-        val lang = a.card()
-        lang.addView(a.section(L.t("Language", "ভাষা")))
+        // language: two sections
+        col.addView(a.section(L.t("Language", "ভাষা")), lp(MATCH, WRAP, l = a.dp(4), b = a.dp(10)))
         val bnPrev = a.tv("বা", 22f, C.primary, 1)
         bnPrev.gravity = Gravity.CENTER
         bnPrev.background = rounded(C.card2, a.dp(14).toFloat())
         val enPrev = a.tv("En", 22f, C.primary, 1)
         enPrev.gravity = Gravity.CENTER
         enPrev.background = rounded(C.card2, a.dp(14).toFloat())
-        lang.addView(
-            tileRow(listOf(bnPrev, enPrev), listOf("বাংলা", "English"), if (L.bn) 0 else 1) { i ->
+        col.addView(
+            optionGroup(
+                listOf(bnPrev, enPrev),
+                listOf("বাংলা", "English"),
+                listOf(L.t("Bangla interface", "বাংলা ইন্টারফেস"), L.t("English interface", "ইংরেজি ইন্টারফেস")),
+                if (L.bn) 0 else 1
+            ) { i ->
                 Store.settings(a).edit().putString("lang", if (i == 0) "bn" else "en").apply()
                 a.crossfade {
                     L.load(a)
                     Store.kickService(a)
                 }
             },
-            lp(MATCH, WRAP, t = a.dp(12))
+            lp(MATCH, WRAP, b = a.dp(20))
         )
-        col.addView(lang, lp(MATCH, WRAP, b = a.dp(12)))
 
-        // theme: two tiles
-        val theme = a.card()
-        theme.addView(a.section(L.t("Theme", "থিম")))
+        // theme: two sections
+        col.addView(a.section(L.t("Theme", "থিম")), lp(MATCH, WRAP, l = a.dp(4), b = a.dp(10)))
         val emeraldPrev = swatch(Color.parseColor("#0A1510"), C.primary)
         val amoledPrev = swatch(Color.BLACK, Color.parseColor("#4A6A5B"))
-        theme.addView(
-            tileRow(
+        col.addView(
+            optionGroup(
                 listOf(emeraldPrev, amoledPrev),
                 listOf(L.t("Emerald Dark", "এমারেল্ড ডার্ক"), L.t("AMOLED Black", "অ্যামোলেড ব্ল্যাক")),
+                listOf(L.t("Deep green on dark", "গাঢ় সবুজ ডার্ক"), L.t("Pure black, saves battery", "খাঁটি কালো, ব্যাটারি সাশ্রয়")),
                 Store.settings(a).getInt("theme", 0)
             ) { i ->
                 Store.settings(a).edit().putInt("theme", i).apply()
                 a.crossfade { C.load(a) }
             },
-            lp(MATCH, WRAP, t = a.dp(12))
+            lp(MATCH, WRAP, b = a.dp(20))
         )
-        col.addView(theme, lp(MATCH, WRAP, b = a.dp(12)))
 
         // strict protection
         val strictCard = a.card()
