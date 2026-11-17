@@ -1,5 +1,10 @@
 package com.example.powerlocks
 
+import android.view.accessibility.AccessibilityWindowInfo
+import android.os.Build
+import android.content.IntentFilter
+import android.content.Context
+import android.content.BroadcastReceiver
 import android.widget.TextView
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
@@ -53,7 +58,22 @@ class PowerBlockService : AccessibilityService() {
     private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> readState() }
     private val hideTask = Runnable { hideOverlay() }
     private val backAgain = Runnable { if (protecting()) performGlobalAction(GLOBAL_ACTION_BACK) }
+    private val backAgain2 = Runnable { if (protecting()) performGlobalAction(GLOBAL_ACTION_BACK) }
     private val goHome = Runnable { if (protecting()) performGlobalAction(GLOBAL_ACTION_HOME) }
+    private var lastWinScan = 0L
+    private var receiverOn = false
+
+    // The system announces "globalactions" the instant the power button is long-pressed,
+    // before the menu is even drawn - the earliest possible trigger.
+    private val closeDialogsReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context?, i: Intent?) {
+            try {
+                if (i?.getStringExtra("reason") == "globalactions" && protecting()) block()
+            } catch (ex: Exception) {
+                Log.e(TAG, "close-dialogs receiver failed", ex)
+            }
+        }
+    }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -62,10 +82,26 @@ class PowerBlockService : AccessibilityService() {
             readState()
             Store.lock(this).registerOnSharedPreferenceChangeListener(prefsListener)
             ensureOverlay() // pre-build the shield so it can appear instantly
+            registerCloseDialogs()
             Store.kickService(this)
             Scheduler.onAlarm(this)
         } catch (e: Exception) {
             Log.e(TAG, "onServiceConnected failed", e)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun registerCloseDialogs() {
+        try {
+            val f = IntentFilter(Intent.ACTION_CLOSE_SYSTEM_DIALOGS)
+            if (Build.VERSION.SDK_INT >= 33) {
+                registerReceiver(closeDialogsReceiver, f, Context.RECEIVER_EXPORTED)
+            } else {
+                registerReceiver(closeDialogsReceiver, f)
+            }
+            receiverOn = true
+        } catch (ex: Exception) {
+            Log.e(TAG, "register close-dialogs failed", ex)
         }
     }
 
@@ -95,18 +131,26 @@ class PowerBlockService : AccessibilityService() {
     // ---------- detection ----------
 
     private fun onSystemUi(e: AccessibilityEvent) {
-        // 1) instant check from the event itself (no IPC)
+        // 1) instant check from the event itself (no IPC at all)
         if (looksLikePowerMenu(e)) {
             block()
             return
         }
-        // 2) content scan; content-change events are throttled
+        val now = SystemClock.uptimeMillis()
         if (e.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
-            val now = SystemClock.uptimeMillis()
+            // 2) frequent event: look only at the changed part, windows at most every 150 ms
             if (now - lastMenuScan < 60) return
             lastMenuScan = now
+            if (hasPowerMenu(e.source)) {
+                block()
+            } else if (now - lastWinScan >= 150) {
+                lastWinScan = now
+                if (scanWindows(false)) block()
+            }
+            return
         }
-        if (hasPowerMenu(e.source) || anyWindowHasPowerMenu()) block()
+        // 3) a window appeared or changed: node first, then system windows, then the rest
+        if (hasPowerMenu(e.source) || scanWindows(true)) block()
     }
 
     private fun onGuarded(e: AccessibilityEvent) {
@@ -141,17 +185,32 @@ class PowerBlockService : AccessibilityService() {
         return false
     }
 
+    /** One search only: every power menu has the "Swipe to power off" slider. */
     private fun hasPowerMenu(n: AccessibilityNodeInfo?): Boolean {
         if (n == null) return false
-        for (t in triggers) {
-            if (n.findAccessibilityNodeInfosByText(t).isNotEmpty()) return true
-        }
-        return false
+        return n.findAccessibilityNodeInfosByText("to power off").isNotEmpty()
     }
 
-    private fun anyWindowHasPowerMenu(): Boolean {
+    /** System windows first (where the power menu lives); other windows only when [all] is true. */
+    private fun scanWindows(all: Boolean): Boolean {
         return try {
-            windows.any { hasPowerMenu(it.root) }
+            val list = windows
+            var found = false
+            for (w in list) {
+                if (w.type == AccessibilityWindowInfo.TYPE_SYSTEM && hasPowerMenu(w.root)) {
+                    found = true
+                    break
+                }
+            }
+            if (!found && all) {
+                for (w in list) {
+                    if (w.type != AccessibilityWindowInfo.TYPE_SYSTEM && hasPowerMenu(w.root)) {
+                        found = true
+                        break
+                    }
+                }
+            }
+            found
         } catch (ex: Exception) {
             false
         }
@@ -164,16 +223,18 @@ class PowerBlockService : AccessibilityService() {
     // ---------- blocking ----------
 
     private fun block() {
+        showOverlay() // shield first: from this moment the slider cannot be touched
         val now = SystemClock.uptimeMillis()
-        if (now - lastAction >= 120) {
+        if (now - lastAction >= 100) {
             lastAction = now
-            performGlobalAction(GLOBAL_ACTION_BACK) // first, with no delay
+            performGlobalAction(GLOBAL_ACTION_BACK)
             handler.removeCallbacks(backAgain)
+            handler.removeCallbacks(backAgain2)
             handler.removeCallbacks(goHome)
-            handler.postDelayed(backAgain, 90)
-            handler.postDelayed(goHome, 220) // end on the Home screen
+            handler.postDelayed(backAgain, 60)
+            handler.postDelayed(backAgain2, 150)
+            handler.postDelayed(goHome, 250) // end on the Home screen
         }
-        showOverlay()
     }
 
     private fun ensureOverlay(): View {
@@ -238,6 +299,14 @@ class PowerBlockService : AccessibilityService() {
     private fun cleanup() {
         handler.removeCallbacksAndMessages(null)
         hideOverlay()
+        if (receiverOn) {
+            receiverOn = false
+            try {
+                unregisterReceiver(closeDialogsReceiver)
+            } catch (ex: Exception) {
+                Log.e(TAG, "unregister close-dialogs failed", ex)
+            }
+        }
         try {
             Store.lock(this).unregisterOnSharedPreferenceChangeListener(prefsListener)
         } catch (ex: Exception) {

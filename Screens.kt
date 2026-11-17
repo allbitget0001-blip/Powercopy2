@@ -53,8 +53,8 @@ class HomeScreen(private val a: MainActivity) {
         header.gravity = Gravity.CENTER_VERTICAL
         val tile = LinearLayout(a)
         tile.gravity = Gravity.CENTER
-        tile.background = rounded(Color.parseColor("#F6F3EA"), a.dp(16).toFloat())
-        tile.addView(IconView(a, Ic.SHIELD, Color.parseColor("#1E9E68")), lp(a.dp(30), a.dp(30)))
+        tile.background = rounded(Color.parseColor("#14392A"), a.dp(16).toFloat())
+        tile.addView(IconView(a, Ic.SHIELD, C.primary), lp(a.dp(30), a.dp(30)))
         header.addView(tile, lp(a.dp(52), a.dp(52)))
         val names = LinearLayout(a)
         names.orientation = LinearLayout.VERTICAL
@@ -741,6 +741,90 @@ class StatsScreen(private val a: MainActivity) {
 // =====================================================================
 class SettingsScreen(private val a: MainActivity) {
 
+    private fun swatch(bg: Int, ring: Int): View {
+        val v = View(a)
+        v.background = rounded(bg, a.dp(14).toFloat(), ring, a.dp(2))
+        return v
+    }
+
+    /** Selectable tile: preview on top, label below. */
+    private fun optionTile(preview: View, label: String, selected: Boolean): LinearLayout {
+        val t = LinearLayout(a)
+        t.orientation = LinearLayout.VERTICAL
+        t.gravity = Gravity.CENTER
+        t.setPadding(a.dp(8), a.dp(18), a.dp(8), a.dp(16))
+        t.addView(preview, lp(a.dp(44), a.dp(44)))
+        val l = a.tv(label, 14f, if (selected) C.text else C.textSoft, 1)
+        l.gravity = Gravity.CENTER
+        t.addView(l, lp(WRAP, WRAP, t = a.dp(10)))
+        paintTile(t, selected, false)
+        t.pressFeedback()
+        return t
+    }
+
+    private fun paintTile(t: LinearLayout, selected: Boolean, animate: Boolean) {
+        val label = t.getChildAt(1) as TextView
+        val toFill = if (selected) C.selFill else C.chipFill
+        val toStroke = if (selected) C.primary else C.border
+        val toText = if (selected) C.text else C.textSoft
+        val toW = if (selected) a.dp(2) else a.dp(1)
+        val g = GradientDrawable()
+        g.cornerRadius = a.dp(20).toFloat()
+        t.background = withRipple(g)
+        if (!animate) {
+            g.setColor(toFill)
+            g.setStroke(toW, toStroke)
+            label.setTextColor(toText)
+            return
+        }
+        val fromFill = if (selected) C.chipFill else C.selFill
+        val fromStroke = if (selected) C.border else C.primary
+        val fromText = if (selected) C.textSoft else C.text
+        val fromW = if (selected) a.dp(1) else a.dp(2)
+        val ev = ArgbEvaluator()
+        val an = ValueAnimator.ofFloat(0f, 1f)
+        an.duration = Motion.MED
+        an.addUpdateListener {
+            val f = it.animatedFraction
+            g.setColor(ev.evaluate(f, fromFill, toFill) as Int)
+            var w = (fromW + (toW - fromW) * f).toInt()
+            if (w < 1) w = 1
+            g.setStroke(w, ev.evaluate(f, fromStroke, toStroke) as Int)
+            label.setTextColor(ev.evaluate(f, fromText, toText) as Int)
+        }
+        an.start()
+        if (selected) {
+            t.animate().scaleX(1.05f).scaleY(1.05f).setDuration(Motion.FAST).withEndAction {
+                t.animate().scaleX(1f).scaleY(1f).setDuration(Motion.MED).setInterpolator(Motion.EASE).start()
+            }.start()
+        }
+    }
+
+    /** Two tiles in a row. onPick(i) runs once, after the highlight animation has played. */
+    private fun tileRow(previews: List<View>, labels: List<String>, selected: Int, onPick: (Int) -> Unit): LinearLayout {
+        val row = LinearLayout(a)
+        val tiles = ArrayList<LinearLayout>()
+        var current = selected
+        var busy = false
+        for (i in previews.indices) {
+            val tile = optionTile(previews[i], labels[i], i == selected)
+            tiles.add(tile)
+            tile.setOnClickListener {
+                if (!busy && i != current) {
+                    busy = true
+                    current = i
+                    for (j in tiles.indices) paintTile(tiles[j], j == i, true)
+                    tile.postDelayed({
+                        onPick(i)
+                        busy = false
+                    }, 260)
+                }
+            }
+            row.addView(tile, lp(0, WRAP, r = if (i < previews.size - 1) a.dp(12) else 0, weight = 1f))
+        }
+        return row
+    }
+
     /** One strict-protection option as its own glowing card. */
     private fun glowOption(title: String, sub: String, checked: Boolean, locked: Boolean, onChange: (Boolean) -> Unit): View {
         val glow = GlowBorderDrawable(a.dp(20).toFloat(), a.dp(8).toFloat(), a.dp(2).toFloat())
@@ -803,35 +887,43 @@ class SettingsScreen(private val a: MainActivity) {
         val (sv, col) = a.page()
         col.addView(a.tv(L.t("Settings", "সেটিংস"), 24f, C.text, 1), lp(MATCH, WRAP, b = a.dp(14)))
 
-        // language
+        // language: two tiles
         val lang = a.card()
         lang.addView(a.section(L.t("Language", "ভাষা")))
-        val langCtl = SegmentedControl(
-            a,
-            listOf("বাংলা", "English"),
-            if (L.bn) 0 else 1,
-            { i -> Store.settings(a).edit().putString("lang", if (i == 0) "bn" else "en").apply() },
-            { _ ->
+        val bnPrev = a.tv("বা", 22f, C.primary, 1)
+        bnPrev.gravity = Gravity.CENTER
+        bnPrev.background = rounded(C.card2, a.dp(14).toFloat())
+        val enPrev = a.tv("En", 22f, C.primary, 1)
+        enPrev.gravity = Gravity.CENTER
+        enPrev.background = rounded(C.card2, a.dp(14).toFloat())
+        lang.addView(
+            tileRow(listOf(bnPrev, enPrev), listOf("বাংলা", "English"), if (L.bn) 0 else 1) { i ->
+                Store.settings(a).edit().putString("lang", if (i == 0) "bn" else "en").apply()
                 a.crossfade {
                     L.load(a)
                     Store.kickService(a)
                 }
-            }
+            },
+            lp(MATCH, WRAP, t = a.dp(12))
         )
-        lang.addView(langCtl, lp(MATCH, WRAP, t = a.dp(12)))
         col.addView(lang, lp(MATCH, WRAP, b = a.dp(12)))
 
-        // theme
+        // theme: two tiles
         val theme = a.card()
         theme.addView(a.section(L.t("Theme", "থিম")))
-        val themeCtl = SegmentedControl(
-            a,
-            listOf(L.t("Emerald Dark", "এমারেল্ড ডার্ক"), L.t("AMOLED Black", "অ্যামোলেড ব্ল্যাক")),
-            Store.settings(a).getInt("theme", 0),
-            { i -> Store.settings(a).edit().putInt("theme", i).apply() },
-            { _ -> a.crossfade { C.load(a) } }
+        val emeraldPrev = swatch(Color.parseColor("#0A1510"), C.primary)
+        val amoledPrev = swatch(Color.BLACK, Color.parseColor("#4A6A5B"))
+        theme.addView(
+            tileRow(
+                listOf(emeraldPrev, amoledPrev),
+                listOf(L.t("Emerald Dark", "এমারেল্ড ডার্ক"), L.t("AMOLED Black", "অ্যামোলেড ব্ল্যাক")),
+                Store.settings(a).getInt("theme", 0)
+            ) { i ->
+                Store.settings(a).edit().putInt("theme", i).apply()
+                a.crossfade { C.load(a) }
+            },
+            lp(MATCH, WRAP, t = a.dp(12))
         )
-        theme.addView(themeCtl, lp(MATCH, WRAP, t = a.dp(12)))
         col.addView(theme, lp(MATCH, WRAP, b = a.dp(12)))
 
         // strict protection
