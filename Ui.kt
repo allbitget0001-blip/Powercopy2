@@ -1,5 +1,7 @@
 package com.example.powerlocks
 
+import android.graphics.PixelFormat
+import android.graphics.ColorFilter
 import android.animation.ArgbEvaluator
 import android.animation.ValueAnimator
 import android.app.AlertDialog
@@ -756,4 +758,61 @@ class SegmentedControl(
         views[i].animate().scaleX(1.04f).scaleY(1.04f).setDuration(Motion.MED).start()
         views[old].animate().scaleX(1f).scaleY(1f).setDuration(Motion.MED).start()
     }
+}
+
+// =====================================================================
+// GLOW CARD BORDER
+// =====================================================================
+
+/** Neon-style card border: milk-white core with a soft green glow that grows when switched on. */
+class GlowBorderDrawable(
+    private val radius: Float,
+    private val inset: Float,
+    private val coreW: Float
+) : Drawable() {
+    var level = 0f
+        set(v) {
+            field = v
+            invalidateSelf()
+        }
+    var pulse = 1f
+        set(v) {
+            field = v
+            invalidateSelf()
+        }
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val stroke = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val rect = RectF()
+    private val evaluator = ArgbEvaluator()
+    private val milk = Color.parseColor("#F6F3EA")
+
+    init {
+        stroke.style = Paint.Style.STROKE
+    }
+
+    override fun draw(canvas: Canvas) {
+        val b = bounds
+        rect.set(b.left + inset, b.top + inset, b.right - inset, b.bottom - inset)
+        fill.color = C.card
+        canvas.drawRoundRect(rect, radius, radius, fill)
+        fill.color = tint(C.primary, (26f * level).toInt())
+        canvas.drawRoundRect(rect, radius, radius, fill)
+
+        val g = level * pulse
+        for (i in 4 downTo 1) {
+            stroke.strokeWidth = coreW + 1.6f * inset * i / 4f
+            stroke.color = tint(C.primary, (g * 80f * (5 - i) / 4f).toInt())
+            canvas.drawRoundRect(rect, radius, radius, stroke)
+        }
+        stroke.strokeWidth = coreW
+        stroke.color = evaluator.evaluate(level, C.border, milk) as Int
+        canvas.drawRoundRect(rect, radius, radius, stroke)
+    }
+
+    override fun setAlpha(alpha: Int) {}
+
+    override fun setColorFilter(colorFilter: ColorFilter?) {}
+
+    @Suppress("OVERRIDE_DEPRECATION")
+    override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
 }

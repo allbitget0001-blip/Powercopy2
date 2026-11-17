@@ -53,8 +53,8 @@ class HomeScreen(private val a: MainActivity) {
         header.gravity = Gravity.CENTER_VERTICAL
         val tile = LinearLayout(a)
         tile.gravity = Gravity.CENTER
-        tile.background = rounded(Color.parseColor("#14392A"), a.dp(16).toFloat())
-        tile.addView(IconView(a, Ic.SHIELD, C.primary), lp(a.dp(30), a.dp(30)))
+        tile.background = rounded(Color.parseColor("#F6F3EA"), a.dp(16).toFloat())
+        tile.addView(IconView(a, Ic.SHIELD, Color.parseColor("#1E9E68")), lp(a.dp(30), a.dp(30)))
         header.addView(tile, lp(a.dp(52), a.dp(52)))
         val names = LinearLayout(a)
         names.orientation = LinearLayout.VERTICAL
@@ -433,12 +433,14 @@ class HomeScreen(private val a: MainActivity) {
         box.orientation = LinearLayout.VERTICAL
         box.setPadding(a.dp(24), a.dp(8), a.dp(24), 0)
         val r = LinearLayout(a)
-        val h = a.edit(L.t("Hours", "ঘণ্টা"), true)
-        val m = a.edit(L.t("Minutes", "মিনিট"), true)
-        r.addView(h, lp(0, WRAP, r = a.dp(8), weight = 1f))
-        r.addView(m, lp(0, WRAP, weight = 1f))
+        val dEt = a.edit(L.t("Days", "দিন"), true)
+        val hEt = a.edit(L.t("Hours", "ঘণ্টা"), true)
+        val mEt = a.edit(L.t("Minutes", "মিনিট"), true)
+        r.addView(dEt, lp(0, WRAP, r = a.dp(8), weight = 1f))
+        r.addView(hEt, lp(0, WRAP, r = a.dp(8), weight = 1f))
+        r.addView(mEt, lp(0, WRAP, weight = 1f))
         box.addView(r)
-        box.addView(a.tv(L.t("Maximum 24 hours", "সর্বোচ্চ ২৪ ঘণ্টা"), 12f, C.muted), lp(WRAP, WRAP, t = a.dp(8)))
+        box.addView(a.tv(L.t("Maximum 15 days", "সর্বোচ্চ ১৫ দিন"), 12f, C.muted), lp(WRAP, WRAP, t = a.dp(8)))
         val d = a.dlg()
             .setTitle(L.t("Custom duration", "কাস্টম সময়"))
             .setView(box)
@@ -447,11 +449,13 @@ class HomeScreen(private val a: MainActivity) {
             .create()
         d.show()
         d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-            val total = (h.text.toString().toIntOrNull() ?: 0) * 60 + (m.text.toString().toIntOrNull() ?: 0)
-            if (total < 1 || total > 1440) {
-                m.error = L.t("1 minute to 24 hours", "১ মিনিট থেকে ২৪ ঘণ্টা")
+            val total = (dEt.text.toString().toLongOrNull() ?: 0L) * 1440L +
+                    (hEt.text.toString().toLongOrNull() ?: 0L) * 60L +
+                    (mEt.text.toString().toLongOrNull() ?: 0L)
+            if (total < 1L || total > MAX_MIN.toLong()) {
+                mEt.error = L.t("1 minute to 15 days", "১ মিনিট থেকে ১৫ দিন")
             } else {
-                a.selectedMin = total
+                a.selectedMin = total.toInt()
                 d.dismiss()
                 refreshChips(true)
                 tick()
@@ -737,6 +741,56 @@ class StatsScreen(private val a: MainActivity) {
 // =====================================================================
 class SettingsScreen(private val a: MainActivity) {
 
+    /** One strict-protection option as its own glowing card. */
+    private fun glowOption(title: String, sub: String, checked: Boolean, locked: Boolean, onChange: (Boolean) -> Unit): View {
+        val glow = GlowBorderDrawable(a.dp(20).toFloat(), a.dp(8).toFloat(), a.dp(2).toFloat())
+        glow.level = if (checked) 1f else 0f
+        val box = LinearLayout(a)
+        box.gravity = Gravity.CENTER_VERTICAL
+        box.background = glow
+        box.setPadding(a.dp(22), a.dp(20), a.dp(22), a.dp(20))
+        val texts = LinearLayout(a)
+        texts.orientation = LinearLayout.VERTICAL
+        texts.addView(a.tv(title, 16f, C.text, 1))
+        texts.addView(a.tv(sub, 12f, C.muted), lp(MATCH, WRAP, t = a.dp(4)))
+        box.addView(texts, lp(0, WRAP, r = a.dp(12), weight = 1f))
+
+        var pulser: ValueAnimator? = null
+        fun stopPulse() {
+            pulser?.cancel()
+            pulser = null
+            glow.pulse = 1f
+        }
+        fun startPulse() {
+            pulser?.cancel()
+            val p = ValueAnimator.ofFloat(0.55f, 1f)
+            p.duration = 1100
+            p.repeatMode = ValueAnimator.REVERSE
+            p.repeatCount = ValueAnimator.INFINITE
+            p.addUpdateListener { glow.pulse = it.animatedValue as Float }
+            p.start()
+            pulser = p
+        }
+        val sw = a.toggle(checked) { v ->
+            onChange(v)
+            val la = ValueAnimator.ofFloat(glow.level, if (v) 1f else 0f)
+            la.duration = 300
+            la.addUpdateListener { glow.level = it.animatedValue as Float }
+            la.start()
+            if (v) startPulse() else stopPulse()
+        }
+        if (locked) sw.isEnabled = false
+        box.addView(sw)
+        if (checked) startPulse()
+        box.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) {}
+            override fun onViewDetachedFromWindow(v: View) {
+                pulser?.cancel()
+            }
+        })
+        return box
+    }
+
     private fun launch(intent: Intent) {
         try {
             a.startActivity(intent)
@@ -785,29 +839,27 @@ class SettingsScreen(private val a: MainActivity) {
         strictCard.addView(a.section(L.t("Strict protection", "কঠোর সুরক্ষা")))
         val locked = Store.isActive(a)
         val prefs = Store.settings(a)
-        val sw1 = a.toggle(prefs.getBoolean("strict", false)) { v -> prefs.edit().putBoolean("strict", v).apply() }
-        val sw2 = a.toggle(prefs.getBoolean("guard", true)) { v -> prefs.edit().putBoolean("guard", v).apply() }
-        if (locked) {
-            sw1.isEnabled = false
-            sw2.isEnabled = false
-        }
         strictCard.addView(
-            a.row(
+            glowOption(
                 L.t("Strict mode", "স্ট্রিক্ট মোড"),
                 L.t("No early stop. Locked until the timer ends.", "আগে বন্ধ করা যাবে না। সময় শেষ না হওয়া পর্যন্ত লক।"),
-                sw1
-            )
+                prefs.getBoolean("strict", false),
+                locked
+            ) { v -> prefs.edit().putBoolean("strict", v).apply() },
+            lp(MATCH, WRAP, t = a.dp(8))
         )
         strictCard.addView(
-            a.row(
+            glowOption(
                 L.t("Protect app settings", "অ্যাপ সেটিংস সুরক্ষা"),
                 L.t("Block App info and Accessibility pages while the timer runs.", "টাইমার চলাকালীন App info ও Accessibility পাতা খোলা যাবে না।"),
-                sw2
-            )
+                prefs.getBoolean("guard", true),
+                locked
+            ) { v -> prefs.edit().putBoolean("guard", v).apply() },
+            lp(MATCH, WRAP, t = a.dp(2))
         )
         val note = if (locked) L.t("Locked while a session is active.", "সেশন চলাকালীন বদলানো যাবে না।")
         else L.t("Changes apply from the next session.", "পরিবর্তন পরের সেশন থেকে কার্যকর হবে।")
-        strictCard.addView(a.tv(note, 12f, if (locked) C.warn else C.muted), lp(MATCH, WRAP, t = a.dp(6)))
+        strictCard.addView(a.tv(note, 12f, if (locked) C.warn else C.muted), lp(MATCH, WRAP, t = a.dp(8)))
         col.addView(strictCard, lp(MATCH, WRAP, b = a.dp(12)))
 
         // general

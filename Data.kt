@@ -17,6 +17,9 @@ import java.util.Locale
 const val APP_VERSION = "2.0 Premium"
 const val TAG = "PowerLock"
 
+/** Longest allowed session: 15 days, in minutes. */
+const val MAX_MIN = 15 * 24 * 60
+
 /** Language helper: every visible text is written as (English, Bangla). */
 object L {
     @Volatile
@@ -89,12 +92,24 @@ fun fmtDur(ms: Long): String {
     if (ms <= 0L) return L.num(L.t("0m", "0 মিনিট"))
     val totalMin = ms / 60000
     if (totalMin == 0L) return L.t("<1m", "১ মিনিটের কম")
-    val h = totalMin / 60
+    val days = totalMin / 1440
+    val h = (totalMin % 1440) / 60
     val m = totalMin % 60
-    val s = if (h > 0 && m > 0) L.t("${h}h ${m}m", "$h ঘণ্টা $m মিনিট")
-    else if (h > 0) L.t("${h}h", "$h ঘণ্টা")
-    else L.t("${m}m", "$m মিনিট")
-    return L.num(s)
+    val en = StringBuilder()
+    val bnb = StringBuilder()
+    if (days > 0) {
+        en.append("${days}d ")
+        bnb.append("$days দিন ")
+    }
+    if (h > 0) {
+        en.append("${h}h ")
+        bnb.append("$h ঘণ্টা ")
+    }
+    if (m > 0) {
+        en.append("${m}m ")
+        bnb.append("$m মিনিট ")
+    }
+    return L.num(L.t(en.toString().trim(), bnb.toString().trim()))
 }
 
 fun fmtDate(ms: Long): String {

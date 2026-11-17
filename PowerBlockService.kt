@@ -1,5 +1,6 @@
 package com.example.powerlocks
 
+import android.widget.TextView
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.content.SharedPreferences
@@ -34,6 +35,8 @@ class PowerBlockService : AccessibilityService() {
     private var lastMenuScan = 0L
     private var lastGuardScan = 0L
     private var overlay: View? = null
+    private var overlaySub: TextView? = null
+    private var overlayAttached = false
 
     @Volatile
     private var active = false
@@ -58,6 +61,7 @@ class PowerBlockService : AccessibilityService() {
             L.load(this)
             readState()
             Store.lock(this).registerOnSharedPreferenceChangeListener(prefsListener)
+            ensureOverlay() // pre-build the shield so it can appear instantly
             Store.kickService(this)
             Scheduler.onAlarm(this)
         } catch (e: Exception) {
@@ -99,7 +103,7 @@ class PowerBlockService : AccessibilityService() {
         // 2) content scan; content-change events are throttled
         if (e.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
             val now = SystemClock.uptimeMillis()
-            if (now - lastMenuScan < 250) return
+            if (now - lastMenuScan < 60) return
             lastMenuScan = now
         }
         if (hasPowerMenu(e.source) || anyWindowHasPowerMenu()) block()
@@ -108,7 +112,7 @@ class PowerBlockService : AccessibilityService() {
     private fun onGuarded(e: AccessibilityEvent) {
         val now = SystemClock.uptimeMillis()
         if (e.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
-            if (now - lastGuardScan < 250) return
+            if (now - lastGuardScan < 120) return
             lastGuardScan = now
         }
         val root = rootInActiveWindow ?: return
@@ -161,39 +165,45 @@ class PowerBlockService : AccessibilityService() {
 
     private fun block() {
         val now = SystemClock.uptimeMillis()
-        if (now - lastAction >= 150) {
+        if (now - lastAction >= 120) {
             lastAction = now
             performGlobalAction(GLOBAL_ACTION_BACK) // first, with no delay
             handler.removeCallbacks(backAgain)
             handler.removeCallbacks(goHome)
-            handler.postDelayed(backAgain, 140)
-            handler.postDelayed(goHome, 320) // end on the Home screen
+            handler.postDelayed(backAgain, 90)
+            handler.postDelayed(goHome, 220) // end on the Home screen
         }
         showOverlay()
     }
 
-    private fun buildOverlay(): View {
+    private fun ensureOverlay(): View {
+        val existing = overlay
+        if (existing != null) return existing
         val root = LinearLayout(this)
         root.orientation = LinearLayout.VERTICAL
         root.gravity = Gravity.CENTER
-        root.setBackgroundColor(Color.argb(242, 8, 16, 12))
+        root.setBackgroundColor(Color.argb(245, 8, 16, 12))
         root.isClickable = true
         root.addView(IconView(this, Ic.SHIELD, C.primary), lp(dp(84), dp(84)))
         val title = tv(L.t("PowerLock is active", "PowerLock সক্রিয়"), 24f, C.text, 1)
         title.gravity = Gravity.CENTER
         root.addView(title, lp(WRAP, WRAP, t = dp(16)))
-        val at = fmtClock(endAt)
-        val sub = tv(L.t("Power menu is blocked until $at", "$at পর্যন্ত পাওয়ার মেনু ব্লক করা আছে"), 15f, C.muted)
+        val sub = tv("", 15f, C.muted)
         sub.gravity = Gravity.CENTER
         root.addView(sub, lp(WRAP, WRAP, t = dp(8)))
+        overlay = root
+        overlaySub = sub
         return root
     }
 
     private fun showOverlay() {
         handler.removeCallbacks(hideTask)
-        handler.postDelayed(hideTask, 1500)
-        if (overlay != null) return // never more than one shield
+        handler.postDelayed(hideTask, 1400)
+        if (overlayAttached) return // never more than one shield
         try {
+            val v = ensureOverlay()
+            val at = fmtClock(endAt)
+            overlaySub?.text = L.t("Power menu is blocked until $at", "$at পর্যন্ত পাওয়ার মেনু ব্লক করা আছে")
             val wm = getSystemService(WINDOW_SERVICE) as WindowManager
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -205,19 +215,19 @@ class PowerBlockService : AccessibilityService() {
                         WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED,
                 PixelFormat.TRANSLUCENT
             )
-            val v = buildOverlay()
             wm.addView(v, params)
-            overlay = v
+            overlayAttached = true
         } catch (ex: Exception) {
             Log.e(TAG, "showOverlay failed", ex)
-            overlay = null
+            overlayAttached = false
         }
     }
 
     private fun hideOverlay() {
-        val v = overlay ?: return
-        overlay = null
+        if (!overlayAttached) return
+        overlayAttached = false
         try {
+            val v = overlay ?: return
             val wm = getSystemService(WINDOW_SERVICE) as WindowManager
             wm.removeViewImmediate(v)
         } catch (ex: Exception) {
