@@ -1,5 +1,6 @@
 package com.example.powerlocks
 
+import android.animation.ArgbEvaluator
 import android.animation.ValueAnimator
 import android.app.AlertDialog
 import android.content.Context
@@ -18,9 +19,13 @@ import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.text.InputType
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.Interpolator
+import android.view.animation.PathInterpolator
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Switch
@@ -29,14 +34,14 @@ import android.widget.TextView
 const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
 const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
-/** Emerald Dark palette. */
+/** Theme palette: Emerald Dark (default) and AMOLED Black. */
 object C {
-    var bg = Color.parseColor("#0A120E")
-    var card = Color.parseColor("#10231A")
-    var card2 = Color.parseColor("#17301F")
-    var chipFill = Color.parseColor("#12231B")
-    val border = Color.parseColor("#1F4A38")
-    val selFill = Color.parseColor("#17694B")
+    var bg = Color.parseColor("#0A1510")
+    var card = Color.parseColor("#10261B")
+    var card2 = Color.parseColor("#183626")
+    var chipFill = Color.parseColor("#12271D")
+    var border = Color.parseColor("#1F4A38")
+    var selFill = Color.parseColor("#17694B")
     val primary = Color.parseColor("#1FCB85")
     val mint = Color.parseColor("#A8F0D1")
     val text = Color.parseColor("#F2FBF6")
@@ -50,14 +55,18 @@ object C {
         val amoled = Store.settings(ctx).getInt("theme", 0) == 1
         if (amoled) {
             bg = Color.BLACK
-            card = Color.parseColor("#0C1812")
-            card2 = Color.parseColor("#132A1D")
-            chipFill = Color.parseColor("#0E1B14")
+            card = Color.parseColor("#09100C")
+            card2 = Color.parseColor("#111C16")
+            chipFill = Color.parseColor("#0A120E")
+            border = Color.parseColor("#143025")
+            selFill = Color.parseColor("#0F4A35")
         } else {
-            bg = Color.parseColor("#0A120E")
-            card = Color.parseColor("#10231A")
-            card2 = Color.parseColor("#17301F")
-            chipFill = Color.parseColor("#12231B")
+            bg = Color.parseColor("#0A1510")
+            card = Color.parseColor("#10261B")
+            card2 = Color.parseColor("#183626")
+            chipFill = Color.parseColor("#12271D")
+            border = Color.parseColor("#1F4A38")
+            selFill = Color.parseColor("#17694B")
         }
     }
 }
@@ -80,7 +89,7 @@ fun rounded(color: Int, radius: Float, strokeColor: Int = 0, strokeWidth: Int = 
     return d
 }
 
-fun withRipple(bg: Drawable): Drawable = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), bg, null)
+fun withRipple(bg: Drawable): Drawable = RippleDrawable(ColorStateList.valueOf(tint(C.primary, 46)), bg, null)
 
 /** style: 0 regular, 1 medium, 2 light */
 fun Context.tv(t: String, size: Float = 14f, color: Int = C.text, style: Int = 0): TextView {
@@ -116,6 +125,7 @@ fun Context.primaryBtn(label: String): TextView {
     val g = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(C.primary, C.mint))
     g.cornerRadius = dp(16).toFloat()
     v.background = withRipple(g)
+    v.pressFeedback()
     return v
 }
 
@@ -123,10 +133,12 @@ fun Context.outlineBtn(label: String, color: Int): TextView {
     val v = tv(label, 15f, color, 1)
     v.gravity = Gravity.CENTER
     v.background = withRipple(rounded(Color.TRANSPARENT, dp(16).toFloat(), color, dp(1)))
+    v.pressFeedback()
     return v
 }
 
 fun Context.styleChip(v: TextView, selected: Boolean) {
+    v.tag = selected
     v.setTextColor(if (selected) C.text else C.textSoft)
     v.background = withRipple(
         rounded(
@@ -143,6 +155,7 @@ fun Context.chip(label: String, selected: Boolean): TextView {
     v.gravity = Gravity.CENTER
     v.setPadding(dp(6), dp(14), dp(6), dp(14))
     styleChip(v, selected)
+    v.pressFeedback()
     return v
 }
 
@@ -158,16 +171,14 @@ fun Context.bigButton(kind: Ic, label: String, fill: Int, fg: Int, stroke: Int =
     t.letterSpacing = 0.04f
     b.addView(t)
     b.isClickable = true
+    b.pressFeedback()
     return b
 }
 
-fun Context.toggle(checked: Boolean, onChange: (Boolean) -> Unit): Switch {
-    val s = Switch(this)
-    s.isChecked = checked
-    val states = arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf())
-    s.thumbTintList = ColorStateList(states, intArrayOf(C.primary, Color.parseColor("#6B7F74")))
-    s.trackTintList = ColorStateList(states, intArrayOf(Color.parseColor("#2E6B50"), Color.parseColor("#2A3A32")))
-    s.setOnCheckedChangeListener { _, v -> onChange(v) }
+fun Context.toggle(checked: Boolean, onChange: (Boolean) -> Unit): PremiumSwitch {
+    val s = PremiumSwitch(this)
+    s.setCheckedImmediate(checked)
+    s.onChange = onChange
     return s
 }
 
@@ -343,6 +354,10 @@ class RingView(ctx: Context) : View(ctx) {
     private val tMain = Paint(Paint.ANTI_ALIAS_FLAG)
     private val tSub = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rect = RectF()
+    private val tfLight = Typeface.create("sans-serif-light", Typeface.NORMAL)
+    private val tfMedium = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+    private var breath = 0f
+    private var breathAnim: ValueAnimator? = null
 
     init {
         track.style = Paint.Style.STROKE
@@ -353,6 +368,40 @@ class RingView(ctx: Context) : View(ctx) {
         tMain.textAlign = Paint.Align.CENTER
         tSub.textAlign = Paint.Align.CENTER
         tSub.typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+    }
+
+    private fun startBreath() {
+        if (breathAnim != null) return
+        val an = ValueAnimator.ofFloat(0f, 1f)
+        an.duration = 2600
+        an.repeatCount = ValueAnimator.INFINITE
+        an.repeatMode = ValueAnimator.REVERSE
+        an.addUpdateListener {
+            breath = it.animatedValue as Float
+            if (!active) invalidate()
+        }
+        an.start()
+        breathAnim = an
+    }
+
+    private fun stopBreath() {
+        breathAnim?.cancel()
+        breathAnim = null
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        if (windowVisibility == VISIBLE) startBreath()
+    }
+
+    override fun onDetachedFromWindow() {
+        stopBreath()
+        super.onDetachedFromWindow()
+    }
+
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        if (visibility == VISIBLE) startBreath() else stopBreath()
     }
 
     override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
@@ -408,15 +457,16 @@ class RingView(ctx: Context) : View(ctx) {
         }
 
         iconPaint.color = C.primary
-        Icons.draw(canvas, icon, cx, cy - w * 0.20f, w * 0.21f, iconPaint)
+        val breathScale = if (active) 1f else 1f + 0.045f * breath
+        Icons.draw(canvas, icon, cx, cy - w * 0.20f, w * 0.21f * breathScale, iconPaint)
 
         tMain.color = mainColor
         if (active) {
-            tMain.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+            tMain.typeface = tfLight
             tMain.textSize = w * 0.135f
             canvas.drawText(main, cx, cy + w * 0.10f, tMain)
         } else {
-            tMain.typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            tMain.typeface = tfMedium
             tMain.textSize = w * 0.20f
             canvas.drawText(main, cx, cy + w * 0.15f, tMain)
         }
@@ -473,3 +523,237 @@ class BarChartView(ctx: Context) : View(ctx) {
     }
 }
 
+
+
+// =====================================================================
+// MOTION TOOLKIT (consistent timing and easing)
+// =====================================================================
+
+object Motion {
+    const val FAST = 140L
+    const val MED = 260L
+    const val SLOW = 340L
+    val EASE: Interpolator = PathInterpolator(0.2f, 0f, 0f, 1f)
+}
+
+/** Subtle press feedback: scales down slightly while pressed. Click handling is not affected. */
+fun View.pressFeedback() {
+    setOnTouchListener { v, ev ->
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN ->
+                v.animate().scaleX(0.96f).scaleY(0.96f).setDuration(90).start()
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                v.animate().scaleX(1f).scaleY(1f).setDuration(Motion.FAST).setInterpolator(Motion.EASE).start()
+        }
+        false
+    }
+}
+
+/** Fades the old text out and the new text in. */
+fun TextView.setTextAnimated(t: String) {
+    if (text.toString() == t) return
+    if (tag == t) return
+    tag = t
+    if (text.isEmpty() || !isAttachedToWindow) {
+        text = t
+        return
+    }
+    animate().cancel()
+    animate().alpha(0f).setDuration(Motion.FAST / 2).withEndAction {
+        text = t
+        animate().alpha(1f).setDuration(Motion.FAST).start()
+    }.start()
+}
+
+/** Page entrance: children of a page column rise and fade in one after another. */
+fun Context.staggerIn(vg: ViewGroup) {
+    val n = Math.min(vg.childCount, 9)
+    for (i in 0 until n) {
+        val c = vg.getChildAt(i)
+        c.alpha = 0f
+        c.translationY = dp(14).toFloat()
+        c.animate()
+            .alpha(1f)
+            .translationY(0f)
+            .setStartDelay(i * 40L)
+            .setDuration(Motion.SLOW)
+            .setInterpolator(Motion.EASE)
+            .start()
+    }
+}
+
+/** Animated selected / unselected change for a chip (colour blend + small pop). */
+fun Context.animateChip(v: TextView, selected: Boolean) {
+    val from = (v.tag as? Boolean) ?: !selected
+    if (from == selected) {
+        styleChip(v, selected)
+        return
+    }
+    v.tag = selected
+    val g = GradientDrawable()
+    g.cornerRadius = dp(18).toFloat()
+    v.background = withRipple(g)
+    val ev = ArgbEvaluator()
+    val fFill = if (from) C.selFill else C.chipFill
+    val tFill = if (selected) C.selFill else C.chipFill
+    val fStroke = if (from) C.primary else C.border
+    val tStroke = if (selected) C.primary else C.border
+    val fText = if (from) C.text else C.textSoft
+    val tText = if (selected) C.text else C.textSoft
+    val fW = if (from) dp(2) else dp(1)
+    val tW = if (selected) dp(2) else dp(1)
+    val an = ValueAnimator.ofFloat(0f, 1f)
+    an.duration = Motion.MED
+    an.addUpdateListener {
+        val t = it.animatedFraction
+        g.setColor(ev.evaluate(t, fFill, tFill) as Int)
+        var w = (fW + (tW - fW) * t).toInt()
+        if (w < 1) w = 1
+        g.setStroke(w, ev.evaluate(t, fStroke, tStroke) as Int)
+        v.setTextColor(ev.evaluate(t, fText, tText) as Int)
+    }
+    an.start()
+    if (selected) {
+        v.animate().scaleX(1.06f).scaleY(1.06f).setDuration(Motion.FAST).withEndAction {
+            v.animate().scaleX(1f).scaleY(1f).setDuration(Motion.MED).setInterpolator(Motion.EASE).start()
+        }.start()
+    }
+}
+
+/** Toggle switch with an animated thumb and colour blend. */
+class PremiumSwitch(ctx: Context) : View(ctx) {
+    var onChange: ((Boolean) -> Unit)? = null
+    private var checked = false
+    private var f = 0f
+    private var anim: ValueAnimator? = null
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val rect = RectF()
+    private val ev = ArgbEvaluator()
+    private val tw = ctx.dp(52)
+    private val th = ctx.dp(30)
+    private val inset = ctx.dp(3).toFloat()
+
+    init {
+        isClickable = true
+        setOnClickListener { setChecked(!checked) }
+    }
+
+    fun setCheckedImmediate(v: Boolean) {
+        checked = v
+        f = if (v) 1f else 0f
+        invalidate()
+    }
+
+    private fun setChecked(v: Boolean) {
+        if (checked == v) return
+        checked = v
+        anim?.cancel()
+        val an = ValueAnimator.ofFloat(f, if (v) 1f else 0f)
+        an.duration = Motion.MED
+        an.interpolator = Motion.EASE
+        an.addUpdateListener {
+            f = it.animatedValue as Float
+            invalidate()
+        }
+        an.start()
+        anim = an
+        onChange?.invoke(v)
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        setMeasuredDimension(tw, th)
+    }
+
+    override fun setEnabled(enabled: Boolean) {
+        super.setEnabled(enabled)
+        alpha = if (enabled) 1f else 0.4f
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        var t = f
+        if (t < 0f) t = 0f
+        if (t > 1f) t = 1f
+        paint.color = ev.evaluate(t, C.card2, C.selFill) as Int
+        rect.set(0f, 0f, tw.toFloat(), th.toFloat())
+        canvas.drawRoundRect(rect, th / 2f, th / 2f, paint)
+        val r = th / 2f - inset
+        val cx = (th / 2f) + (tw - th) * t
+        paint.color = ev.evaluate(t, C.muted, C.primary) as Int
+        canvas.drawCircle(cx, th / 2f, r, paint)
+    }
+}
+
+/** Two-or-more option selector with a thumb that slides between the options. */
+class SegmentedControl(
+    ctx: Context,
+    labels: List<String>,
+    private var index: Int,
+    private val onPick: (Int) -> Unit,
+    private val onDone: (Int) -> Unit
+) : FrameLayout(ctx) {
+    private val n = labels.size
+    private val pad = ctx.dp(4)
+    private val thumb = View(ctx)
+    private val views = ArrayList<TextView>()
+    private var thumbW = 0
+    private val ev = ArgbEvaluator()
+
+    init {
+        background = rounded(C.chipFill, ctx.dp(18).toFloat(), C.border, ctx.dp(1))
+        thumb.background = rounded(C.selFill, ctx.dp(14).toFloat(), C.primary, ctx.dp(1))
+        addView(thumb, FrameLayout.LayoutParams(0, 0))
+        val row = LinearLayout(ctx)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.setPadding(pad, pad, pad, pad)
+        for ((i, l) in labels.withIndex()) {
+            val t = ctx.tv(l, 15f, if (i == index) C.text else C.muted, 1)
+            t.gravity = Gravity.CENTER
+            t.setPadding(0, ctx.dp(13), 0, ctx.dp(13))
+            val s = if (i == index) 1.04f else 1f
+            t.scaleX = s
+            t.scaleY = s
+            t.setOnClickListener { select(i) }
+            views.add(t)
+            row.addView(t, lp(0, WRAP, weight = 1f))
+        }
+        addView(row, FrameLayout.LayoutParams(MATCH, WRAP))
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
+        super.onSizeChanged(w, h, ow, oh)
+        if (n == 0) return
+        thumbW = (w - 2 * pad) / n
+        val p = FrameLayout.LayoutParams(thumbW, h - 2 * pad)
+        p.leftMargin = pad
+        p.topMargin = pad
+        thumb.layoutParams = p
+        thumb.translationX = index * thumbW.toFloat()
+    }
+
+    private fun select(i: Int) {
+        if (i == index) return
+        val old = index
+        index = i
+        onPick(i)
+        thumb.scaleX = 0.94f
+        thumb.scaleY = 0.94f
+        thumb.animate()
+            .translationX(i * thumbW.toFloat())
+            .scaleX(1f)
+            .scaleY(1f)
+            .setDuration(Motion.MED + 40)
+            .setInterpolator(Motion.EASE)
+            .withEndAction { onDone(i) }
+            .start()
+        val an = ValueAnimator.ofFloat(0f, 1f)
+        an.duration = Motion.MED
+        an.addUpdateListener {
+            val t = it.animatedFraction
+            views[i].setTextColor(ev.evaluate(t, C.muted, C.text) as Int)
+            views[old].setTextColor(ev.evaluate(t, C.text, C.muted) as Int)
+        }
+        an.start()
+        views[i].animate().scaleX(1.04f).scaleY(1.04f).setDuration(Motion.MED).start()
+        views[old].animate().scaleX(1f).scaleY(1f).setDuration(Motion.MED).start()
+    }
+}
