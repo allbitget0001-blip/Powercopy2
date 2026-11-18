@@ -156,6 +156,16 @@ object Perm {
             false
         }
     }
+
+    fun locationOn(ctx: Context): Boolean {
+        return ctx.checkSelfPermission("android.permission.ACCESS_FINE_LOCATION") == PackageManager.PERMISSION_GRANTED ||
+                ctx.checkSelfPermission("android.permission.ACCESS_COARSE_LOCATION") == PackageManager.PERMISSION_GRANTED
+    }
+
+    fun backgroundLocationOn(ctx: Context): Boolean {
+        if (Build.VERSION.SDK_INT < 29) return true
+        return ctx.checkSelfPermission("android.permission.ACCESS_BACKGROUND_LOCATION") == PackageManager.PERMISSION_GRANTED
+    }
 }
 
 // ---------- persistent storage ----------
