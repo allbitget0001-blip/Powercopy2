@@ -13,6 +13,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.graphics.Color
+import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -120,6 +121,18 @@ class KeepAliveService : Service() {
         }
     }
 
+    /** MIUI / HyperOS hint: use the PowerLock logo as the notification's app icon (ignored by other phones). */
+    private fun addLogoExtras(b: Notification.Builder) {
+        try {
+            val bmp = largeIcon ?: return
+            val ex = Bundle()
+            ex.putParcelable("miui.appIcon", Icon.createWithBitmap(bmp))
+            b.addExtras(ex)
+        } catch (e: Exception) {
+            Log.e(TAG, "logo extras failed", e)
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         try {
             L.load(this)
@@ -157,6 +170,7 @@ class KeepAliveService : Service() {
             .setColor(Color.parseColor("#16C784"))
             .setOngoing(true)
             .setContentIntent(openApp())
+        addLogoExtras(b)
 
         if (active) {
             b.setContentTitle(L.t("Protection active", "প্রটেকশন সক্রিয়"))
@@ -182,7 +196,7 @@ class KeepAliveService : Service() {
             }
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             val channel = if (Store.soundVib(this)) "powerlock_done" else "powerlock_done_quiet"
-            val n = Notification.Builder(this, channel)
+            val nb = Notification.Builder(this, channel)
                 .setSmallIcon(smallIcon)
                 .setLargeIcon(largeIcon)
                 .setColor(Color.parseColor("#16C784"))
@@ -190,8 +204,8 @@ class KeepAliveService : Service() {
                 .setContentText(L.t("You can use the power menu now.", "এখন পাওয়ার মেনু ব্যবহার করতে পারবেন।"))
                 .setAutoCancel(true)
                 .setContentIntent(openApp())
-                .build()
-            nm.notify(2, n)
+            addLogoExtras(nb)
+            nm.notify(2, nb.build())
             refresh()
         } catch (e: Exception) {
             Log.e(TAG, "onFinished failed", e)
