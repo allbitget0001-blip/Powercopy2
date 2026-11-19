@@ -22,7 +22,10 @@ class WatchdogWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, param
             val c = applicationContext
             L.load(c)
             if (Store.isActive(c) || Store.isLocProtecting(c)) {
-                Store.kickService(c)
+                // startForegroundService from a background worker throws on Android 12+,
+                // so ask for an alarm-clock restart instead: it needs no permission and
+                // the system lets the alarm start the foreground service when it fires
+                KeepAliveService.restartSoon(c, 1000)
                 PlaceWatcher.checkNow(c)
             }
             Result.success()

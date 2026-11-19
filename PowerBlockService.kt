@@ -67,6 +67,8 @@ class PowerBlockService : AccessibilityService() {
 
     private var lastFocusAction = 0L
 
+    private var lastKeepAliveCheck = 0L // throttles the revive check (once per 30s)
+
     // English + Bengali: the phone's system language decides the menu text.
     private val triggers = listOf(
         "Swipe to power off", "Swipe to restart", "Swipe for SOS",
@@ -142,10 +144,31 @@ class PowerBlockService : AccessibilityService() {
 
     private fun protecting(): Boolean = (active && System.currentTimeMillis() < endAt) || locProtecting
 
+    /**
+     * The system re-binds this service after the process dies, so it is the one
+     * watchdog the system itself brings back: if the keep-alive service has not
+     * written a heartbeat for 90s while protection should be on, bring it back.
+     */
+    private fun maybeReviveKeepAlive() {
+        try {
+            val now = SystemClock.uptimeMillis()
+            if (now - lastKeepAliveCheck < 30_000) return
+            lastKeepAliveCheck = now
+            if (!protecting()) return
+            val hb = Store.lock(this).getLong("kas_heartbeat", 0)
+            if (System.currentTimeMillis() - hb < 90_000) return
+            Store.kickService(this)
+            KeepAliveService.restartSoon(this, 1000)
+        } catch (e: Exception) {
+            Log.e(TAG, "revive keep-alive failed", e)
+        }
+    }
+
     override fun onAccessibilityEvent(e: AccessibilityEvent?) {
         if (e == null) return
         val pkg = e.packageName?.toString() ?: return
         try {
+            maybeReviveKeepAlive() // the system re-binds this service, so it revives the keep-alive service
             if (pkg.contains("systemui")) {
                 // the power menu: even when the flag is not set yet, the location lock may apply
                 onSystemUi(e)

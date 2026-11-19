@@ -12,6 +12,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.os.Build
@@ -26,6 +27,16 @@ class KeepAliveService : Service() {
 
     private val handler = Handler(Looper.getMainLooper())
     private val finishTask = Runnable { onFinished() }
+
+    /** Writes a fresh timestamp every 60s while alive; the accessibility service revives us if it goes stale. */
+    private val heartbeatTask = Runnable {
+        try {
+            Store.lock(this).edit().putLong("kas_heartbeat", System.currentTimeMillis()).apply()
+        } catch (e: Exception) {
+            Log.e(TAG, "heartbeat failed", e)
+        }
+        handler.postDelayed(heartbeatTask, 60_000)
+    }
 
     private val smallIcon: Icon by lazy { buildStatusIcon() }
     private val largeIcon: Bitmap? by lazy { buildLogo() }
@@ -149,6 +160,8 @@ class KeepAliveService : Service() {
                 NotificationChannel("powerlock_done_quiet", "Session finished (quiet)", NotificationManager.IMPORTANCE_LOW)
             )
             refresh()
+            handler.removeCallbacks(heartbeatTask)
+            handler.post(heartbeatTask) // fresh heartbeat every 60s so the accessibility service can tell we are alive
             // location lock no longer uses sessions: end any old location session, the flag takes over
             if (Store.isLocationSession(this)) Store.stopSession(this, force = true)
             PlaceWatcher.sync(this) // resume location watching after a restart/reboot
@@ -223,7 +236,7 @@ class KeepAliveService : Service() {
         try {
             // swiped away from Recents: restart so the lock keeps working
             try {
-                startService(Intent(this, KeepAliveService::class.java))
+                startForegroundService(Intent(this, KeepAliveService::class.java))
             } catch (e: Exception) {
                 Log.e(TAG, "onTaskRemoved start failed", e)
             }
@@ -235,9 +248,11 @@ class KeepAliveService : Service() {
     }
 
     /**
-     * Exact-alarm restart: on Android 12+ only an exact alarm may start a foreground
-     * service from the background, so an inexact alarm is silently dropped here.
-     * Falls back to an inexact alarm when the user revoked exact-alarm permission.
+     * Restart via an alarm-clock alarm: unlike setExactAndAllowWhileIdle it needs NO
+     * "exact alarms" permission, is always exact, and the system lets the alarm start a
+     * foreground service from the background when it fires. This is the restart that
+     * survives a Recents swipe even when the user never granted exact alarms.
+     * Falls back to the exact/inexact alarm when setAlarmClock throws.
      */
     private fun scheduleRestart(delayMs: Long) {
         try {
@@ -248,6 +263,12 @@ class KeepAliveService : Service() {
             )
             val am = getSystemService(ALARM_SERVICE) as AlarmManager
             val at = System.currentTimeMillis() + delayMs
+            try {
+                am.setAlarmClock(AlarmManager.AlarmClockInfo(at, openApp()), pi)
+                return
+            } catch (e: Exception) {
+                Log.e(TAG, "setAlarmClock failed, falling back", e)
+            }
             if (Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()) {
                 am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
             } else {
@@ -258,8 +279,40 @@ class KeepAliveService : Service() {
         }
     }
 
+    companion object {
+        /** Any component (Watchdog, accessibility service, receiver) can ask for a restart. */
+        fun restartSoon(ctx: Context, delayMs: Long) {
+            try {
+                val intent = Intent(ctx, KeepAliveService::class.java)
+                val pi = PendingIntent.getService(
+                    ctx, 0, intent,
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
+                val show = PendingIntent.getActivity(
+                    ctx, 0, Intent(ctx, MainActivity::class.java),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
+                val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+                val at = System.currentTimeMillis() + delayMs
+                try {
+                    am.setAlarmClock(AlarmManager.AlarmClockInfo(at, show), pi)
+                } catch (e: Exception) {
+                    Log.e(TAG, "restartSoon alarm-clock failed", e)
+                    if (Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()) {
+                        am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+                    } else {
+                        am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "restartSoon failed", e)
+            }
+        }
+    }
+
     override fun onDestroy() {
         handler.removeCallbacks(finishTask)
+        handler.removeCallbacks(heartbeatTask)
         try {
             // system stopped the service (e.g. notification dismissed): come back
             scheduleRestart(5000)

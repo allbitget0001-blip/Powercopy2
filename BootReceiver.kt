@@ -12,7 +12,8 @@ class BootReceiver : BroadcastReceiver() {
             L.load(context)
             Scheduler.onAlarm(context)
             Watchdog.enqueue(context) // safety net: restart the service every 15 min if it dies
-            if (Store.isActive(context)) Store.kickService(context)
+            // the location lock has no session, so it must restart the service too
+            if (Store.isActive(context) || Store.isLocProtecting(context)) Store.kickService(context)
         } catch (e: Exception) {
             Log.e(TAG, "BootReceiver failed", e)
         }
