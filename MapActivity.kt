@@ -143,6 +143,7 @@ class MapActivity : Activity() {
                 pendingJs.clear()
                 pushDataJs()
                 pushMeJs()
+                pushRouteJs()
             }
         }
         root.addView(web, lp(MATCH, 0, weight = 1f))
@@ -310,6 +311,7 @@ class MapActivity : Activity() {
         updatePanel()
         pushMeJs()
         pushDataJs()
+        pushRouteJs()
     }
 
     /** Switch the MapLibre style between Positron map and Esri satellite. */
@@ -400,11 +402,21 @@ class MapActivity : Activity() {
         } else {
             addBtn.visibility = View.GONE
             nameTv.text = L.t("Tap the map to add a place, or tap a marker.", "নতুন জায়গা যোগ করতে ম্যাপে চাপ দিন, বা জায়গা দেখতে মার্কারে চাপ দিন।")
-            distTv.text = if (places.isEmpty()) {
+            val base = if (places.isEmpty()) {
                 L.t("No places saved yet.", "এখনো কোনো জায়গা সেভ করা হয়নি।")
             } else {
                 L.num(places.size.toString()) + " " + L.t("place(s) saved", "টি জায়গা সেভ করা আছে")
             }
+            val distM = Store.todayDistanceM(this)
+            val distTxt = if (distM >= 1000f) {
+                val km10 = (distM / 100).toInt()
+                L.num("${km10 / 10}.${km10 % 10}") + " " + L.t("km", "কিমি")
+            } else if (distM > 0f) {
+                L.num(distM.toInt().toString()) + " " + L.t("m", "মি")
+            } else {
+                ""
+            }
+            distTv.text = if (distTxt.isEmpty()) base else base + " · " + L.t("Today's route", "আজকের রুট") + ": " + distTxt
         }
     }
 
@@ -554,6 +566,18 @@ class MapActivity : Activity() {
         eval("setMe(" + me.latitude + "," + me.longitude + ");")
     }
 
+    /** Today's route as [[lat, lng], ...] for the map polyline. */
+    private fun pushRouteJs() {
+        val arr = JSONArray()
+        for (pt in Store.todayRoute(this)) {
+            val pair = JSONArray()
+            pair.put(pt.lat)
+            pair.put(pt.lng)
+            arr.put(pair)
+        }
+        eval("setRoute($arr);")
+    }
+
     private fun pushPendingJs() {
         val la = pendingLat
         val lo = pendingLng
@@ -585,7 +609,7 @@ var SAT_STYLE={version:8,sources:{esri:{type:'raster',tiles:['https://server.arc
 var OSM_STYLE={version:8,sources:{osm:{type:'raster',tiles:['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],tileSize:256,attribution:'© OpenStreetMap contributors'}},layers:[{id:'osm',type:'raster',source:'osm',minzoom:0,maxzoom:19}]};
 var map=null;
 try{ map=new maplibregl.Map({container:'map',style:POSITRON,center:[__LNG__,__LAT__],zoom:15}); }catch(e){ document.getElementById('map').innerHTML='<div style="padding:24px;font-family:sans-serif;color:#333">এই ফোনের WebView-এ WebGL চালু নেই — ম্যাপ দেখা যাবে না।</div>'; }
-var placesData=[],selId=-1,mePos=null,pendingPos=null,pendingRadius=200,curStyle='positron';
+var placesData=[],selId=-1,mePos=null,pendingPos=null,pendingRadius=200,curStyle='positron',routeData=[];
 var placeMarkers=[],meMarker=null,pendingMarker=null,lastPlaceTapMs=0;
 function toRad(d){return d*Math.PI/180;}
 function toDeg(r){return r*180/Math.PI;}
@@ -630,6 +654,7 @@ function renderAll(){
   if(!map||!map.isStyleLoaded()) return;
   ensurePlaceLayers();
   ensurePendingLayer();
+  renderRoute();
   for(var i=0;i<placeMarkers.length;i++) placeMarkers[i].remove();
   placeMarkers=[];
   for(var j=0;j<placesData.length;j++){
@@ -653,6 +678,16 @@ function placeTap(id){lastPlaceTapMs=Date.now();Android.onPlaceTap(id);}
 function setData(json,sid){placesData=json;selId=sid;renderAll();}
 function setMe(lat,lng){mePos=[lat,lng];renderAll();}
 function setPending(lat,lng){pendingPos=[lat,lng];renderAll();}
+function setRoute(coords){routeData=coords||[];renderRoute();}
+function renderRoute(){
+  if(!map||!map.isStyleLoaded()) return;
+  if(routeData.length<2){ if(map.getSource('route-line')) map.getSource('route-line').setData({type:'FeatureCollection',features:[]}); return; }
+  var line={type:'Feature',properties:{},geometry:{type:'LineString',coordinates:routeData.map(function(c){return [c[1],c[0]];})}};
+  if(!map.getSource('route-line')){
+    map.addSource('route-line',{type:'geojson',data:{type:'FeatureCollection',features:[line]}});
+    map.addLayer({id:'route-line',type:'line',source:'route-line',paint:{'line-color':'#10b981','line-width':4,'line-opacity':0.9}});
+  }else map.getSource('route-line').setData({type:'FeatureCollection',features:[line]});
+}
 function updateCircle(id,radius,active){
   for(var i=0;i<placesData.length;i++){if(placesData[i].id===id){placesData[i].r=radius;placesData[i].active=active;}}
   pendingRadius=radius;renderAll();

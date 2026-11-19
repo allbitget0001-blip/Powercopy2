@@ -256,6 +256,122 @@ object Store {
         }
     }
 
+    // ----- today's route + entry/exit history -----
+
+    fun locData(ctx: Context): SharedPreferences = ctx.getSharedPreferences("locdata", Context.MODE_PRIVATE)
+
+    private fun todayKey(): String {
+        val c = Calendar.getInstance()
+        return String.format(Locale.US, "%04d%02d%02d", c.get(Calendar.YEAR), c.get(Calendar.MONTH) + 1, c.get(Calendar.DAY_OF_MONTH))
+    }
+
+    /** Points recorded today (a new day starts an empty route). */
+    fun todayRoute(ctx: Context): List<RoutePoint> {
+        val out = ArrayList<RoutePoint>()
+        try {
+            val p = locData(ctx)
+            if (p.getString("route_day", "") != todayKey()) return out
+            val arr = JSONArray(p.getString("route", "[]"))
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                out.add(RoutePoint(o.getDouble("la"), o.getDouble("lo"), o.getLong("t")))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "route read failed", e)
+        }
+        return out
+    }
+
+    /** Total distance walked/driven today, in metres. */
+    fun todayDistanceM(ctx: Context): Float {
+        var total = 0f
+        val pts = todayRoute(ctx)
+        for (i in 1 until pts.size) {
+            val res = FloatArray(1)
+            android.location.Location.distanceBetween(pts[i - 1].lat, pts[i - 1].lng, pts[i].lat, pts[i].lng, res)
+            total += res[0]
+        }
+        return total
+    }
+
+    /** Record a point (at most one per 20 m / 60 s, max 2000 points a day). */
+    fun addRoutePoint(ctx: Context, lat: Double, lng: Double) {
+        try {
+            val p = locData(ctx)
+            val day = todayKey()
+            val pts = if (p.getString("route_day", "") == day) todayRoute(ctx).toMutableList() else ArrayList()
+            val now = System.currentTimeMillis()
+            val last = pts.lastOrNull()
+            if (last != null) {
+                val res = FloatArray(1)
+                android.location.Location.distanceBetween(last.lat, last.lng, lat, lng, res)
+                if (res[0] < 20f && now - last.t < 60_000L) return
+            }
+            pts.add(RoutePoint(lat, lng, now))
+            while (pts.size > 2000) pts.removeAt(0)
+            val arr = JSONArray()
+            for (pt in pts) {
+                val o = JSONObject()
+                o.put("la", pt.lat)
+                o.put("lo", pt.lng)
+                o.put("t", pt.t)
+                arr.put(o)
+            }
+            p.edit().putString("route_day", day).putString("route", arr.toString()).apply()
+        } catch (e: Exception) {
+            Log.e(TAG, "route save failed", e)
+        }
+    }
+
+    /** Entry/exit events, newest first (max 50). outTime 0 means still inside. */
+    fun placeEvents(ctx: Context): List<PlaceEvent> {
+        val out = ArrayList<PlaceEvent>()
+        try {
+            val arr = JSONArray(locData(ctx).getString("events", "[]"))
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                out.add(PlaceEvent(o.getLong("id"), o.getString("n"), o.getLong("in"), o.optLong("out", 0)))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "events read failed", e)
+        }
+        return out
+    }
+
+    private fun saveEvents(ctx: Context, list: List<PlaceEvent>) {
+        val arr = JSONArray()
+        for (e in list.take(50)) {
+            val o = JSONObject()
+            o.put("id", e.placeId)
+            o.put("n", e.name)
+            o.put("in", e.inTime)
+            o.put("out", e.outTime)
+            arr.put(o)
+        }
+        locData(ctx).edit().putString("events", arr.toString()).apply()
+    }
+
+    /** A place was entered: open a new event (only if none is open for it). */
+    fun recordEnter(ctx: Context, pl: Place) {
+        val list = placeEvents(ctx).toMutableList()
+        if (list.any { it.placeId == pl.id && it.outTime == 0L }) return
+        list.add(0, PlaceEvent(pl.id, pl.name, System.currentTimeMillis(), 0))
+        saveEvents(ctx, list)
+    }
+
+    /** A place was left: close the open event for it. */
+    fun recordExit(ctx: Context, pl: Place) {
+        val list = placeEvents(ctx).toMutableList()
+        val idx = list.indexOfFirst { it.placeId == pl.id && it.outTime == 0L }
+        if (idx < 0) return
+        list[idx] = list[idx].copy(outTime = System.currentTimeMillis())
+        saveEvents(ctx, list)
+    }
+
+    fun clearEvents(ctx: Context) {
+        locData(ctx).edit().remove("events").apply()
+    }
+
     // ----- sessions -----
 
     fun sessions(ctx: Context): List<Session> {

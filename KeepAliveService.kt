@@ -161,6 +161,9 @@ class KeepAliveService : Service() {
             nm.createNotificationChannel(
                 NotificationChannel("powerlock_done_quiet", "Session finished (quiet)", NotificationManager.IMPORTANCE_LOW)
             )
+            nm.createNotificationChannel(
+                NotificationChannel("powerlock_alert", "Boundary alerts", NotificationManager.IMPORTANCE_DEFAULT)
+            )
             refresh()
             handler.removeCallbacks(heartbeatTask)
             handler.post(heartbeatTask) // fresh heartbeat every 60s so the accessibility service can tell we are alive

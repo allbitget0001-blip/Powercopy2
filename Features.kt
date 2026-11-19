@@ -3,6 +3,9 @@ package com.example.powerlocks
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.AlertDialog
+import android.app.Notification
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
@@ -46,6 +49,12 @@ data class Place(
     val enabled: Boolean,
     val mode: Int = PLACE_MODE_INSIDE
 )
+
+/** One recorded point of today's route. */
+data class RoutePoint(val lat: Double, val lng: Double, val t: Long)
+
+/** One visit to a place: entered at [inTime], left at [outTime] (0 = still inside). */
+data class PlaceEvent(val placeId: Long, val name: String, val inTime: Long, val outTime: Long)
 
 object Extra {
 
@@ -277,6 +286,11 @@ object PlaceWatcher {
     private var lm: LocationManager? = null
     private var on = false
 
+    // per-place memory for history, boundary alerts and ETA
+    private val lastInside = HashMap<Long, Boolean>()
+    private val lastDist = HashMap<Long, Float>()
+    private val lastAlert = HashMap<Long, String>() // "enter" or "leave"
+
     private val listener = object : LocationListener {
         override fun onLocationChanged(location: Location) {
             val c = appCtx ?: return
@@ -388,10 +402,73 @@ object PlaceWatcher {
                     // Lock while here: inside the place = blocked, left = unblocked.
                     if (inside) protect = true
                 }
+                // ---- entry / exit history (hysteresis so GPS jitter at the edge does not flap) ----
+                val prevIn = lastInside[pl.id]
+                val nowIn = if (prevIn == true) d <= pl.radius * 1.3f else d <= pl.radius
+                if (prevIn == null) lastInside[pl.id] = nowIn
+                else if (prevIn != nowIn) {
+                    lastInside[pl.id] = nowIn
+                    if (nowIn) Store.recordEnter(ctx, pl) else Store.recordExit(ctx, pl)
+                }
+                // ---- boundary alert: 10 m before entering / leaving ----
+                val edge = 10f
+                val aboutEnter = d > pl.radius && d <= pl.radius + edge
+                val aboutLeave = d >= pl.radius - edge && d <= pl.radius
+                val prevD = lastDist[pl.id]
+                lastDist[pl.id] = d
+                val movingIn = prevD != null && d < prevD
+                val movingOut = prevD != null && d > prevD
+                val speed = if (loc.hasSpeed()) loc.speed else 0f
+                if (aboutEnter && movingIn) {
+                    if (lastAlert[pl.id] != "enter") {
+                        lastAlert[pl.id] = "enter"
+                        val eta = if (speed > 0.5f) ((d - pl.radius) / speed / 60f).toInt().coerceAtLeast(1) else null
+                        notifyBoundary(ctx, pl, entering = true, turningOn = pl.mode != PLACE_MODE_OUTSIDE, etaMin = eta)
+                    }
+                } else if (aboutLeave && movingOut) {
+                    if (lastAlert[pl.id] != "leave") {
+                        lastAlert[pl.id] = "leave"
+                        val eta = if (speed > 0.5f) ((pl.radius - d) / speed / 60f).toInt().coerceAtLeast(1) else null
+                        notifyBoundary(ctx, pl, entering = false, turningOn = pl.mode == PLACE_MODE_OUTSIDE, etaMin = eta)
+                    }
+                } else if (d > pl.radius + edge || d < pl.radius - edge) {
+                    lastAlert.remove(pl.id) // away from the edge: arm the alert again
+                }
             }
             if (Store.isLocProtecting(ctx) != protect) Store.setLocProtecting(ctx, protect)
+            // today's route: record where you went while the location lock watches
+            Store.addRoutePoint(ctx, loc.latitude, loc.longitude)
         } catch (e: Exception) {
             Log.e(TAG, "place check failed", e)
+        }
+    }
+
+    /** "বাড়ির সীমানায় ঢুকছো — লক চালু হবে" (10 m before the boundary), with ETA when moving. */
+    private fun notifyBoundary(ctx: Context, pl: Place, entering: Boolean, turningOn: Boolean, etaMin: Int?) {
+        try {
+            val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val dir = if (entering) L.t("entering the boundary", "সীমানায় ঢুকছো") else L.t("leaving the boundary", "সীমানা ছাড়ছো")
+            val action = if (turningOn) L.t("lock turns on", "লক চালু হবে") else L.t("lock turns off", "লক বন্ধ হবে")
+            val title = pl.name + ": " + dir + " — " + action
+            val text = if (etaMin != null) {
+                if (entering) L.t("Arriving in ~$etaMin min", "পৌঁছাতে ~$etaMin মিনিট")
+                else L.t("Leaving in ~$etaMin min", "ছাড়তে ~$etaMin মিনিট")
+            } else {
+                L.t("Boundary within 10 m", "সীমানা ১০ মিটারের মধ্যে")
+            }
+            val openApp = PendingIntent.getActivity(
+                ctx, 0, Intent(ctx, MainActivity::class.java),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            val nb = Notification.Builder(ctx, "powerlock_alert")
+                .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+                .setContentTitle(L.num(title))
+                .setContentText(L.num(text))
+                .setAutoCancel(true)
+                .setContentIntent(openApp)
+            nm.notify(2000 + (pl.id % 1000).toInt(), nb.build())
+        } catch (e: Exception) {
+            Log.e(TAG, "boundary notify failed", e)
         }
     }
 }
@@ -837,6 +914,60 @@ fun MainActivity.locationCard(): View {
         ),
         lp(MATCH, WRAP, t = dp(8))
     )
+    return c
+}
+
+/** Today's route (drawn on the map) + entry/exit history. */
+fun MainActivity.historyCard(): View {
+    val c = card()
+    c.addView(section(L.t("Today's route & history", "আজকের রুট ও হিস্ট্রি")))
+    // today's route: total distance + open the map
+    val distM = Store.todayDistanceM(this)
+    val distTxt = if (distM >= 1000f) {
+        val km10 = (distM / 100).toInt() // tenths of a km
+        L.num("${km10 / 10}.${km10 % 10}") + " " + L.t("km", "কিমি")
+    } else {
+        L.num(distM.toInt().toString()) + " " + L.t("m", "মি")
+    }
+    val pts = Store.todayRoute(this).size
+    c.addView(
+        row(
+            L.t("Today's route", "আজকের রুট"),
+            L.num(pts.toString()) + " " + L.t("points", "পয়েন্ট") + " · " + distTxt,
+            tv("🗺", 18f, C.primary, 1)
+        ) { startActivity(Intent(this, MapActivity::class.java)) },
+        lp(MATCH, WRAP, t = dp(4))
+    )
+    // entry / exit history
+    c.addView(tv(L.t("Entry / exit history", "ঢোকা / বেরোনোর হিস্ট্রি"), 13f, C.muted), lp(MATCH, WRAP, t = dp(10)))
+    val events = Store.placeEvents(this)
+    if (events.isEmpty()) {
+        c.addView(
+            tv(
+                L.t("No history yet — it appears when you enter or leave a saved place.", "এখনো কোনো হিস্ট্রি নেই — সেভ করা জায়গায় ঢুকলে বা বেরোলে এখানে দেখাবে।"),
+                12f, C.muted
+            ),
+            lp(MATCH, WRAP, t = dp(4))
+        )
+    } else {
+        for (e in events.take(10)) {
+            val line1 = e.name + " · " + L.t("entered", "ঢুকেছে") + " " + fmtClock(e.inTime)
+            val line2 = if (e.outTime > 0) {
+                L.t("left", "বেরিয়েছে") + " " + fmtClock(e.outTime) + " · " +
+                    L.t("inside for", "ভেতরে ছিল") + " " + fmtDur(e.outTime - e.inTime)
+            } else {
+                L.t("still inside", "এখনো ভেতরে") + " · " + fmtDur(System.currentTimeMillis() - e.inTime)
+            }
+            val col = LinearLayout(this)
+            col.orientation = LinearLayout.VERTICAL
+            col.addView(tv(line1, 14f, C.text, 1))
+            col.addView(tv(line2, 12f, C.muted))
+            c.addView(col, lp(MATCH, WRAP, t = dp(8)))
+        }
+        val clear = tv(L.t("Clear history", "হিস্ট্রি মুছুন"), 13f, C.danger, 1)
+        clear.setOnClickListener { Store.clearEvents(this); go(3) }
+        c.addView(clear, lp(MATCH, WRAP, t = dp(10)))
+    }
     return c
 }
 

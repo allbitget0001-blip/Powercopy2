@@ -887,6 +887,7 @@ class SettingsScreen(private val a: MainActivity) {
 
         // location lock first, then focus mode (defined in Features.kt)
         col.addView(a.locationCard(), lp(MATCH, WRAP, b = a.dp(12)))
+        col.addView(a.historyCard(), lp(MATCH, WRAP, b = a.dp(12)))
         col.addView(a.focusCard(), lp(MATCH, WRAP, b = a.dp(12)))
 
         // general
