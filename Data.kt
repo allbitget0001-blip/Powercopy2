@@ -215,9 +215,17 @@ object Store {
     /** True while a running session was started in strict mode (no early stop). */
     fun isStrict(ctx: Context): Boolean = isActive(ctx) && lock(ctx).getBoolean("s_strict", false)
 
-    fun stopSession(ctx: Context) {
+    /** True when the running session was started by the location lock (only those may be auto-stopped). */
+    fun isLocationSession(ctx: Context): Boolean =
+        isActive(ctx) && (lock(ctx).getString("src", "manual") ?: "manual") == "location"
+
+    /**
+     * [force] is only for the location lock: leaving/arriving ends the session even in strict
+     * mode, because the lock follows presence. The manual Stop button never passes force.
+     */
+    fun stopSession(ctx: Context, force: Boolean = false) {
         if (!isActive(ctx)) return
-        if (lock(ctx).getBoolean("s_strict", false)) return
+        if (!force && lock(ctx).getBoolean("s_strict", false)) return
         val p = lock(ctx)
         val now = System.currentTimeMillis()
         val start = p.getLong("start", now)
