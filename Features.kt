@@ -317,6 +317,7 @@ object PlaceWatcher {
     /** Already inside an enabled "lock while here" place (or outside an "away" place)? Start the session now. */
     private fun lockIfAlreadyThere(ctx: Context, loc: Location) {
         try {
+            if (!Store.settings(ctx).getBoolean("loc_immediate", false)) return // immediate lock turned off in settings
             if (loc.hasAccuracy() && loc.accuracy > 200f) return // too vague to trust
             if (Store.isActive(ctx)) return
             val prefs = Store.settings(ctx)
@@ -732,6 +733,20 @@ fun MainActivity.locationCard(): View {
                 "চালু থাকলে প্রতিটি অন করা জায়গা নিজে নিজে কাজ করবে: কোনো লক না চললেও, সেভ করা যেকোনো জায়গায় পৌঁছালেই লক চালু হয়ে যাবে।"
             ),
             12f, C.muted
+        ),
+        lp(MATCH, WRAP, t = dp(6))
+    )
+    // immediate lock: when on, turning the master on while already here locks at once (Home shows protected);
+    // when off, Home stays off while sitting here and the lock only starts on arrival
+    val immSw = toggle(st.getBoolean("loc_immediate", false)) { v ->
+        st.edit().putBoolean("loc_immediate", v).apply()
+        if (v) PlaceWatcher.checkNow(this)
+    }
+    c.addView(
+        row(
+            L.t("Lock right away when already here", "এখানে থাকলে সাথে সাথে লক"),
+            L.t("On: switching the master on locks at once while you are here. Off: the lock only starts when you arrive.", "অন: সুইচ অন করলেই এখানে থাকলে সাথে সাথে লক হবে। বন্ধ: শুধু আসা-যাওয়ায় লক হবে।"),
+            immSw
         ),
         lp(MATCH, WRAP, t = dp(6))
     )
