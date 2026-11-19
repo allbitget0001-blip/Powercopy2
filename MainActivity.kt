@@ -80,6 +80,7 @@ class MainActivity : Activity() {
         navHolder.addView(buildNav())
         Scheduler.onAlarm(this)
         go(tab, false)
+        Store.kickService(this) // restart the foreground service if it was swiped away
         PlaceWatcher.checkNow(this) // already at a saved place? lock right away
     }
 

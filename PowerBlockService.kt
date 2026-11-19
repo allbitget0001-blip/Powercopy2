@@ -130,7 +130,11 @@ class PowerBlockService : AccessibilityService() {
         active = p.getBoolean("active", false)
         endAt = p.getLong("end", 0)
         locProtecting = p.getBoolean("loc_protecting", false)
-        guardOn = p.getBoolean("s_guard", true)
+        // the guard follows the session while one runs (locked at its start); otherwise it
+        // follows the live "App settings protection" switch in Settings
+        val sessionOn = active && System.currentTimeMillis() < endAt
+        guardOn = if (sessionOn) p.getBoolean("s_guard", true)
+        else Store.settings(this).getBoolean("guard", true)
         val st = Store.settings(this)
         focusOn = st.getBoolean("focus_on", false)
         focusApps = (st.getString("focus_apps", "") ?: "").split(",").filter { it.isNotEmpty() }.toSet()
@@ -209,16 +213,7 @@ class PowerBlockService : AccessibilityService() {
             lastGuardScan = now
         }
         val root = rootInActiveWindow ?: return
-        if (root.findAccessibilityNodeInfosByText("PowerLock").isEmpty()) return
-        // installing an update must stay possible (otherwise no update could ever be installed
-        // while the lock is on); App info and the Accessibility page are blocked as before.
-        // Note: "Uninstall" contains "Install", so check it separately.
-        val hasUninstall = root.findAccessibilityNodeInfosByText("Uninstall").isNotEmpty()
-        val hasForceStop = root.findAccessibilityNodeInfosByText("Force stop").isNotEmpty()
-        val hasInstall = root.findAccessibilityNodeInfosByText("Install").isNotEmpty()
-        val hasUpdate = root.findAccessibilityNodeInfosByText("Update").isNotEmpty()
-        if ((hasInstall || hasUpdate) && !hasUninstall && !hasForceStop) return
-        if (now - lastAction >= 300) {
+        if (root.findAccessibilityNodeInfosByText("PowerLock").isNotEmpty() && now - lastAction >= 300) {
             lastAction = now
             performGlobalAction(GLOBAL_ACTION_HOME)
         }
