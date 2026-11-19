@@ -242,7 +242,7 @@ class KeepAliveService : Service() {
             } catch (e: Exception) {
                 Log.e(TAG, "onTaskRemoved start failed", e)
             }
-            scheduleRestart(2000)
+            scheduleRestart(500)
         } catch (e: Exception) {
             Log.e(TAG, "onTaskRemoved restart failed", e)
         }
@@ -317,7 +317,7 @@ class KeepAliveService : Service() {
         handler.removeCallbacks(heartbeatTask)
         try {
             // system stopped the service (e.g. notification dismissed): come back
-            scheduleRestart(5000)
+            scheduleRestart(2000)
         } catch (e: Exception) {
             Log.e(TAG, "onDestroy restart failed", e)
         }
