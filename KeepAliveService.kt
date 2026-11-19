@@ -29,7 +29,9 @@ class KeepAliveService : Service() {
     private val finishTask = Runnable { onFinished() }
 
     /** Writes a fresh timestamp every 60s while alive; the accessibility service revives us if it goes stale. */
-    private val heartbeatTask: Runnable = Runnable {
+    private val heartbeatTask = Runnable { onHeartbeat() }
+
+    private fun onHeartbeat() {
         try {
             Store.lock(this).edit().putLong("kas_heartbeat", System.currentTimeMillis()).apply()
         } catch (e: Exception) {
