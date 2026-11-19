@@ -313,6 +313,34 @@ object PlaceWatcher {
         }
     }
 
+    /** True when any enabled place is currently demanding protection. Null when no location is available. */
+    fun isAnyPlaceActiveNow(ctx: Context, cb: (Boolean?) -> Unit) {
+        Extra.currentLocation(ctx.applicationContext) { loc ->
+            if (loc == null || (loc.hasAccuracy() && loc.accuracy > 200f)) { cb(null); return@currentLocation }
+            var protect = false
+            for (pl in Extra.places(ctx)) {
+                if (!pl.enabled) continue
+                val res = FloatArray(1)
+                Location.distanceBetween(loc.latitude, loc.longitude, pl.lat, pl.lng, res)
+                val d = res[0]
+                if (pl.mode == PLACE_MODE_OUTSIDE) { if (d > pl.radius * 1.3f) protect = true }
+                else if (d <= pl.radius) protect = true
+            }
+            cb(protect)
+        }
+    }
+
+    /** True when this place is currently demanding protection. Null when no location is available. */
+    fun isPlaceActiveNow(ctx: Context, pl: Place, cb: (Boolean?) -> Unit) {
+        Extra.currentLocation(ctx.applicationContext) { loc ->
+            if (loc == null || (loc.hasAccuracy() && loc.accuracy > 200f)) { cb(null); return@currentLocation }
+            val res = FloatArray(1)
+            Location.distanceBetween(loc.latitude, loc.longitude, pl.lat, pl.lng, res)
+            val d = res[0]
+            cb(if (pl.mode == PLACE_MODE_OUTSIDE) d > pl.radius * 1.3f else d <= pl.radius)
+        }
+    }
+
     @SuppressLint("MissingPermission")
     private fun start(app: Context) {
         try {
@@ -664,11 +692,41 @@ private fun MainActivity.requestLocationPerm() {
     }
 }
 
+/** Runs [block] only when this place is not locking right now; otherwise explains why. */
+private fun MainActivity.ifPlaceNotLocking(pl: Place, block: () -> Unit) {
+    if (!Store.isLocProtecting(this)) { block(); return }
+    PlaceWatcher.isPlaceActiveNow(this, pl) { active ->
+        when (active) {
+            true -> toast(L.t("This place is locking right now — it turns off when you leave.", "এই জায়গায় এখন লক চলছে — জায়গা ছেড়ে গেলে নিজে নিজে বন্ধ হবে।"))
+            false -> block()
+            null -> toast(L.t("Location unavailable — turn on GPS and try again.", "অবস্থান পাওয়া যাচ্ছে না — GPS চালু করে আবার চেষ্টা করুন।"))
+        }
+    }
+}
+
 fun MainActivity.locationCard(): View {
     val c = card()
     val st = Store.settings(this)
     // header first: title on the left, master on/off on the right
-    val sw = toggle(st.getBoolean("loc_on", false)) { v ->
+    lateinit var sw: PremiumSwitch
+    sw = toggle(st.getBoolean("loc_on", false)) { v ->
+        if (!v && Store.isLocProtecting(this)) {
+            // locked right now: only leaving the place turns it off
+            PlaceWatcher.isAnyPlaceActiveNow(this) { active ->
+                if (active == true) {
+                    toast(L.t("You are at a saved place — the lock turns off when you leave.", "সেভ করা জায়গায় আছেন — জায়গা ছেড়ে গেলে লক নিজে নিজে বন্ধ হবে।"))
+                    sw.setCheckedImmediate(true)
+                } else if (active == false) {
+                    st.edit().putBoolean("loc_on", false).apply()
+                    PlaceWatcher.sync(this)
+                    PlaceWatcher.checkNow(this)
+                } else {
+                    toast(L.t("Location unavailable — turn on GPS and try again.", "অবস্থান পাওয়া যাচ্ছে না — GPS চালু করে আবার চেষ্টা করুন।"))
+                    sw.setCheckedImmediate(true)
+                }
+            }
+            return@toggle
+        }
         st.edit().putBoolean("loc_on", v).apply()
         PlaceWatcher.sync(this)
         if (v) {
@@ -695,7 +753,25 @@ fun MainActivity.locationCard(): View {
 
     val places = Extra.places(this)
     for (pl in places) {
-        val rowSw = toggle(pl.enabled) { v ->
+        lateinit var rowSw: PremiumSwitch
+        rowSw = toggle(pl.enabled) { v ->
+            if (!v && Store.isLocProtecting(this)) {
+                // this place may be locking right now: only leaving turns it off
+                PlaceWatcher.isPlaceActiveNow(this, pl) { active ->
+                    if (active == true) {
+                        toast(L.t("This place is locking right now — it turns off when you leave.", "এই জায়গায় এখন লক চলছে — জায়গা ছেড়ে গেলে নিজে নিজে বন্ধ হবে।"))
+                        rowSw.setCheckedImmediate(true)
+                    } else if (active == false) {
+                        Extra.savePlaces(this, Extra.places(this).map { if (it.id == pl.id) it.copy(enabled = false) else it })
+                        PlaceWatcher.sync(this)
+                        PlaceWatcher.checkNow(this)
+                    } else {
+                        toast(L.t("Location unavailable — turn on GPS and try again.", "অবস্থান পাওয়া যাচ্ছে না — GPS চালু করে আবার চেষ্টা করুন।"))
+                        rowSw.setCheckedImmediate(true)
+                    }
+                }
+                return@toggle
+            }
             Extra.savePlaces(this, Extra.places(this).map { if (it.id == pl.id) it.copy(enabled = v) else it })
             PlaceWatcher.sync(this)
             PlaceWatcher.checkNow(this)
@@ -716,11 +792,11 @@ fun MainActivity.locationCard(): View {
         del.gravity = Gravity.CENTER
         del.background = withRipple(rounded(C.card2, dp(18).toFloat()))
         del.pressFeedback()
-        del.setOnClickListener { deletePlaceDialog(pl) { go(3) } }
+        del.setOnClickListener { ifPlaceNotLocking(pl) { deletePlaceDialog(pl) { go(3) } } }
         r.addView(del, lp(dp(36), dp(36), r = dp(10)))
         r.addView(rowSw)
         r.setOnLongClickListener {
-            deletePlaceDialog(pl) { go(3) }
+            ifPlaceNotLocking(pl) { deletePlaceDialog(pl) { go(3) } }
             true
         }
         c.addView(r)

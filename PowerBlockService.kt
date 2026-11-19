@@ -75,7 +75,6 @@ class PowerBlockService : AccessibilityService() {
     private val hideTask = Runnable { hideOverlay() }
     private val backAgain = Runnable { if (protecting()) performGlobalAction(GLOBAL_ACTION_BACK) }
     private val backAgain2 = Runnable { if (protecting()) performGlobalAction(GLOBAL_ACTION_BACK) }
-    private val goHome = Runnable { if (protecting()) performGlobalAction(GLOBAL_ACTION_HOME) }
     private var lastWinScan = 0L
     private var receiverOn = false
 
@@ -263,10 +262,9 @@ class PowerBlockService : AccessibilityService() {
             performGlobalAction(GLOBAL_ACTION_BACK)
             handler.removeCallbacks(backAgain)
             handler.removeCallbacks(backAgain2)
-            handler.removeCallbacks(goHome)
             handler.postDelayed(backAgain, 60)
             handler.postDelayed(backAgain2, 150)
-            handler.postDelayed(goHome, 250) // end on the Home screen
+            // no HOME: the app the user is in must stay open
         }
     }
 
