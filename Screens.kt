@@ -476,6 +476,7 @@ class HomeScreen(private val a: MainActivity) {
 // WEEKLY SCHEDULE
 // =====================================================================
 class ScheduleScreen(private val a: MainActivity) {
+    private lateinit var list: LinearLayout
 
     fun build(): View {
         val (sv, col) = a.page()
@@ -953,4 +954,3 @@ class SettingsScreen(private val a: MainActivity) {
         return sv
     }
 }
-    
