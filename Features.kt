@@ -802,6 +802,10 @@ fun MainActivity.locationCard(): View {
         c.addView(r)
     }
 
+    val mapBtn = outlineBtn("🗺 " + L.t("Open map", "ম্যাপ খুলুন"), C.primary)
+    mapBtn.setOnClickListener { startActivity(Intent(this, MapActivity::class.java)) }
+    c.addView(mapBtn, lp(MATCH, dp(48), t = dp(12)))
+
     val add = outlineBtn("＋ " + L.t("Save my current place", "আমার এই জায়গা সেভ করুন"), C.primary)
     add.setOnClickListener { addPlaceFlow { go(3) } }
     c.addView(add, lp(MATCH, dp(48), t = dp(12)))
