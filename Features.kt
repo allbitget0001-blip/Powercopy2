@@ -299,6 +299,8 @@ object PlaceWatcher {
                 Extra.places(app).any { it.enabled } &&
                 Perm.locationOn(app)
         if (want && !on) start(app) else if (!want && on) stop()
+        // not watching means not protected: master off, no enabled place, or no permission
+        if (!want && Store.isLocProtecting(app)) Store.setLocProtecting(app, false)
     }
 
     /** One-shot check right now (used when the master switch or a place is turned on). */
@@ -307,40 +309,7 @@ object PlaceWatcher {
         if (!Store.settings(app).getBoolean("loc_on", false)) return
         if (!Perm.locationOn(app)) return
         Extra.currentLocation(app) { loc ->
-            if (loc != null) {
-                lockIfAlreadyThere(app, loc) // already at a saved place? lock right now
-                handle(app, loc)
-            }
-        }
-    }
-
-    /** Already inside an enabled "lock while here" place (or outside an "away" place)? Start the session now. */
-    private fun lockIfAlreadyThere(ctx: Context, loc: Location) {
-        try {
-            if (!Store.settings(ctx).getBoolean("loc_immediate", false)) return // immediate lock turned off in settings
-            if (loc.hasAccuracy() && loc.accuracy > 200f) return // too vague to trust
-            if (Store.isActive(ctx)) return
-            val prefs = Store.settings(ctx)
-            for (pl in Extra.places(ctx)) {
-                if (!pl.enabled) continue
-                val res = FloatArray(1)
-                Location.distanceBetween(loc.latitude, loc.longitude, pl.lat, pl.lng, res)
-                val d = res[0]
-                val durMs = if (pl.min <= 0) MAX_MIN * 60_000L else pl.min * 60_000L
-                if (pl.mode == PLACE_MODE_OUTSIDE) {
-                    if (d > pl.radius * 1.3f) {
-                        prefs.edit().putBoolean("inside_" + pl.id, false).apply()
-                        Store.startSession(ctx, durMs, "location")
-                        return
-                    }
-                } else if (d <= pl.radius) {
-                    prefs.edit().putBoolean("inside_" + pl.id, true).apply()
-                    Store.startSession(ctx, durMs, "location")
-                    return
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "lock-if-already-there failed", e)
+            if (loc != null) handle(app, loc)
         }
     }
 
@@ -374,38 +343,25 @@ object PlaceWatcher {
     private fun handle(ctx: Context, loc: Location) {
         try {
             if (loc.hasAccuracy() && loc.accuracy > 200f) return // too vague to trust
-            val prefs = Store.settings(ctx)
+            // Presence-based protection: at a saved place the power menu is blocked, away it is not.
+            // No Home session is involved at all — the single location switch is the only setting.
+            var protect = false
             for (pl in Extra.places(ctx)) {
                 if (!pl.enabled) continue
                 val res = FloatArray(1)
                 Location.distanceBetween(loc.latitude, loc.longitude, pl.lat, pl.lng, res)
                 val d = res[0]
-                val key = "inside_" + pl.id
-                val was = prefs.getBoolean(key, false)
                 val inside = d <= pl.radius
                 val outside = d > pl.radius * 1.3f
-                // Auto places (min = 0) run until you leave / come back: 15 days is only a safety cap.
-                val durMs = if (pl.min <= 0) MAX_MIN * 60_000L else pl.min * 60_000L
                 if (pl.mode == PLACE_MODE_OUTSIDE) {
-                    // Lock while away: leaving starts the lock, coming back stops it.
-                    if (outside) {
-                        prefs.edit().putBoolean(key, false).apply()
-                        if (!Store.isActive(ctx)) Store.startSession(ctx, durMs, "location")
-                    } else if (inside) {
-                        prefs.edit().putBoolean(key, true).apply()
-                        if (Store.isLocationSession(ctx)) Store.stopSession(ctx, force = true)
-                    }
+                    // Lock while away: outside the place = blocked, back inside = unblocked.
+                    if (outside) protect = true
                 } else {
-                    // Lock while here: arriving starts the lock, leaving stops it.
-                    if (inside && !was) {
-                        prefs.edit().putBoolean(key, true).apply()
-                        if (!Store.isActive(ctx)) Store.startSession(ctx, durMs, "location")
-                    } else if (outside && was) {
-                        prefs.edit().putBoolean(key, false).apply()
-                        if (Store.isLocationSession(ctx)) Store.stopSession(ctx, force = true)
-                    }
+                    // Lock while here: inside the place = blocked, left = unblocked.
+                    if (inside) protect = true
                 }
             }
+            if (Store.isLocProtecting(ctx) != protect) Store.setLocProtecting(ctx, protect)
         } catch (e: Exception) {
             Log.e(TAG, "place check failed", e)
         }
@@ -729,24 +685,10 @@ fun MainActivity.locationCard(): View {
     c.addView(
         tv(
             L.t(
-                "When on, every enabled place works automatically: arriving at any saved place starts the lock, even if no lock is running.",
-                "চালু থাকলে প্রতিটি অন করা জায়গা নিজে নিজে কাজ করবে: কোনো লক না চললেও, সেভ করা যেকোনো জায়গায় পৌঁছালেই লক চালু হয়ে যাবে।"
+                "Only this switch. While you are at a saved place the power menu is blocked; when you leave, it opens again. The Home lock does not need to be on.",
+                "শুধু এই একটাই সুইচ। সেভ করা জায়গায় থাকলেই পাওয়ার মেনু ব্লক হবে; বাইরে গেলে আবার খুলে যাবে। হোমের লক অন করতে হবে না।"
             ),
             12f, C.muted
-        ),
-        lp(MATCH, WRAP, t = dp(6))
-    )
-    // immediate lock: when on, turning the master on while already here locks at once (Home shows protected);
-    // when off, Home stays off while sitting here and the lock only starts on arrival
-    val immSw = toggle(st.getBoolean("loc_immediate", false)) { v ->
-        st.edit().putBoolean("loc_immediate", v).apply()
-        if (v) PlaceWatcher.checkNow(this)
-    }
-    c.addView(
-        row(
-            L.t("Lock right away when already here", "এখানে থাকলে সাথে সাথে লক"),
-            L.t("On: switching the master on locks at once while you are here. Off: the lock only starts when you arrive.", "অন: সুইচ অন করলেই এখানে থাকলে সাথে সাথে লক হবে। বন্ধ: শুধু আসা-যাওয়ায় লক হবে।"),
-            immSw
         ),
         lp(MATCH, WRAP, t = dp(6))
     )
@@ -756,11 +698,10 @@ fun MainActivity.locationCard(): View {
         val rowSw = toggle(pl.enabled) { v ->
             Extra.savePlaces(this, Extra.places(this).map { if (it.id == pl.id) it.copy(enabled = v) else it })
             PlaceWatcher.sync(this)
-            if (v) PlaceWatcher.checkNow(this)
+            PlaceWatcher.checkNow(this)
         }
         val modeTxt = if (pl.mode == PLACE_MODE_OUTSIDE) L.t("Lock when away", "বাইরে গেলে লক") else L.t("Lock when here", "এখানে থাকলে লক")
-        val timeTxt = if (pl.min <= 0) L.t("Auto", "অটো") else fmtDur(pl.min * 60_000L)
-        val sub = L.num("${pl.radius} " + L.t("m radius", "মি. ব্যাসার্ধ")) + " · " + modeTxt + " · " + timeTxt
+        val sub = L.num("${pl.radius} " + L.t("m radius", "মি. ব্যাসার্ধ")) + " · " + modeTxt
         val r = LinearLayout(this)
         r.orientation = LinearLayout.HORIZONTAL
         r.gravity = Gravity.CENTER_VERTICAL
@@ -826,6 +767,7 @@ private fun MainActivity.deletePlaceDialog(pl: Place, done: () -> Unit) {
         .setPositiveButton(L.t("Delete", "মুছুন")) { _, _ ->
             Extra.savePlaces(this, Extra.places(this).filter { it.id != pl.id })
             PlaceWatcher.sync(this)
+            PlaceWatcher.checkNow(this)
             done()
         }
         .setNegativeButton(L.t("Cancel", "বাতিল"), null)
@@ -914,37 +856,6 @@ private fun MainActivity.placeDialog(lat: Double, lng: Double, done: () -> Unit)
     }
     box.addView(mr)
 
-    var auto = false
-    val tHead = LinearLayout(this)
-    tHead.orientation = LinearLayout.HORIZONTAL
-    tHead.gravity = Gravity.CENTER_VERTICAL
-    tHead.addView(tv(L.t("Longest lock time", "সর্বোচ্চ লকের সময়"), 13f, C.muted), lp(0, WRAP, weight = 1f))
-    val autoChip = chip(L.t("Auto", "অটো"), false)
-    autoChip.setPadding(dp(18), dp(10), dp(18), dp(10))
-    tHead.addView(autoChip)
-    box.addView(tHead, lp(MATCH, WRAP, t = dp(14)))
-    box.addView(
-        tv(L.t("Auto: no time limit — the lock stays until you leave or come back.", "অটো: কোনো সময়সীমা নেই — ছেড়ে যাওয়া বা ফেরা পর্যন্ত লক থাকবে।"), 12f, C.muted),
-        lp(MATCH, WRAP, t = dp(4))
-    )
-    val r = LinearLayout(this)
-    val dEt = edit(L.t("Days", "দিন"), true)
-    val hEt = edit(L.t("Hours", "ঘণ্টা"), true)
-    val mEt = edit(L.t("Minutes", "মিনিট"), true)
-    hEt.setText("8")
-    r.addView(dEt, lp(0, WRAP, r = dp(8), t = dp(8), weight = 1f))
-    r.addView(hEt, lp(0, WRAP, r = dp(8), t = dp(8), weight = 1f))
-    r.addView(mEt, lp(0, WRAP, t = dp(8), weight = 1f))
-    box.addView(r)
-    autoChip.setOnClickListener {
-        auto = !auto
-        animateChip(autoChip, auto)
-        for (e in arrayOf(dEt, hEt, mEt)) {
-            e.isEnabled = !auto
-            e.alpha = if (auto) 0.4f else 1f
-        }
-    }
-
     val d = dlg()
         .setTitle(L.t("Save this place", "এই জায়গা সেভ করুন"))
         .setView(box)
@@ -954,18 +865,12 @@ private fun MainActivity.placeDialog(lat: Double, lng: Double, done: () -> Unit)
     d.show()
     d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
         val name = nameEt.text.toString().trim()
-        val total = if (auto) 0L else (dEt.text.toString().toLongOrNull() ?: 0L) * 1440L +
-                (hEt.text.toString().toLongOrNull() ?: 0L) * 60L +
-                (mEt.text.toString().toLongOrNull() ?: 0L)
         if (name.isEmpty()) {
             nameEt.error = L.t("Enter a name", "নাম লিখুন")
-        } else if (!auto && (total < 1L || total > MAX_MIN.toLong())) {
-            mEt.error = L.t("1 minute to 15 days", "১ মিনিট থেকে ১৫ দিন")
         } else {
             val id = System.currentTimeMillis()
-            Extra.savePlaces(this, Extra.places(this) + Place(id, name, lat, lng, radius, total.toInt(), true, mode))
-            // we are standing here now: if the master switch is on, lock right away
-            Store.settings(this).edit().putBoolean("inside_$id", true).apply()
+            // no time: the lock follows presence only, so the place has no duration (min = 0)
+            Extra.savePlaces(this, Extra.places(this) + Place(id, name, lat, lng, radius, 0, true, mode))
             PlaceWatcher.sync(this)
             PlaceWatcher.checkNow(this)
             d.dismiss()

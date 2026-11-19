@@ -147,6 +147,8 @@ class KeepAliveService : Service() {
                 NotificationChannel("powerlock_done_quiet", "Session finished (quiet)", NotificationManager.IMPORTANCE_LOW)
             )
             refresh()
+            // location lock no longer uses sessions: end any old location session, the flag takes over
+            if (Store.isLocationSession(this)) Store.stopSession(this, force = true)
             PlaceWatcher.sync(this) // resume location watching after a restart/reboot
             PlaceWatcher.checkNow(this) // already at a saved place? lock right away
         } catch (e: Exception) {

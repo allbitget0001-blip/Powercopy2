@@ -50,6 +50,9 @@ class PowerBlockService : AccessibilityService() {
     private var endAt = 0L
 
     @Volatile
+    private var locProtecting = false // location lock: blocked while at a saved place, no session
+
+    @Volatile
     private var guardOn = true
 
     @Volatile
@@ -123,13 +126,14 @@ class PowerBlockService : AccessibilityService() {
         val p = Store.lock(this)
         active = p.getBoolean("active", false)
         endAt = p.getLong("end", 0)
+        locProtecting = p.getBoolean("loc_protecting", false)
         guardOn = p.getBoolean("s_guard", true)
         val st = Store.settings(this)
         focusOn = st.getBoolean("focus_on", false)
         focusApps = (st.getString("focus_apps", "") ?: "").split(",").filter { it.isNotEmpty() }.toSet()
     }
 
-    private fun protecting(): Boolean = active && System.currentTimeMillis() < endAt
+    private fun protecting(): Boolean = (active && System.currentTimeMillis() < endAt) || locProtecting
 
     override fun onAccessibilityEvent(e: AccessibilityEvent?) {
         if (e == null || !protecting()) return
@@ -292,8 +296,13 @@ class PowerBlockService : AccessibilityService() {
         if (overlayAttached) return // never more than one shield
         try {
             val v = ensureOverlay()
-            val at = fmtClock(endAt)
-            overlaySub?.text = L.t("Power menu is blocked until $at", "$at পর্যন্ত পাওয়ার মেনু ব্লক করা আছে")
+            val sessionOn = active && System.currentTimeMillis() < endAt
+            overlaySub?.text = if (locProtecting && !sessionOn) {
+                L.t("Location lock is active", "লোকেশন লক সক্রিয়")
+            } else {
+                val at = fmtClock(endAt)
+                L.t("Power menu is blocked until $at", "$at পর্যন্ত পাওয়ার মেনু ব্লক করা আছে")
+            }
             val wm = getSystemService(WINDOW_SERVICE) as WindowManager
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,

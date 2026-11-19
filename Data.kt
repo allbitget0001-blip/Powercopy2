@@ -220,6 +220,16 @@ object Store {
         isActive(ctx) && (lock(ctx).getString("src", "manual") ?: "manual") == "location"
 
     /**
+     * Location protection: the power menu is blocked while at a saved place, without any Home
+     * session. The single location switch controls it — the main lock does not need to be on.
+     */
+    fun setLocProtecting(ctx: Context, on: Boolean) {
+        lock(ctx).edit().putBoolean("loc_protecting", on).apply()
+    }
+
+    fun isLocProtecting(ctx: Context): Boolean = lock(ctx).getBoolean("loc_protecting", false)
+
+    /**
      * [force] is only for the location lock: leaving/arriving ends the session even in strict
      * mode, because the lock follows presence. The manual Stop button never passes force.
      */
