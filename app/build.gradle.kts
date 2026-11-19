@@ -28,3 +28,7 @@ android {
         jvmTarget = "17"
     }
 }
+
+dependencies {
+    implementation("androidx.work:work-runtime:2.9.0")
+}

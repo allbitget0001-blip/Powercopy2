@@ -14,6 +14,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
@@ -152,6 +153,7 @@ class KeepAliveService : Service() {
             if (Store.isLocationSession(this)) Store.stopSession(this, force = true)
             PlaceWatcher.sync(this) // resume location watching after a restart/reboot
             PlaceWatcher.checkNow(this) // already at a saved place? lock right away
+            Watchdog.enqueue(this) // safety net: restart the service every 15 min if it dies
         } catch (e: Exception) {
             Log.e(TAG, "KeepAliveService start failed", e)
         }
@@ -220,19 +222,50 @@ class KeepAliveService : Service() {
     override fun onTaskRemoved(rootIntent: Intent?) {
         try {
             // swiped away from Recents: restart so the lock keeps working
-            val intent = Intent(this, KeepAliveService::class.java)
-            startService(intent)
-            val pi = PendingIntent.getService(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
-            val am = getSystemService(ALARM_SERVICE) as AlarmManager
-            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + 2000, pi)
+            try {
+                startService(Intent(this, KeepAliveService::class.java))
+            } catch (e: Exception) {
+                Log.e(TAG, "onTaskRemoved start failed", e)
+            }
+            scheduleRestart(2000)
         } catch (e: Exception) {
             Log.e(TAG, "onTaskRemoved restart failed", e)
         }
         super.onTaskRemoved(rootIntent)
     }
 
+    /**
+     * Exact-alarm restart: on Android 12+ only an exact alarm may start a foreground
+     * service from the background, so an inexact alarm is silently dropped here.
+     * Falls back to an inexact alarm when the user revoked exact-alarm permission.
+     */
+    private fun scheduleRestart(delayMs: Long) {
+        try {
+            val intent = Intent(this, KeepAliveService::class.java)
+            val pi = PendingIntent.getService(
+                this, 0, intent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            val am = getSystemService(ALARM_SERVICE) as AlarmManager
+            val at = System.currentTimeMillis() + delayMs
+            if (Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()) {
+                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+            } else {
+                am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "scheduleRestart failed", e)
+        }
+    }
+
     override fun onDestroy() {
         handler.removeCallbacks(finishTask)
+        try {
+            // system stopped the service (e.g. notification dismissed): come back
+            scheduleRestart(5000)
+        } catch (e: Exception) {
+            Log.e(TAG, "onDestroy restart failed", e)
+        }
         super.onDestroy()
     }
 
