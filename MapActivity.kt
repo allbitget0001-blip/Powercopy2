@@ -27,7 +27,7 @@ import org.json.JSONObject
 // =====================================================================
 // MAP for the location lock (Settings > Location lock > "ম্যাপ খুলুন").
 //
-// WebView + Leaflet + OpenStreetMap tiles (no API key, no new dependency).
+// WebView + Leaflet + OpenStreetMap / Esri satellite tiles (no API key, no new dependency).
 // Map tiles need internet; the lock itself works offline on GPS.
 // All buttons/panels are native Android views, only the map is a WebView.
 // =====================================================================
@@ -45,6 +45,8 @@ class MapActivity : Activity() {
     private lateinit var saveBtn: TextView
     private lateinit var delBtn: TextView
     private lateinit var hintTv: TextView
+    private lateinit var satBtn: TextView
+    private var satOn = false
 
     private var pageReady = false
     private val pendingJs = ArrayList<String>()
@@ -118,6 +120,9 @@ class MapActivity : Activity() {
         val myLoc = outlineBtn("◎ " + L.t("My place", "আমার জায়গা"), C.primary)
         myLoc.setOnClickListener { recenterOnMe() }
         head.addView(myLoc)
+        satBtn = outlineBtn("🛰 " + L.t("Satellite", "স্যাটেলাইট"), C.primary)
+        satBtn.setOnClickListener { toggleSat() }
+        head.addView(satBtn)
         root.addView(head)
 
         web = WebView(this)
@@ -159,7 +164,7 @@ class MapActivity : Activity() {
         distTv = tv("", 13f, C.muted)
         panel.addView(distTv, lp(MATCH, WRAP, t = dp(4)))
         hintTv = tv(
-            L.t("Map tiles need internet. The lock itself works offline on GPS.", "ম্যাপ দেখতে ইন্টারনেট লাগবে, লক নিজে GPS-এ অফলাইনে কাজ করে।"),
+            L.t("Map and satellite tiles need internet. The lock itself works offline on GPS.", "ম্যাপ ও স্যাটেলাইট দেখতে ইন্টারনেট লাগবে, লক নিজে GPS-এ অফলাইনে কাজ করে।"),
             12f, C.muted
         )
         panel.addView(hintTv, lp(MATCH, WRAP, t = dp(6)))
@@ -175,17 +180,20 @@ class MapActivity : Activity() {
         radiusVal = tv(L.num("200 " + L.t("m", "মি.")), 16f, C.primary, 1)
         rHead.addView(radiusVal)
         editBox.addView(rHead, lp(MATCH, WRAP, t = dp(12)))
-        val radii = intArrayOf(100, 200, 500)
-        val rr = LinearLayout(this)
-        for ((i, rv) in radii.withIndex()) {
-            val ch = chip(L.num("$rv " + L.t("m", "মি.")), rv == editRadius)
-            ch.setOnClickListener { setEditRadius(rv) }
-            radiusChips.add(ch)
-            rr.addView(ch, lp(0, WRAP, r = if (i < radii.size - 1) dp(8) else 0, t = dp(8), weight = 1f))
+        val radiiRow1 = intArrayOf(100, 200, 500)
+        val radiiRow2 = intArrayOf(1000, 5000, 10000)
+        for (rowRadii in listOf(radiiRow1, radiiRow2)) {
+            val rr = LinearLayout(this)
+            for ((i, rv) in rowRadii.withIndex()) {
+                val ch = chip(L.num("$rv " + L.t("m", "মি.")), rv == editRadius)
+                ch.setOnClickListener { setEditRadius(rv) }
+                radiusChips.add(ch)
+                rr.addView(ch, lp(0, WRAP, r = if (i < rowRadii.size - 1) dp(8) else 0, t = dp(8), weight = 1f))
+            }
+            editBox.addView(rr)
         }
-        editBox.addView(rr)
         seek = SeekBar(this)
-        seek.max = 95 // (1000 - 50) / 10: 50 m to 1000 m in 10 m steps
+        seek.max = 995 // (10000 - 50) / 10: 50 m to 10000 m in 10 m steps
         seek.progressTintList = ColorStateList.valueOf(C.primary)
         seek.progressBackgroundTintList = ColorStateList.valueOf(C.card2)
         seek.thumbTintList = ColorStateList.valueOf(C.mint)
@@ -198,6 +206,11 @@ class MapActivity : Activity() {
             override fun onStopTrackingTouch(s: SeekBar?) {}
         })
         editBox.addView(seek, lp(MATCH, WRAP, t = dp(10)))
+        val range = LinearLayout(this)
+        range.orientation = LinearLayout.HORIZONTAL
+        range.addView(tv(L.num("50 " + L.t("m", "মি.")), 12f, C.muted), lp(0, WRAP, weight = 1f))
+        range.addView(tv(L.num(L.t("10000 m (10 km)", "10000 মি. (10 কিমি)")), 12f, C.muted))
+        editBox.addView(range)
         editBox.addView(tv(L.t("When to lock", "কখন লক হবে"), 13f, C.muted), lp(WRAP, WRAP, t = dp(10)))
         val mr = LinearLayout(this)
         val modeLabels = arrayOf(L.t("While I'm here", "এখানে থাকলে"), L.t("While I'm away", "বাইরে গেলে"))
@@ -299,6 +312,13 @@ class MapActivity : Activity() {
         pushDataJs()
     }
 
+    /** Switch the Leaflet base layer between OpenStreetMap and Esri satellite. */
+    private fun toggleSat() {
+        satOn = !satOn
+        satBtn.text = if (satOn) "🗺 " + L.t("Map", "ম্যাপ") else "🛰 " + L.t("Satellite", "স্যাটেলাইট")
+        eval("setSat(" + satOn + ");")
+    }
+
     private fun recenterOnMe() {
         toast(L.t("Finding your location…", "আপনার অবস্থান খোঁজা হচ্ছে…"))
         Extra.currentLocation(this) { loc ->
@@ -368,7 +388,15 @@ class MapActivity : Activity() {
         if (pla != null && plo != null) {
             addBtn.visibility = View.VISIBLE
             nameTv.text = L.t("New place here", "এখানে নতুন জায়গা")
-            distTv.text = L.num(String.format(java.util.Locale.US, "%.5f, %.5f", pla, plo))
+            val coords = L.num(String.format(java.util.Locale.US, "%.5f, %.5f", pla, plo))
+            val me = meLoc
+            distTv.text = if (me == null) {
+                coords + " · " + L.t("Location unavailable — turn on GPS.", "অবস্থান পাওয়া যাচ্ছে না — GPS চালু করুন।")
+            } else {
+                val res = FloatArray(1)
+                Location.distanceBetween(me.latitude, me.longitude, pla, plo, res)
+                L.num("${res[0].toInt()} " + L.t("m away", "মি দূরে")) + " · " + coords
+            }
         } else {
             addBtn.visibility = View.GONE
             nameTv.text = L.t("Tap the map to add a place, or tap a marker.", "নতুন জায়গা যোগ করতে ম্যাপে চাপ দিন, বা জায়গা দেখতে মার্কারে চাপ দিন।")
@@ -392,22 +420,24 @@ class MapActivity : Activity() {
         syncEditControls()
         updatePanel()
         pushDataJs()
+        if (editRadius > 2000) eval("fitCircle(" + pl.lat + "," + pl.lng + "," + editRadius + ");")
     }
 
     private fun syncEditControls() {
         radiusVal.text = L.num("$editRadius " + L.t("m", "মি."))
         seek.progress = (editRadius - 50) / 10
-        val radii = intArrayOf(100, 200, 500)
+        val radii = intArrayOf(100, 200, 500, 1000, 5000, 10000)
         for (i in radiusChips.indices) styleChip(radiusChips[i], radii[i] == editRadius)
         for (i in modeChips.indices) styleChip(modeChips[i], i == editMode)
     }
 
     private fun setEditRadius(r: Int) {
-        editRadius = r.coerceIn(50, 1000)
+        editRadius = r.coerceIn(50, 10000)
         syncEditControls()
         val id = selectedId ?: return
         val pl = places.find { it.id == id } ?: return
         eval("updateCircle(" + id + "," + editRadius + "," + (placeActive(pl) == true) + ");")
+        if (editRadius > 2000) eval("fitCircle(" + pl.lat + "," + pl.lng + "," + editRadius + ");")
     }
 
     private fun setEditMode(m: Int) {
@@ -545,7 +575,11 @@ class MapActivity : Activity() {
 <style>html,body,#map{height:100%;margin:0;padding:0;background:#0A1510;}</style></head>
 <body><div id="map"></div><script>
 var map = L.map('map').setView([__LAT__, __LNG__], 15);
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom: 19, attribution: '&copy; OpenStreetMap'}).addTo(map);
+var osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom: 19, attribution: '&copy; OpenStreetMap'}).addTo(map);
+var sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {maxZoom: 19, attribution: 'Esri, Maxar, Earthstar Geographics'});
+L.control.layers({'ম্যাপ': osm, 'স্যাটেলাইট': sat}).addTo(map);
+function setSat(on) { if (on) { map.removeLayer(osm); sat.addTo(map); } else { map.removeLayer(sat); osm.addTo(map); } }
+function fitCircle(lat, lng, radius) { var c = L.circle([lat, lng], {radius: radius}); map.fitBounds(c.getBounds(), {padding: [30, 30]}); }
 var layer = L.layerGroup().addTo(map);
 var circles = {};
 var meMarker = null, pendingMarker = null, pendingCircle = null;

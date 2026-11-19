@@ -877,10 +877,10 @@ private fun MainActivity.placeDialog(lat: Double, lng: Double, done: () -> Unit)
     box.addView(nameEt)
 
     var radius = 200
-    val radii = intArrayOf(100, 200, 500)
+    val radii = intArrayOf(100, 200, 500, 1000, 5000, 10000)
     val chips = ArrayList<TextView>()
     val seek = SeekBar(this)
-    seek.max = 95 // (1000 - 50) / 10: 50 m to 1000 m in 10 m steps
+    seek.max = 995 // (10000 - 50) / 10: 50 m to 10000 m in 10 m steps
     // header: label on the left, live value on the right
     val rHead = LinearLayout(this)
     rHead.orientation = LinearLayout.HORIZONTAL
@@ -889,15 +889,17 @@ private fun MainActivity.placeDialog(lat: Double, lng: Double, done: () -> Unit)
     val radiusVal = tv(L.num("$radius " + L.t("m", "মি.")), 16f, C.primary, 1)
     rHead.addView(radiusVal)
     box.addView(rHead, lp(MATCH, WRAP, t = dp(14)))
-    // quick chips (100 / 200 / 500)
-    val rr = LinearLayout(this)
-    for ((i, rv) in radii.withIndex()) {
-        val ch = chip(L.num("$rv " + L.t("m", "মি.")), rv == radius)
-        ch.setOnClickListener { seek.progress = (rv - 50) / 10 }
-        chips.add(ch)
-        rr.addView(ch, lp(0, WRAP, r = if (i < radii.size - 1) dp(8) else 0, t = dp(8), weight = 1f))
+    // quick chips, two rows: 100 / 200 / 500, then 1000 / 5000 / 10000
+    for (rowRadii in listOf(intArrayOf(100, 200, 500), intArrayOf(1000, 5000, 10000))) {
+        val rr = LinearLayout(this)
+        for ((i, rv) in rowRadii.withIndex()) {
+            val ch = chip(L.num("$rv " + L.t("m", "মি.")), rv == radius)
+            ch.setOnClickListener { seek.progress = (rv - 50) / 10 }
+            chips.add(ch)
+            rr.addView(ch, lp(0, WRAP, r = if (i < rowRadii.size - 1) dp(8) else 0, t = dp(8), weight = 1f))
+        }
+        box.addView(rr)
     }
-    box.addView(rr)
     // smooth slider: drag to grow or shrink the area
     seek.progressTintList = ColorStateList.valueOf(C.primary)
     seek.progressBackgroundTintList = ColorStateList.valueOf(C.card2)
@@ -917,7 +919,7 @@ private fun MainActivity.placeDialog(lat: Double, lng: Double, done: () -> Unit)
     val range = LinearLayout(this)
     range.orientation = LinearLayout.HORIZONTAL
     range.addView(tv(L.num("50 " + L.t("m", "মি.")), 12f, C.muted), lp(0, WRAP, weight = 1f))
-    range.addView(tv(L.num("1000 " + L.t("m", "মি.")), 12f, C.muted))
+    range.addView(tv(L.num(L.t("10000 m (10 km)", "10000 মি. (10 কিমি)")), 12f, C.muted))
     box.addView(range)
 
     box.addView(tv(L.t("When to lock", "কখন লক হবে"), 13f, C.muted), lp(WRAP, WRAP, t = dp(14)))
