@@ -210,12 +210,14 @@ class PowerBlockService : AccessibilityService() {
         }
         val root = rootInActiveWindow ?: return
         if (root.findAccessibilityNodeInfosByText("PowerLock").isEmpty()) return
-        // the app's own info page and the installer must stay usable (open the app, install an
-        // update): only the Accessibility service page itself is guarded
-        if (root.findAccessibilityNodeInfosByText("Uninstall").isNotEmpty() ||
-            root.findAccessibilityNodeInfosByText("Force stop").isNotEmpty() ||
-            root.findAccessibilityNodeInfosByText("Install").isNotEmpty() ||
-            root.findAccessibilityNodeInfosByText("Update").isNotEmpty()) return
+        // installing an update must stay possible (otherwise no update could ever be installed
+        // while the lock is on); App info and the Accessibility page are blocked as before.
+        // Note: "Uninstall" contains "Install", so check it separately.
+        val hasUninstall = root.findAccessibilityNodeInfosByText("Uninstall").isNotEmpty()
+        val hasForceStop = root.findAccessibilityNodeInfosByText("Force stop").isNotEmpty()
+        val hasInstall = root.findAccessibilityNodeInfosByText("Install").isNotEmpty()
+        val hasUpdate = root.findAccessibilityNodeInfosByText("Update").isNotEmpty()
+        if ((hasInstall || hasUpdate) && !hasUninstall && !hasForceStop) return
         if (now - lastAction >= 300) {
             lastAction = now
             performGlobalAction(GLOBAL_ACTION_HOME)

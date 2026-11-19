@@ -6,6 +6,7 @@ import android.graphics.Path
 import android.graphics.Paint
 import android.graphics.Canvas
 import android.graphics.Bitmap
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -214,6 +215,20 @@ class KeepAliveService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "onFinished failed", e)
         }
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        try {
+            // swiped away from Recents: restart so the lock keeps working
+            val intent = Intent(this, KeepAliveService::class.java)
+            startService(intent)
+            val pi = PendingIntent.getService(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
+            val am = getSystemService(ALARM_SERVICE) as AlarmManager
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + 2000, pi)
+        } catch (e: Exception) {
+            Log.e(TAG, "onTaskRemoved restart failed", e)
+        }
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
