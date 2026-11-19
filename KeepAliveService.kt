@@ -147,6 +147,7 @@ class KeepAliveService : Service() {
                 NotificationChannel("powerlock_done_quiet", "Session finished (quiet)", NotificationManager.IMPORTANCE_LOW)
             )
             refresh()
+            PlaceWatcher.sync(this) // resume location watching after a restart/reboot
         } catch (e: Exception) {
             Log.e(TAG, "KeepAliveService start failed", e)
         }
