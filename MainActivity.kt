@@ -80,6 +80,7 @@ class MainActivity : Activity() {
         navHolder.addView(buildNav())
         Scheduler.onAlarm(this)
         go(tab, false)
+        PlaceWatcher.checkNow(this) // already at a saved place? lock right away
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

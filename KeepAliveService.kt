@@ -148,6 +148,7 @@ class KeepAliveService : Service() {
             )
             refresh()
             PlaceWatcher.sync(this) // resume location watching after a restart/reboot
+            PlaceWatcher.checkNow(this) // already at a saved place? lock right away
         } catch (e: Exception) {
             Log.e(TAG, "KeepAliveService start failed", e)
         }
