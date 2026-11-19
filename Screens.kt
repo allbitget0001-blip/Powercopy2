@@ -476,7 +476,6 @@ class HomeScreen(private val a: MainActivity) {
 // WEEKLY SCHEDULE
 // =====================================================================
 class ScheduleScreen(private val a: MainActivity) {
-    private lateinit var list: LinearLayout
 
     fun build(): View {
         val (sv, col) = a.page()
@@ -885,9 +884,9 @@ class SettingsScreen(private val a: MainActivity) {
         strictCard.addView(a.tv(note, 12f, if (locked) C.warn else C.muted), lp(MATCH, WRAP, t = a.dp(8)))
         col.addView(strictCard, lp(MATCH, WRAP, b = a.dp(12)))
 
-        // focus mode + location lock (defined in Features.kt, were never shown)
-        col.addView(a.focusCard(), lp(MATCH, WRAP, b = a.dp(12)))
+        // location lock first, then focus mode (defined in Features.kt)
         col.addView(a.locationCard(), lp(MATCH, WRAP, b = a.dp(12)))
+        col.addView(a.focusCard(), lp(MATCH, WRAP, b = a.dp(12)))
 
         // general
         val gen = a.card()
@@ -954,3 +953,4 @@ class SettingsScreen(private val a: MainActivity) {
         return sv
     }
 }
+    
