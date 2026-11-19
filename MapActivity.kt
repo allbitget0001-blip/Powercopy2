@@ -27,7 +27,7 @@ import org.json.JSONObject
 // =====================================================================
 // MAP for the location lock (Settings > Location lock > "ম্যাপ খুলুন").
 //
-// WebView + Leaflet + OpenStreetMap / Esri satellite tiles (no API key, no new dependency).
+// WebView + MapLibre GL JS + CARTO Positron (Google-like, no API key, no new dependency).
 // Map tiles need internet; the lock itself works offline on GPS.
 // All buttons/panels are native Android views, only the map is a WebView.
 // =====================================================================
@@ -74,7 +74,7 @@ class MapActivity : Activity() {
         }
     }
 
-    // ---- JS bridge: called from the Leaflet map -----------------------
+    // ---- JS bridge: called from the MapLibre map ----------------------
 
     inner class MapBridge {
         @JavascriptInterface
@@ -312,7 +312,7 @@ class MapActivity : Activity() {
         pushDataJs()
     }
 
-    /** Switch the Leaflet base layer between OpenStreetMap and Esri satellite. */
+    /** Switch the MapLibre style between Positron map and Esri satellite. */
     private fun toggleSat() {
         satOn = !satOn
         satBtn.text = if (satOn) "🗺 " + L.t("Map", "ম্যাপ") else "🛰 " + L.t("Satellite", "স্যাটেলাইট")
@@ -562,7 +562,7 @@ class MapActivity : Activity() {
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_LONG).show()
 
-    // ---- the map page (Leaflet + OpenStreetMap, no API key) -----------------
+    // ---- the map page (MapLibre GL JS + CARTO Positron, no API key) --------
 
     private fun mapHtml(): String {
         val me = meLoc
@@ -570,55 +570,122 @@ class MapActivity : Activity() {
         val cLng = me?.longitude ?: places.firstOrNull { it.enabled }?.lng ?: 90.4125
         return """
 <!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<style>html,body,#map{height:100%;margin:0;padding:0;background:#0A1510;}</style></head>
-<body><div id="map"></div><script>
-var map = L.map('map').setView([__LAT__, __LNG__], 15);
-var osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom: 19, attribution: '&copy; OpenStreetMap'}).addTo(map);
-var sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {maxZoom: 19, attribution: 'Esri, Maxar, Earthstar Geographics'});
-L.control.layers({'ম্যাপ': osm, 'স্যাটেলাইট': sat}).addTo(map);
-function setSat(on) { if (on) { map.removeLayer(osm); sat.addTo(map); } else { map.removeLayer(sat); osm.addTo(map); } }
-function fitCircle(lat, lng, radius) { var c = L.circle([lat, lng], {radius: radius}); map.fitBounds(c.getBounds(), {padding: [30, 30]}); }
-var layer = L.layerGroup().addTo(map);
-var circles = {};
-var meMarker = null, pendingMarker = null, pendingCircle = null;
-function setData(json, selId) {
-  layer.clearLayers();
-  circles = {};
-  for (var i = 0; i < json.length; i++) {
-    (function(p) {
-      var col = p.active ? '#22c55e' : '#3b82f6';
-      var c = L.circle([p.lat, p.lng], {radius: p.r, color: col, weight: (p.id === selId ? 4 : 2), fillColor: col, fillOpacity: 0.15}).addTo(layer);
-      circles[p.id] = c;
-      var m = L.marker([p.lat, p.lng]).addTo(layer);
-      m.bindPopup(p.name);
-      m.on('click', function() { Android.onPlaceTap(p.id); });
-      c.on('click', function() { Android.onPlaceTap(p.id); });
-    })(json[i]);
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<style>html,body,#map{height:100%;margin:0;padding:0;background:#E8E8E8;}
+.me-dot{width:18px;height:18px;border-radius:50%;background:#2563eb;border:3px solid #ffffff;box-shadow:0 0 0 2px rgba(37,99,235,.4);}
+.style-sw{position:absolute;top:10px;right:10px;z-index:5;background:#ffffff;border-radius:8px;box-shadow:0 1px 5px rgba(0,0,0,.3);overflow:hidden;font-family:sans-serif;}
+.style-sw button{display:block;width:100%;border:0;background:#fff;padding:8px 12px;font-size:13px;color:#333;text-align:left;}
+.style-sw button.on{background:#2563eb;color:#fff;}</style></head>
+<body><div id="map"></div>
+<div class="style-sw"><button id="sw-map" class="on" onclick="setStyleMode('positron')">🗺 ম্যাপ</button><button id="sw-sat" onclick="setStyleMode('satellite')">🛰 স্যাটেলাইট</button><button id="sw-osm" onclick="setStyleMode('osm')">🧭 OSM</button></div>
+<script>
+var POSITRON='https://basemaps.cartocdn.com/gl/positron-gl-style/style.json';
+var SAT_STYLE={version:8,sources:{esri:{type:'raster',tiles:['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],tileSize:256,attribution:'Esri, Maxar, Earthstar Geographics'}},layers:[{id:'esri',type:'raster',source:'esri',minzoom:0,maxzoom:19}]};
+var OSM_STYLE={version:8,sources:{osm:{type:'raster',tiles:['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],tileSize:256,attribution:'© OpenStreetMap contributors'}},layers:[{id:'osm',type:'raster',source:'osm',minzoom:0,maxzoom:19}]};
+var map=null;
+try{ map=new maplibregl.Map({container:'map',style:POSITRON,center:[__LNG__,__LAT__],zoom:15}); }catch(e){ document.getElementById('map').innerHTML='<div style="padding:24px;font-family:sans-serif;color:#333">এই ফোনের WebView-এ WebGL চালু নেই — ম্যাপ দেখা যাবে না।</div>'; }
+var placesData=[],selId=-1,mePos=null,pendingPos=null,pendingRadius=200,curStyle='positron';
+var placeMarkers=[],meMarker=null,pendingMarker=null,lastPlaceTapMs=0;
+function toRad(d){return d*Math.PI/180;}
+function toDeg(r){return r*180/Math.PI;}
+function circlePolygon(lat,lng,radiusM){
+  var pts=[],i,b,d,lat1=toRad(lat),lng1=toRad(lng);
+  for(i=0;i<=64;i++){
+    b=i/64*2*Math.PI; d=radiusM/6371000;
+    var lat2=Math.asin(Math.sin(lat1)*Math.cos(d)+Math.cos(lat1)*Math.sin(d)*Math.cos(b));
+    var lng2=lng1+Math.atan2(Math.sin(b)*Math.sin(d)*Math.cos(lat1),Math.cos(d)-Math.sin(lat1)*Math.sin(lat2));
+    pts.push([toDeg(lng2),toDeg(lat2)]);
+  }
+  return {type:'Polygon',coordinates:[pts]};
+}
+function placesGeo(){
+  var feats=[];
+  for(var i=0;i<placesData.length;i++){
+    var p=placesData[i];
+    feats.push({type:'Feature',properties:{id:p.id,color:p.active?'#22c55e':'#3b82f6'},geometry:circlePolygon(p.lat,p.lng,p.r)});
+  }
+  return {type:'FeatureCollection',features:feats};
+}
+function ensurePlaceLayers(){
+  if(!map.getSource('places-circles')){
+    map.addSource('places-circles',{type:'geojson',data:placesGeo()});
+    map.addLayer({id:'places-fill',type:'fill',source:'places-circles',paint:{'fill-color':['get','color'],'fill-opacity':0.15}});
+    map.addLayer({id:'places-line',type:'line',source:'places-circles',paint:{'line-color':['get','color'],'line-width':['case',['==',['get','id'],selId],4,2]}});
+  }else{
+    map.getSource('places-circles').setData(placesGeo());
+    if(map.getLayer('places-line')) map.setPaintProperty('places-line','line-width',['case',['==',['get','id'],selId],4,2]);
   }
 }
-function setMe(lat, lng) {
-  if (meMarker) { meMarker.setLatLng([lat, lng]); }
-  else { meMarker = L.circleMarker([lat, lng], {radius: 8, color: '#ffffff', weight: 2, fillColor: '#2563eb', fillOpacity: 1}).addTo(map).bindPopup('আমি'); }
+function ensurePendingLayer(){
+  if(!pendingPos) return;
+  var data={type:'FeatureCollection',features:[{type:'Feature',properties:{},geometry:circlePolygon(pendingPos[0],pendingPos[1],pendingRadius)}]};
+  if(!map.getSource('pending-circle')){
+    map.addSource('pending-circle',{type:'geojson',data:data});
+    map.addLayer({id:'pending-fill',type:'fill',source:'pending-circle',paint:{'fill-color':'#FFB84D','fill-opacity':0.15}});
+    map.addLayer({id:'pending-line',type:'line',source:'pending-circle',paint:{'line-color':'#FFB84D','line-width':2}});
+  }else map.getSource('pending-circle').setData(data);
 }
-function setPending(lat, lng) {
-  if (pendingMarker) { pendingMarker.setLatLng([lat, lng]); }
-  else { pendingMarker = L.marker([lat, lng]).addTo(map); }
-  if (pendingCircle) { pendingCircle.setLatLng([lat, lng]); }
-  else { pendingCircle = L.circle([lat, lng], {radius: 200, color: '#FFB84D', weight: 2, fillColor: '#FFB84D', fillOpacity: 0.15}).addTo(map); }
-}
-function updateCircle(id, radius, active) {
-  var c = circles[id];
-  if (c) {
-    var col = active ? '#22c55e' : '#3b82f6';
-    c.setRadius(radius);
-    c.setStyle({color: col, fillColor: col});
+function renderAll(){
+  if(!map||!map.isStyleLoaded()) return;
+  ensurePlaceLayers();
+  ensurePendingLayer();
+  for(var i=0;i<placeMarkers.length;i++) placeMarkers[i].remove();
+  placeMarkers=[];
+  for(var j=0;j<placesData.length;j++){
+    (function(p){
+      var col=p.active?'#22c55e':'#3b82f6';
+      var m=new maplibregl.Marker({color:col}).setLngLat([p.lng,p.lat]).addTo(map);
+      m.getElement().addEventListener('click',function(ev){ev.stopPropagation();placeTap(p.id);});
+      placeMarkers.push(m);
+    })(placesData[j]);
   }
-  if (pendingCircle) { pendingCircle.setRadius(radius); }
+  if(pendingPos){
+    if(pendingMarker) pendingMarker.setLngLat([pendingPos[1],pendingPos[0]]);
+    else pendingMarker=new maplibregl.Marker({color:'#f59e0b'}).setLngLat([pendingPos[1],pendingPos[0]]).addTo(map);
+  }
+  if(mePos){
+    if(meMarker) meMarker.setLngLat([mePos[1],mePos[0]]);
+    else{var el=document.createElement('div');el.className='me-dot';meMarker=new maplibregl.Marker({element:el}).setLngLat([mePos[1],mePos[0]]).addTo(map);}
+  }
 }
-function recenter(lat, lng) { map.setView([lat, lng], 16); }
-map.on('click', function(e) { Android.onMapTap(e.latlng.lat, e.latlng.lng); });
+function placeTap(id){lastPlaceTapMs=Date.now();Android.onPlaceTap(id);}
+function setData(json,sid){placesData=json;selId=sid;renderAll();}
+function setMe(lat,lng){mePos=[lat,lng];renderAll();}
+function setPending(lat,lng){pendingPos=[lat,lng];renderAll();}
+function updateCircle(id,radius,active){
+  for(var i=0;i<placesData.length;i++){if(placesData[i].id===id){placesData[i].r=radius;placesData[i].active=active;}}
+  pendingRadius=radius;renderAll();
+}
+function recenter(lat,lng){if(map) map.flyTo({center:[lng,lat],zoom:16});}
+function fitCircle(lat,lng,radius){
+  if(!map) return;
+  var dLat=radius/111320,dLng=radius/(111320*Math.cos(toRad(lat)));
+  map.fitBounds([[lng-dLng,lat-dLat],[lng+dLng,lat+dLat]],{padding:30});
+}
+function setStyleMode(mode){
+  curStyle=mode;
+  var b1=document.getElementById('sw-map'),b2=document.getElementById('sw-sat'),b3=document.getElementById('sw-osm');
+  if(b1)b1.className=(mode==='positron')?'on':'';
+  if(b2)b2.className=(mode==='satellite')?'on':'';
+  if(b3)b3.className=(mode==='osm')?'on':'';
+  if(!map) return;
+  if(mode==='satellite') map.setStyle(SAT_STYLE);
+  else if(mode==='osm') map.setStyle(OSM_STYLE);
+  else map.setStyle(POSITRON);
+}
+function setSat(on){setStyleMode(on?'satellite':'positron');}
+if(map){
+  map.on('load',function(){renderAll();});
+  map.on('style.load',function(){renderAll();});
+  map.on('click',function(e){
+    if(Date.now()-lastPlaceTapMs<500)return;
+    var feats=[];
+    try{if(map.getLayer('places-fill')) feats=map.queryRenderedFeatures(e.point,{layers:['places-fill']});}catch(err){}
+    if(feats&&feats.length>0){placeTap(feats[0].properties.id);return;}
+    Android.onMapTap(e.lngLat.lat,e.lngLat.lng);
+  });
+}
 </script></body></html>
 """.replace("__LAT__", cLat.toString()).replace("__LNG__", cLng.toString())
     }
