@@ -39,6 +39,10 @@ class PowerBlockService : AccessibilityService() {
     private var lastAction = 0L
     private var lastMenuScan = 0L
     private var lastGuardScan = 0L
+
+    @Volatile
+    private var provisionalCheckRunning = false // a location check is running for the power menu
+
     private var overlay: View? = null
     private var overlaySub: TextView? = null
     private var overlayAttached = false
@@ -135,11 +139,14 @@ class PowerBlockService : AccessibilityService() {
     private fun protecting(): Boolean = (active && System.currentTimeMillis() < endAt) || locProtecting
 
     override fun onAccessibilityEvent(e: AccessibilityEvent?) {
-        if (e == null || !protecting()) return
+        if (e == null) return
         val pkg = e.packageName?.toString() ?: return
         try {
             if (pkg.contains("systemui")) {
+                // the power menu: even when the flag is not set yet, the location lock may apply
                 onSystemUi(e)
+            } else if (!protecting()) {
+                return
             } else if (focusOn && focusApps.contains(pkg)) {
                 onFocusApp(e)
             } else if (guardOn && isGuarded(pkg)) {
@@ -154,25 +161,45 @@ class PowerBlockService : AccessibilityService() {
 
     private fun onSystemUi(e: AccessibilityEvent) {
         // 1) instant check from the event itself (no IPC at all)
-        if (looksLikePowerMenu(e)) {
+        val menu = looksLikePowerMenu(e) || menuFromNode(e)
+        if (!menu) return
+        if (protecting()) {
             block()
             return
         }
-        val now = SystemClock.uptimeMillis()
-        if (e.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
-            // 2) frequent event: look only at the changed part, windows at most every 150 ms
-            if (now - lastMenuScan < 60) return
-            lastMenuScan = now
-            if (hasPowerMenu(e.source)) {
-                block()
-            } else if (now - lastWinScan >= 150) {
-                lastWinScan = now
-                if (scanWindows(false)) block()
-            }
+        // location lock on but the flag has not caught up yet (updates are slow): shield now,
+        // verify presence, then keep blocking or release the menu
+        if (!Store.settings(this).getBoolean("loc_on", false)) return
+        if (!Perm.locationOn(this)) return
+        if (provisionalCheckRunning) {
+            showOverlay() // keep the shield up while the check runs
             return
         }
-        // 3) a window appeared or changed: node first, then system windows, then the rest
-        if (hasPowerMenu(e.source) || scanWindows(true)) block()
+        showOverlay()
+        provisionalCheckRunning = true
+        PlaceWatcher.isAnyPlaceActiveNow(this) { active ->
+            provisionalCheckRunning = false
+            if (active == true) {
+                Store.setLocProtecting(this, true)
+                block()
+            } else {
+                hideOverlay()
+            }
+        }
+    }
+
+    /** Node / window scan for the power menu (throttled like before). */
+    private fun menuFromNode(e: AccessibilityEvent): Boolean {
+        val now = SystemClock.uptimeMillis()
+        if (e.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+            if (now - lastMenuScan < 60) return false
+            lastMenuScan = now
+            if (hasPowerMenu(e.source)) return true
+            if (now - lastWinScan < 150) return false
+            lastWinScan = now
+            return scanWindows(false)
+        }
+        return hasPowerMenu(e.source) || scanWindows(true)
     }
 
     private fun onGuarded(e: AccessibilityEvent) {
@@ -182,7 +209,14 @@ class PowerBlockService : AccessibilityService() {
             lastGuardScan = now
         }
         val root = rootInActiveWindow ?: return
-        if (root.findAccessibilityNodeInfosByText("PowerLock").isNotEmpty() && now - lastAction >= 300) {
+        if (root.findAccessibilityNodeInfosByText("PowerLock").isEmpty()) return
+        // the app's own info page and the installer must stay usable (open the app, install an
+        // update): only the Accessibility service page itself is guarded
+        if (root.findAccessibilityNodeInfosByText("Uninstall").isNotEmpty() ||
+            root.findAccessibilityNodeInfosByText("Force stop").isNotEmpty() ||
+            root.findAccessibilityNodeInfosByText("Install").isNotEmpty() ||
+            root.findAccessibilityNodeInfosByText("Update").isNotEmpty()) return
+        if (now - lastAction >= 300) {
             lastAction = now
             performGlobalAction(GLOBAL_ACTION_HOME)
         }

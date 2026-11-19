@@ -347,10 +347,10 @@ object PlaceWatcher {
             val m = app.getSystemService(Context.LOCATION_SERVICE) as LocationManager
             lm = m
             if (m.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-                m.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 60_000L, 30f, listener, Looper.getMainLooper())
+                m.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 30_000L, 20f, listener, Looper.getMainLooper())
             }
             if (m.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-                m.requestLocationUpdates(LocationManager.GPS_PROVIDER, 120_000L, 40f, listener, Looper.getMainLooper())
+                m.requestLocationUpdates(LocationManager.GPS_PROVIDER, 60_000L, 30f, listener, Looper.getMainLooper())
             }
             on = true
         } catch (e: Exception) {
