@@ -60,7 +60,12 @@ class PowerBlockService : AccessibilityService() {
 
     private var lastFocusAction = 0L
 
-    private val triggers = listOf("Swipe to power off", "Swipe to restart", "Swipe for SOS")
+    // English + Bengali: the phone's system language decides the menu text.
+    private val triggers = listOf(
+        "Swipe to power off", "Swipe to restart", "Swipe for SOS",
+        "Power off", "Restart",
+        "পাওয়ার বন্ধ", "পাওয়ার অফ", "রিস্টার্ট", "বন্ধ করতে সোয়াইপ"
+    )
     private val triggersLower = triggers.map { it.lowercase() }
 
     private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> readState() }
@@ -207,10 +212,12 @@ class PowerBlockService : AccessibilityService() {
         return false
     }
 
-    /** One search only: every power menu has the "Swipe to power off" slider. */
+    /** The power menu always has the "power off" slider (English or Bengali). */
     private fun hasPowerMenu(n: AccessibilityNodeInfo?): Boolean {
         if (n == null) return false
-        return n.findAccessibilityNodeInfosByText("to power off").isNotEmpty()
+        return n.findAccessibilityNodeInfosByText("to power off").isNotEmpty() ||
+                n.findAccessibilityNodeInfosByText("পাওয়ার বন্ধ").isNotEmpty() ||
+                n.findAccessibilityNodeInfosByText("রিস্টার্ট").isNotEmpty()
     }
 
     /** System windows first (where the power menu lives); other windows only when [all] is true. */
