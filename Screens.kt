@@ -35,6 +35,7 @@ class HomeScreen(private val a: MainActivity) {
     private lateinit var schedPill: TextView
     private lateinit var startBtn: LinearLayout
     private lateinit var stopBtn: LinearLayout
+    private lateinit var extendBtn: LinearLayout
     private lateinit var warnBox: LinearLayout
     private val chips = ArrayList<TextView>()
     private val quick = listOf(5, 10, 15, 30, 60)
@@ -95,6 +96,9 @@ class HomeScreen(private val a: MainActivity) {
         stopBtn = a.bigButton(Ic.LOCK, L.t("Stop Power Lock", "পাওয়ার লক বন্ধ"), Color.TRANSPARENT, C.danger, C.danger)
         stopBtn.setOnClickListener { onStop() }
         sc.addView(stopBtn, lp(MATCH, a.dp(60), t = a.dp(20)))
+        extendBtn = a.bigButton(Ic.CLOCK, L.t("Add time", "সময় বাড়ান"), C.card2, C.primary, C.primary)
+        extendBtn.setOnClickListener { a.extendFlow { tick() } }
+        sc.addView(extendBtn, lp(MATCH, a.dp(60), t = a.dp(12)))
         col.addView(sc, lp(MATCH, WRAP, t = a.dp(16)))
 
         // ---- duration ----
@@ -117,6 +121,9 @@ class HomeScreen(private val a: MainActivity) {
         col.addView(row2)
         previewText = a.tv("", 13f, C.muted)
         col.addView(previewText, lp(MATCH, WRAP, t = a.dp(12)))
+
+        // ---- presets ----
+        col.addView(a.presetsCard { refreshChips(true); tick() })
 
         // ---- schedule card ----
         val scd = a.card(20)
@@ -293,6 +300,7 @@ class HomeScreen(private val a: MainActivity) {
         ring.invalidate()
         showView(startBtn, !active)
         showView(stopBtn, active && !strict)
+        showView(extendBtn, active)
         if (lastActive != active) {
             lastActive = active
             refreshChips()
@@ -876,6 +884,10 @@ class SettingsScreen(private val a: MainActivity) {
         else L.t("Changes apply from the next session.", "পরিবর্তন পরের সেশন থেকে কার্যকর হবে।")
         strictCard.addView(a.tv(note, 12f, if (locked) C.warn else C.muted), lp(MATCH, WRAP, t = a.dp(8)))
         col.addView(strictCard, lp(MATCH, WRAP, b = a.dp(12)))
+
+        // focus mode + location lock (defined in Features.kt, were never shown)
+        col.addView(a.focusCard(), lp(MATCH, WRAP, b = a.dp(12)))
+        col.addView(a.locationCard(), lp(MATCH, WRAP, b = a.dp(12)))
 
         // general
         val gen = a.card()

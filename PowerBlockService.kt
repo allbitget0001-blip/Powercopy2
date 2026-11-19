@@ -52,6 +52,14 @@ class PowerBlockService : AccessibilityService() {
     @Volatile
     private var guardOn = true
 
+    @Volatile
+    private var focusOn = false
+
+    @Volatile
+    private var focusApps: Set<String> = emptySet()
+
+    private var lastFocusAction = 0L
+
     private val triggers = listOf("Swipe to power off", "Swipe to restart", "Swipe for SOS")
     private val triggersLower = triggers.map { it.lowercase() }
 
@@ -81,6 +89,7 @@ class PowerBlockService : AccessibilityService() {
             L.load(this)
             readState()
             Store.lock(this).registerOnSharedPreferenceChangeListener(prefsListener)
+            Store.settings(this).registerOnSharedPreferenceChangeListener(prefsListener)
             ensureOverlay() // pre-build the shield so it can appear instantly
             registerCloseDialogs()
             Store.kickService(this)
@@ -110,6 +119,9 @@ class PowerBlockService : AccessibilityService() {
         active = p.getBoolean("active", false)
         endAt = p.getLong("end", 0)
         guardOn = p.getBoolean("s_guard", true)
+        val st = Store.settings(this)
+        focusOn = st.getBoolean("focus_on", false)
+        focusApps = (st.getString("focus_apps", "") ?: "").split(",").filter { it.isNotEmpty() }.toSet()
     }
 
     private fun protecting(): Boolean = active && System.currentTimeMillis() < endAt
@@ -120,6 +132,8 @@ class PowerBlockService : AccessibilityService() {
         try {
             if (pkg.contains("systemui")) {
                 onSystemUi(e)
+            } else if (focusOn && focusApps.contains(pkg)) {
+                onFocusApp(e)
             } else if (guardOn && isGuarded(pkg)) {
                 onGuarded(e)
             }
@@ -164,6 +178,14 @@ class PowerBlockService : AccessibilityService() {
             lastAction = now
             performGlobalAction(GLOBAL_ACTION_HOME)
         }
+    }
+
+    private fun onFocusApp(e: AccessibilityEvent) {
+        val now = SystemClock.uptimeMillis()
+        if (now - lastFocusAction < 300) return
+        lastFocusAction = now
+        Extra.logAttempt(this, "focus")
+        performGlobalAction(GLOBAL_ACTION_HOME)
     }
 
     private fun looksLikePowerMenu(e: AccessibilityEvent): Boolean {
@@ -311,6 +333,11 @@ class PowerBlockService : AccessibilityService() {
             Store.lock(this).unregisterOnSharedPreferenceChangeListener(prefsListener)
         } catch (ex: Exception) {
             Log.e(TAG, "unregister failed", ex)
+        }
+        try {
+            Store.settings(this).unregisterOnSharedPreferenceChangeListener(prefsListener)
+        } catch (ex: Exception) {
+            Log.e(TAG, "unregister settings failed", ex)
         }
     }
 
