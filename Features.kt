@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.graphics.drawable.Drawable
 import android.location.Location
 import android.location.LocationListener
@@ -20,6 +21,7 @@ import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.TextView
 import org.json.JSONArray
 import org.json.JSONObject
@@ -299,6 +301,16 @@ object PlaceWatcher {
         if (want && !on) start(app) else if (!want && on) stop()
     }
 
+    /** One-shot check right now (used when the master switch or a place is turned on). */
+    fun checkNow(ctx: Context) {
+        val app = ctx.applicationContext
+        if (!Store.settings(app).getBoolean("loc_on", false)) return
+        if (!Perm.locationOn(app)) return
+        Extra.currentLocation(app) { loc ->
+            if (loc != null) handle(app, loc)
+        }
+    }
+
     @SuppressLint("MissingPermission")
     private fun start(app: Context) {
         try {
@@ -339,11 +351,13 @@ object PlaceWatcher {
                 val was = prefs.getBoolean(key, false)
                 val inside = d <= pl.radius
                 val outside = d > pl.radius * 1.3f
+                // Auto places (min = 0) run until you leave / come back: 15 days is only a safety cap.
+                val durMs = if (pl.min <= 0) MAX_MIN * 60_000L else pl.min * 60_000L
                 if (pl.mode == PLACE_MODE_OUTSIDE) {
                     // Lock while away: leaving starts the lock, coming back stops it.
                     if (outside) {
                         prefs.edit().putBoolean(key, false).apply()
-                        if (!Store.isActive(ctx)) Store.startSession(ctx, pl.min * 60_000L, "location")
+                        if (!Store.isActive(ctx)) Store.startSession(ctx, durMs, "location")
                     } else if (inside) {
                         prefs.edit().putBoolean(key, true).apply()
                         if (Store.isLocationSession(ctx)) Store.stopSession(ctx, force = true)
@@ -352,7 +366,7 @@ object PlaceWatcher {
                     // Lock while here: arriving starts the lock, leaving stops it.
                     if (inside && !was) {
                         prefs.edit().putBoolean(key, true).apply()
-                        if (!Store.isActive(ctx)) Store.startSession(ctx, pl.min * 60_000L, "location")
+                        if (!Store.isActive(ctx)) Store.startSession(ctx, durMs, "location")
                     } else if (outside && was) {
                         prefs.edit().putBoolean(key, false).apply()
                         if (Store.isLocationSession(ctx)) Store.stopSession(ctx, force = true)
@@ -485,6 +499,8 @@ private fun MainActivity.applyPreset(p: Preset, done: () -> Unit) {
     }
     selectedMin = p.min
     Store.settings(this).edit().putBoolean("strict", p.strict).apply()
+
+
     toast(L.t("Preset applied: ", "প্রিসেট প্রয়োগ: ") + p.name)
     done()
 }
@@ -663,20 +679,29 @@ private fun MainActivity.requestLocationPerm() {
 
 fun MainActivity.locationCard(): View {
     val c = card()
-    c.addView(section(L.t("Location lock", "লোকেশন লক")))
-
-
     val st = Store.settings(this)
+    // header first: title on the left, master on/off on the right
     val sw = toggle(st.getBoolean("loc_on", false)) { v ->
         st.edit().putBoolean("loc_on", v).apply()
         PlaceWatcher.sync(this)
-        if (v && !Perm.locationOn(this)) requestLocationPerm()
+        if (v) {
+            if (!Perm.locationOn(this)) requestLocationPerm()
+            PlaceWatcher.checkNow(this)
+        }
     }
+    val head = LinearLayout(this)
+    head.orientation = LinearLayout.HORIZONTAL
+    head.gravity = Gravity.CENTER_VERTICAL
+    head.addView(section(L.t("Location lock", "লোকেশন লক")), lp(0, WRAP, weight = 1f))
+    head.addView(sw)
+    c.addView(head)
     c.addView(
-        row(
-            L.t("Start the lock at saved places", "সেভ করা জায়গায় পৌঁছালে লক চালু"),
-            L.t("Works without internet. The lock follows the place: it ends when you leave, or come back.", "নেট ছাড়াই কাজ করে। লক জায়গা অনুযায়ী চলে: ছেড়ে গেলে বা ফিরে এলে খুলে যায়।"),
-            sw
+        tv(
+            L.t(
+                "When on, every enabled place works automatically: arriving at any saved place starts the lock, even if no lock is running.",
+                "চালু থাকলে প্রতিটি অন করা জায়গা নিজে নিজে কাজ করবে: কোনো লক না চললেও, সেভ করা যেকোনো জায়গায় পৌঁছালেই লক চালু হয়ে যাবে।"
+            ),
+            12f, C.muted
         ),
         lp(MATCH, WRAP, t = dp(6))
     )
@@ -686,30 +711,33 @@ fun MainActivity.locationCard(): View {
         val rowSw = toggle(pl.enabled) { v ->
             Extra.savePlaces(this, Extra.places(this).map { if (it.id == pl.id) it.copy(enabled = v) else it })
             PlaceWatcher.sync(this)
+            if (v) PlaceWatcher.checkNow(this)
         }
-        val r = row(
-            pl.name,
-            L.num("${pl.radius} " + L.t("m radius", "মি. ব্যাসার্ধ")) + " · " +
-                    if (pl.mode == PLACE_MODE_OUTSIDE) L.t("Lock when away", "বাইরে গেলে লক") else L.t("Lock when here", "এখানে থাকলে লক"),
-            rowSw
-        )
+        val modeTxt = if (pl.mode == PLACE_MODE_OUTSIDE) L.t("Lock when away", "বাইরে গেলে লক") else L.t("Lock when here", "এখানে থাকলে লক")
+        val timeTxt = if (pl.min <= 0) L.t("Auto", "অটো") else fmtDur(pl.min * 60_000L)
+        val sub = L.num("${pl.radius} " + L.t("m radius", "মি. ব্যাসার্ধ")) + " · " + modeTxt + " · " + timeTxt
+        val r = LinearLayout(this)
+        r.orientation = LinearLayout.HORIZONTAL
+        r.gravity = Gravity.CENTER_VERTICAL
+        r.setPadding(0, dp(10), 0, dp(10))
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.addView(tv(pl.name, 15f, C.text, 1))
+        col.addView(tv(sub, 12f, C.muted))
+        r.addView(col, lp(0, WRAP, weight = 1f))
+        // visible delete button (long-press still works too)
+        val del = tv("✕", 16f, C.danger, 1)
+        del.gravity = Gravity.CENTER
+        del.background = withRipple(rounded(C.card2, dp(18).toFloat()))
+        del.pressFeedback()
+        del.setOnClickListener { deletePlaceDialog(pl) { go(3) } }
+        r.addView(del, lp(dp(36), dp(36), r = dp(10)))
+        r.addView(rowSw)
         r.setOnLongClickListener {
-            dlg()
-                .setTitle(L.t("Delete this place?", "এই জায়গা মুছবেন?"))
-                .setMessage(pl.name)
-                .setPositiveButton(L.t("Delete", "মুছুন")) { _, _ ->
-                    Extra.savePlaces(this, Extra.places(this).filter { it.id != pl.id })
-                    PlaceWatcher.sync(this)
-                    go(3)
-                }
-                .setNegativeButton(L.t("Cancel", "বাতিল"), null)
-                .show()
+            deletePlaceDialog(pl) { go(3) }
             true
         }
         c.addView(r)
-    }
-    if (places.isNotEmpty()) {
-        c.addView(tv(L.t("Long-press a place to delete it.", "জায়গা মুছতে চেপে ধরুন।"), 12f, C.muted), lp(MATCH, WRAP, t = dp(2)))
     }
 
     val add = outlineBtn("＋ " + L.t("Save my current place", "আমার এই জায়গা সেভ করুন"), C.primary)
@@ -746,6 +774,19 @@ fun MainActivity.locationCard(): View {
     return c
 }
 
+private fun MainActivity.deletePlaceDialog(pl: Place, done: () -> Unit) {
+    dlg()
+        .setTitle(L.t("Delete this place?", "এই জায়গা মুছবেন?"))
+        .setMessage(pl.name)
+        .setPositiveButton(L.t("Delete", "মুছুন")) { _, _ ->
+            Extra.savePlaces(this, Extra.places(this).filter { it.id != pl.id })
+            PlaceWatcher.sync(this)
+            done()
+        }
+        .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+        .show()
+}
+
 private fun MainActivity.addPlaceFlow(done: () -> Unit) {
     if (!Perm.locationOn(this)) {
         requestLocationPerm()
@@ -768,21 +809,49 @@ private fun MainActivity.placeDialog(lat: Double, lng: Double, done: () -> Unit)
     val nameEt = edit(L.t("Place name (e.g. Office)", "জায়গার নাম (যেমন অফিস)"), false)
     box.addView(nameEt)
 
-    box.addView(tv(L.t("Radius", "ব্যাসার্ধ"), 13f, C.muted), lp(WRAP, WRAP, t = dp(14)))
     var radius = 200
     val radii = intArrayOf(100, 200, 500)
     val chips = ArrayList<TextView>()
+    val seek = SeekBar(this)
+    seek.max = 95 // (1000 - 50) / 10: 50 m to 1000 m in 10 m steps
+    // header: label on the left, live value on the right
+    val rHead = LinearLayout(this)
+    rHead.orientation = LinearLayout.HORIZONTAL
+    rHead.gravity = Gravity.CENTER_VERTICAL
+    rHead.addView(tv(L.t("Radius", "ব্যাসার্ধ"), 13f, C.muted), lp(0, WRAP, weight = 1f))
+    val radiusVal = tv(L.num("$radius " + L.t("m", "মি.")), 16f, C.primary, 1)
+    rHead.addView(radiusVal)
+    box.addView(rHead, lp(MATCH, WRAP, t = dp(14)))
+    // quick chips (100 / 200 / 500)
     val rr = LinearLayout(this)
     for ((i, rv) in radii.withIndex()) {
         val ch = chip(L.num("$rv " + L.t("m", "মি.")), rv == radius)
-        ch.setOnClickListener {
-            radius = rv
-            for (j in chips.indices) styleChip(chips[j], radii[j] == radius)
-        }
+        ch.setOnClickListener { seek.progress = (rv - 50) / 10 }
         chips.add(ch)
         rr.addView(ch, lp(0, WRAP, r = if (i < radii.size - 1) dp(8) else 0, t = dp(8), weight = 1f))
     }
     box.addView(rr)
+    // smooth slider: drag to grow or shrink the area
+    seek.progressTintList = ColorStateList.valueOf(C.primary)
+    seek.progressBackgroundTintList = ColorStateList.valueOf(C.card2)
+    seek.thumbTintList = ColorStateList.valueOf(C.mint)
+    seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+        override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+            radius = 50 + p * 10
+            radiusVal.setTextAnimated(L.num("$radius " + L.t("m", "মি.")))
+            for (j in chips.indices) styleChip(chips[j], radii[j] == radius)
+        }
+
+        override fun onStartTrackingTouch(s: SeekBar?) {}
+        override fun onStopTrackingTouch(s: SeekBar?) {}
+    })
+    seek.progress = (radius - 50) / 10
+    box.addView(seek, lp(MATCH, WRAP, t = dp(10)))
+    val range = LinearLayout(this)
+    range.orientation = LinearLayout.HORIZONTAL
+    range.addView(tv(L.num("50 " + L.t("m", "মি.")), 12f, C.muted), lp(0, WRAP, weight = 1f))
+    range.addView(tv(L.num("1000 " + L.t("m", "মি.")), 12f, C.muted))
+    box.addView(range)
 
     box.addView(tv(L.t("When to lock", "কখন লক হবে"), 13f, C.muted), lp(WRAP, WRAP, t = dp(14)))
     var mode = PLACE_MODE_INSIDE
@@ -800,7 +869,19 @@ private fun MainActivity.placeDialog(lat: Double, lng: Double, done: () -> Unit)
     }
     box.addView(mr)
 
-    box.addView(tv(L.t("Longest lock time", "সর্বোচ্চ লকের সময়"), 13f, C.muted), lp(WRAP, WRAP, t = dp(14)))
+    var auto = false
+    val tHead = LinearLayout(this)
+    tHead.orientation = LinearLayout.HORIZONTAL
+    tHead.gravity = Gravity.CENTER_VERTICAL
+    tHead.addView(tv(L.t("Longest lock time", "সর্বোচ্চ লকের সময়"), 13f, C.muted), lp(0, WRAP, weight = 1f))
+    val autoChip = chip(L.t("Auto", "অটো"), false)
+    autoChip.setPadding(dp(18), dp(10), dp(18), dp(10))
+    tHead.addView(autoChip)
+    box.addView(tHead, lp(MATCH, WRAP, t = dp(14)))
+    box.addView(
+        tv(L.t("Auto: no time limit — the lock stays until you leave or come back.", "অটো: কোনো সময়সীমা নেই — ছেড়ে যাওয়া বা ফেরা পর্যন্ত লক থাকবে।"), 12f, C.muted),
+        lp(MATCH, WRAP, t = dp(4))
+    )
     val r = LinearLayout(this)
     val dEt = edit(L.t("Days", "দিন"), true)
     val hEt = edit(L.t("Hours", "ঘণ্টা"), true)
@@ -810,6 +891,14 @@ private fun MainActivity.placeDialog(lat: Double, lng: Double, done: () -> Unit)
     r.addView(hEt, lp(0, WRAP, r = dp(8), t = dp(8), weight = 1f))
     r.addView(mEt, lp(0, WRAP, t = dp(8), weight = 1f))
     box.addView(r)
+    autoChip.setOnClickListener {
+        auto = !auto
+        animateChip(autoChip, auto)
+        for (e in arrayOf(dEt, hEt, mEt)) {
+            e.isEnabled = !auto
+            e.alpha = if (auto) 0.4f else 1f
+        }
+    }
 
     val d = dlg()
         .setTitle(L.t("Save this place", "এই জায়গা সেভ করুন"))
@@ -820,12 +909,12 @@ private fun MainActivity.placeDialog(lat: Double, lng: Double, done: () -> Unit)
     d.show()
     d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
         val name = nameEt.text.toString().trim()
-        val total = (dEt.text.toString().toLongOrNull() ?: 0L) * 1440L +
+        val total = if (auto) 0L else (dEt.text.toString().toLongOrNull() ?: 0L) * 1440L +
                 (hEt.text.toString().toLongOrNull() ?: 0L) * 60L +
                 (mEt.text.toString().toLongOrNull() ?: 0L)
         if (name.isEmpty()) {
             nameEt.error = L.t("Enter a name", "নাম লিখুন")
-        } else if (total < 1L || total > MAX_MIN.toLong()) {
+        } else if (!auto && (total < 1L || total > MAX_MIN.toLong())) {
             mEt.error = L.t("1 minute to 15 days", "১ মিনিট থেকে ১৫ দিন")
         } else {
             val id = System.currentTimeMillis()
@@ -907,9 +996,4 @@ fun MainActivity.attemptsCard(): View {
     )
     return c
 }
-
-
-
-
-
     
