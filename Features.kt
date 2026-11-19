@@ -307,7 +307,39 @@ object PlaceWatcher {
         if (!Store.settings(app).getBoolean("loc_on", false)) return
         if (!Perm.locationOn(app)) return
         Extra.currentLocation(app) { loc ->
-            if (loc != null) handle(app, loc)
+            if (loc != null) {
+                lockIfAlreadyThere(app, loc) // already at a saved place? lock right now
+                handle(app, loc)
+            }
+        }
+    }
+
+    /** Already inside an enabled "lock while here" place (or outside an "away" place)? Start the session now. */
+    private fun lockIfAlreadyThere(ctx: Context, loc: Location) {
+        try {
+            if (loc.hasAccuracy() && loc.accuracy > 200f) return // too vague to trust
+            if (Store.isActive(ctx)) return
+            val prefs = Store.settings(ctx)
+            for (pl in Extra.places(ctx)) {
+                if (!pl.enabled) continue
+                val res = FloatArray(1)
+                Location.distanceBetween(loc.latitude, loc.longitude, pl.lat, pl.lng, res)
+                val d = res[0]
+                val durMs = if (pl.min <= 0) MAX_MIN * 60_000L else pl.min * 60_000L
+                if (pl.mode == PLACE_MODE_OUTSIDE) {
+                    if (d > pl.radius * 1.3f) {
+                        prefs.edit().putBoolean("inside_" + pl.id, false).apply()
+                        Store.startSession(ctx, durMs, "location")
+                        return
+                    }
+                } else if (d <= pl.radius) {
+                    prefs.edit().putBoolean("inside_" + pl.id, true).apply()
+                    Store.startSession(ctx, durMs, "location")
+                    return
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "lock-if-already-there failed", e)
         }
     }
 
@@ -499,8 +531,6 @@ private fun MainActivity.applyPreset(p: Preset, done: () -> Unit) {
     }
     selectedMin = p.min
     Store.settings(this).edit().putBoolean("strict", p.strict).apply()
-
-
     toast(L.t("Preset applied: ", "প্রিসেট প্রয়োগ: ") + p.name)
     done()
 }
@@ -919,9 +949,10 @@ private fun MainActivity.placeDialog(lat: Double, lng: Double, done: () -> Unit)
         } else {
             val id = System.currentTimeMillis()
             Extra.savePlaces(this, Extra.places(this) + Place(id, name, lat, lng, radius, total.toInt(), true, mode))
-            // we are standing here now, so do not start the lock immediately: wait for the next arrival/departure
+            // we are standing here now: if the master switch is on, lock right away
             Store.settings(this).edit().putBoolean("inside_$id", true).apply()
             PlaceWatcher.sync(this)
+            PlaceWatcher.checkNow(this)
             d.dismiss()
             done()
         }
@@ -996,4 +1027,3 @@ fun MainActivity.attemptsCard(): View {
     )
     return c
 }
-    
