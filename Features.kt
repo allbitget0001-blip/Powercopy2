@@ -664,3 +664,252 @@ private fun MainActivity.requestLocationPerm() {
 fun MainActivity.locationCard(): View {
     val c = card()
     c.addView(section(L.t("Location lock", "লোকেশন লক")))
+
+
+    val st = Store.settings(this)
+    val sw = toggle(st.getBoolean("loc_on", false)) { v ->
+        st.edit().putBoolean("loc_on", v).apply()
+        PlaceWatcher.sync(this)
+        if (v && !Perm.locationOn(this)) requestLocationPerm()
+    }
+    c.addView(
+        row(
+            L.t("Start the lock at saved places", "সেভ করা জায়গায় পৌঁছালে লক চালু"),
+            L.t("Works without internet. The lock follows the place: it ends when you leave, or come back.", "নেট ছাড়াই কাজ করে। লক জায়গা অনুযায়ী চলে: ছেড়ে গেলে বা ফিরে এলে খুলে যায়।"),
+            sw
+        ),
+        lp(MATCH, WRAP, t = dp(6))
+    )
+
+    val places = Extra.places(this)
+    for (pl in places) {
+        val rowSw = toggle(pl.enabled) { v ->
+            Extra.savePlaces(this, Extra.places(this).map { if (it.id == pl.id) it.copy(enabled = v) else it })
+            PlaceWatcher.sync(this)
+        }
+        val r = row(
+            pl.name,
+            L.num("${pl.radius} " + L.t("m radius", "মি. ব্যাসার্ধ")) + " · " +
+                    if (pl.mode == PLACE_MODE_OUTSIDE) L.t("Lock when away", "বাইরে গেলে লক") else L.t("Lock when here", "এখানে থাকলে লক"),
+            rowSw
+        )
+        r.setOnLongClickListener {
+            dlg()
+                .setTitle(L.t("Delete this place?", "এই জায়গা মুছবেন?"))
+                .setMessage(pl.name)
+                .setPositiveButton(L.t("Delete", "মুছুন")) { _, _ ->
+                    Extra.savePlaces(this, Extra.places(this).filter { it.id != pl.id })
+                    PlaceWatcher.sync(this)
+                    go(3)
+                }
+                .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+                .show()
+            true
+        }
+        c.addView(r)
+    }
+    if (places.isNotEmpty()) {
+        c.addView(tv(L.t("Long-press a place to delete it.", "জায়গা মুছতে চেপে ধরুন।"), 12f, C.muted), lp(MATCH, WRAP, t = dp(2)))
+    }
+
+    val add = outlineBtn("＋ " + L.t("Save my current place", "আমার এই জায়গা সেভ করুন"), C.primary)
+    add.setOnClickListener { addPlaceFlow { go(3) } }
+    c.addView(add, lp(MATCH, dp(48), t = dp(12)))
+
+    val locOk = Perm.locationOn(this)
+    val bgOk = Perm.backgroundLocationOn(this)
+    c.addView(
+        row(
+            L.t("Location permission", "লোকেশন পারমিশন"),
+            if (locOk) L.t("Granted", "অনুমোদিত") else L.t("Tap to allow", "অনুমতি দিতে চাপুন"),
+            tv(if (locOk) "✔" else "✘", 18f, if (locOk) C.primary else C.danger, 1)
+        ) { if (!locOk) requestLocationPerm() },
+        lp(MATCH, WRAP, t = dp(6))
+    )
+    c.addView(
+        row(
+            L.t("Allow all the time", "সবসময় অনুমতি"),
+            if (bgOk) L.t("Granted", "অনুমোদিত") else L.t("Needed so it works with the screen off", "স্ক্রিন বন্ধ থাকলেও কাজ করার জন্য দরকার"),
+            tv(if (bgOk) "✔" else "✘", 18f, if (bgOk) C.primary else C.danger, 1)
+        ) { if (!bgOk && locOk) requestLocationPerm() }
+    )
+    c.addView(
+        tv(
+            L.t(
+                "Uses a little extra battery. Indoors the position can be off by 10-50 m, so use a radius of 100 m or more.",
+                "ব্যাটারি একটু বেশি খরচ হয়। ঘরের ভেতরে অবস্থান ১০-৫০ মিটার ভুল হতে পারে, তাই ব্যাসার্ধ ১০০ মিটার বা বেশি রাখুন।"
+            ),
+            12f, C.muted
+        ),
+        lp(MATCH, WRAP, t = dp(8))
+    )
+    return c
+}
+
+private fun MainActivity.addPlaceFlow(done: () -> Unit) {
+    if (!Perm.locationOn(this)) {
+        requestLocationPerm()
+        return
+    }
+    toast(L.t("Finding your location…", "আপনার অবস্থান খোঁজা হচ্ছে…"))
+    Extra.currentLocation(this) { loc ->
+        if (loc == null) {
+            toast(L.t("Could not get the location. Turn on GPS and try again outside.", "অবস্থান পাওয়া যায়নি। GPS চালু করে বাইরে আবার চেষ্টা করুন।"))
+        } else {
+            placeDialog(loc.latitude, loc.longitude, done)
+        }
+    }
+}
+
+private fun MainActivity.placeDialog(lat: Double, lng: Double, done: () -> Unit) {
+    val box = LinearLayout(this)
+    box.orientation = LinearLayout.VERTICAL
+    box.setPadding(dp(24), dp(8), dp(24), 0)
+    val nameEt = edit(L.t("Place name (e.g. Office)", "জায়গার নাম (যেমন অফিস)"), false)
+    box.addView(nameEt)
+
+    box.addView(tv(L.t("Radius", "ব্যাসার্ধ"), 13f, C.muted), lp(WRAP, WRAP, t = dp(14)))
+    var radius = 200
+    val radii = intArrayOf(100, 200, 500)
+    val chips = ArrayList<TextView>()
+    val rr = LinearLayout(this)
+    for ((i, rv) in radii.withIndex()) {
+        val ch = chip(L.num("$rv " + L.t("m", "মি.")), rv == radius)
+        ch.setOnClickListener {
+            radius = rv
+            for (j in chips.indices) styleChip(chips[j], radii[j] == radius)
+        }
+        chips.add(ch)
+        rr.addView(ch, lp(0, WRAP, r = if (i < radii.size - 1) dp(8) else 0, t = dp(8), weight = 1f))
+    }
+    box.addView(rr)
+
+    box.addView(tv(L.t("When to lock", "কখন লক হবে"), 13f, C.muted), lp(WRAP, WRAP, t = dp(14)))
+    var mode = PLACE_MODE_INSIDE
+    val modeChips = ArrayList<TextView>()
+    val mr = LinearLayout(this)
+    val modeLabels = arrayOf(L.t("While I'm here", "এখানে থাকলে"), L.t("While I'm away", "বাইরে গেলে"))
+    for ((i, ml) in modeLabels.withIndex()) {
+        val ch = chip(ml, i == mode)
+        ch.setOnClickListener {
+            mode = i
+            for (j in modeChips.indices) styleChip(modeChips[j], j == mode)
+        }
+        modeChips.add(ch)
+        mr.addView(ch, lp(0, WRAP, r = if (i < modeLabels.size - 1) dp(8) else 0, t = dp(8), weight = 1f))
+    }
+    box.addView(mr)
+
+    box.addView(tv(L.t("Longest lock time", "সর্বোচ্চ লকের সময়"), 13f, C.muted), lp(WRAP, WRAP, t = dp(14)))
+    val r = LinearLayout(this)
+    val dEt = edit(L.t("Days", "দিন"), true)
+    val hEt = edit(L.t("Hours", "ঘণ্টা"), true)
+    val mEt = edit(L.t("Minutes", "মিনিট"), true)
+    hEt.setText("8")
+    r.addView(dEt, lp(0, WRAP, r = dp(8), t = dp(8), weight = 1f))
+    r.addView(hEt, lp(0, WRAP, r = dp(8), t = dp(8), weight = 1f))
+    r.addView(mEt, lp(0, WRAP, t = dp(8), weight = 1f))
+    box.addView(r)
+
+    val d = dlg()
+        .setTitle(L.t("Save this place", "এই জায়গা সেভ করুন"))
+        .setView(box)
+        .setPositiveButton(L.t("Save", "সংরক্ষণ"), null)
+        .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+        .create()
+    d.show()
+    d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+        val name = nameEt.text.toString().trim()
+        val total = (dEt.text.toString().toLongOrNull() ?: 0L) * 1440L +
+                (hEt.text.toString().toLongOrNull() ?: 0L) * 60L +
+                (mEt.text.toString().toLongOrNull() ?: 0L)
+        if (name.isEmpty()) {
+            nameEt.error = L.t("Enter a name", "নাম লিখুন")
+        } else if (total < 1L || total > MAX_MIN.toLong()) {
+            mEt.error = L.t("1 minute to 15 days", "১ মিনিট থেকে ১৫ দিন")
+        } else {
+            val id = System.currentTimeMillis()
+            Extra.savePlaces(this, Extra.places(this) + Place(id, name, lat, lng, radius, total.toInt(), true, mode))
+            // we are standing here now, so do not start the lock immediately: wait for the next arrival/departure
+            Store.settings(this).edit().putBoolean("inside_$id", true).apply()
+            PlaceWatcher.sync(this)
+            d.dismiss()
+            done()
+        }
+    }
+}
+
+// =====================================================================
+// UI: blocked attempts (Statistics)
+// =====================================================================
+
+fun MainActivity.attemptsCard(): View {
+    val c = card()
+    c.addView(section(L.t("Blocked attempts", "আটকানো চেষ্টা")))
+    val list = Extra.attempts(this)
+    val now = System.currentTimeMillis()
+    val today = Store.dayStart(now, 0)
+    val week = Store.dayStart(now, -6)
+    var nToday = 0
+    var nWeek = 0
+    var nPower = 0
+    var nSettings = 0
+    var nFocus = 0
+    for ((t, k) in list) {
+        if (t >= today) nToday++
+        if (t >= week) nWeek++
+        when (k) {
+            "power" -> nPower++
+            "settings" -> nSettings++
+            else -> nFocus++
+        }
+    }
+    val nums = LinearLayout(this)
+    fun stat(value: Int, label: String, last: Boolean) {
+        val b = LinearLayout(this)
+        b.orientation = LinearLayout.VERTICAL
+        b.gravity = Gravity.CENTER
+        b.addView(tv(L.num(value.toString()), 26f, C.mint, 1))
+        b.addView(tv(label, 12f, C.muted))
+        nums.addView(b, lp(0, WRAP, r = if (last) 0 else dp(8), weight = 1f))
+    }
+    stat(nToday, L.t("Today", "আজ"), false)
+    stat(nWeek, L.t("Last 7 days", "গত ৭ দিন"), false)
+    stat(list.size, L.t("Total", "মোট"), true)
+    c.addView(nums, lp(MATCH, WRAP, t = dp(12)))
+
+    val chart = BarChartView(this)
+    val vals = ArrayList<Long>()
+    val labs = ArrayList<String>()
+    for (off in -6..0) {
+        val from = Store.dayStart(now, off)
+        val to = Store.dayStart(now, off + 1)
+        var n = 0L
+        for ((t, _) in list) if (t >= from && t < to) n++
+        vals.add(n)
+        val cal = Calendar.getInstance()
+        cal.timeInMillis = from
+        labs.add(L.dayLong(dayIdx(cal)))
+    }
+    chart.values = vals
+    chart.labels = labs
+    c.addView(chart, lp(MATCH, dp(130), t = dp(14)))
+
+    c.addView(
+        tv(
+            L.t(
+                "Power menu: $nPower · App settings: $nSettings · Focus apps: $nFocus",
+                "পাওয়ার মেনু: $nPower · অ্যাপ সেটিংস: $nSettings · ফোকাস অ্যাপ: $nFocus"
+            ),
+            12f, C.muted
+        ),
+        lp(MATCH, WRAP, t = dp(10))
+    )
+    return c
+}
+
+
+
+
+
+    
