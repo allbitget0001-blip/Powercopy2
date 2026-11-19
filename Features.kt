@@ -917,25 +917,28 @@ fun MainActivity.locationCard(): View {
     return c
 }
 
-/** Today's route (drawn on the map) + entry/exit history. */
+/** Route (30 days, drawn on the map) + entry/exit history (30 days). */
 fun MainActivity.historyCard(): View {
     val c = card()
-    c.addView(section(L.t("Today's route & history", "আজকের রুট ও হিস্ট্রি")))
+    c.addView(section(L.t("Route & history (30 days)", "রুট ও হিস্ট্রি (৩০ দিন)")))
     // today's route: total distance + open the map
     val distM = Store.todayDistanceM(this)
-    val distTxt = if (distM >= 1000f) {
-        val km10 = (distM / 100).toInt() // tenths of a km
-        L.num("${km10 / 10}.${km10 % 10}") + " " + L.t("km", "কিমি")
-    } else {
-        L.num(distM.toInt().toString()) + " " + L.t("m", "মি")
-    }
     val pts = Store.todayRoute(this).size
     c.addView(
         row(
             L.t("Today's route", "আজকের রুট"),
-            L.num(pts.toString()) + " " + L.t("points", "পয়েন্ট") + " · " + distTxt,
+            L.num(pts.toString()) + " " + L.t("points", "পয়েন্ট") + " · " + fmtDistM(distM),
             tv("🗺", 18f, C.primary, 1)
         ) { startActivity(Intent(this, MapActivity::class.java)) },
+        lp(MATCH, WRAP, t = dp(4))
+    )
+    // this month's total distance (all stored days)
+    c.addView(
+        row(
+            L.t("This month in total", "এই মাসে মোট"),
+            fmtDistM(Store.monthDistanceM(this)),
+            tv("🗓", 18f, C.primary, 1)
+        ),
         lp(MATCH, WRAP, t = dp(4))
     )
     // entry / exit history
@@ -950,10 +953,10 @@ fun MainActivity.historyCard(): View {
             lp(MATCH, WRAP, t = dp(4))
         )
     } else {
-        for (e in events.take(10)) {
-            val line1 = e.name + " · " + L.t("entered", "ঢুকেছে") + " " + fmtClock(e.inTime)
+        for (e in events.take(30)) {
+            val line1 = e.name + " · " + L.t("entered", "ঢুকেছে") + " " + fmtWhen(e.inTime)
             val line2 = if (e.outTime > 0) {
-                L.t("left", "বেরিয়েছে") + " " + fmtClock(e.outTime) + " · " +
+                L.t("left", "বেরিয়েছে") + " " + fmtWhen(e.outTime) + " · " +
                     L.t("inside for", "ভেতরে ছিল") + " " + fmtDur(e.outTime - e.inTime)
             } else {
                 L.t("still inside", "এখনো ভেতরে") + " · " + fmtDur(System.currentTimeMillis() - e.inTime)
@@ -969,6 +972,35 @@ fun MainActivity.historyCard(): View {
         c.addView(clear, lp(MATCH, WRAP, t = dp(10)))
     }
     return c
+}
+
+/** "3.4 km" / "250 m" for a distance in metres. */
+private fun fmtDistM(distM: Float): String {
+    return if (distM >= 1000f) {
+        val km10 = (distM / 100).toInt() // tenths of a km
+        L.num("${km10 / 10}.${km10 % 10}") + " " + L.t("km", "কিমি")
+    } else {
+        L.num(distM.toInt().toString()) + " " + L.t("m", "মি")
+    }
+}
+
+/** "10:30 AM" today, "19 Nov 10:30 AM" on older days. */
+private fun fmtWhen(ms: Long): String {
+    return if (isToday(ms)) fmtClock(ms) else fmtDayShort(ms) + " " + fmtClock(ms)
+}
+
+private fun isToday(ms: Long): Boolean {
+    val a = Calendar.getInstance()
+    val b = Calendar.getInstance()
+    b.timeInMillis = ms
+    return a.get(Calendar.YEAR) == b.get(Calendar.YEAR) && a.get(Calendar.DAY_OF_YEAR) == b.get(Calendar.DAY_OF_YEAR)
+}
+
+/** "19 Nov" (day + short month). */
+private fun fmtDayShort(ms: Long): String {
+    val c = Calendar.getInstance()
+    c.timeInMillis = ms
+    return L.num(c.get(Calendar.DAY_OF_MONTH).toString()) + " " + L.month(c.get(Calendar.MONTH))
 }
 
 private fun MainActivity.deletePlaceDialog(pl: Place, done: () -> Unit) {

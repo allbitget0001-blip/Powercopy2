@@ -46,7 +46,9 @@ class MapActivity : Activity() {
     private lateinit var delBtn: TextView
     private lateinit var hintTv: TextView
     private lateinit var satBtn: TextView
+    private lateinit var routeDayTv: TextView
     private var satOn = false
+    private var routeDayOffset = 0 // 0 = today, 1 = yesterday, ... up to 29
 
     private var pageReady = false
     private val pendingJs = ArrayList<String>()
@@ -143,7 +145,7 @@ class MapActivity : Activity() {
                 pendingJs.clear()
                 pushDataJs()
                 pushMeJs()
-                pushRouteJs()
+                updateRouteDay()
             }
         }
         root.addView(web, lp(MATCH, 0, weight = 1f))
@@ -164,6 +166,24 @@ class MapActivity : Activity() {
         panel.addView(nameTv, lp(MATCH, WRAP, t = dp(6)))
         distTv = tv("", 13f, C.muted)
         panel.addView(distTv, lp(MATCH, WRAP, t = dp(4)))
+        // route day stepper: view any of the last 30 days' routes on the map
+        val routeRow = LinearLayout(this)
+        routeRow.orientation = LinearLayout.HORIZONTAL
+        routeRow.gravity = Gravity.CENTER_VERTICAL
+        val prevDay = tv("‹", 20f, C.primary, 1)
+        prevDay.setPadding(dp(12), dp(2), dp(12), dp(2))
+        prevDay.pressFeedback()
+        prevDay.setOnClickListener { stepRouteDay(1) }
+        routeRow.addView(prevDay)
+        routeDayTv = tv("", 13f, C.muted)
+        routeDayTv.gravity = Gravity.CENTER
+        routeRow.addView(routeDayTv, lp(0, WRAP, weight = 1f))
+        val nextDay = tv("›", 20f, C.primary, 1)
+        nextDay.setPadding(dp(12), dp(2), dp(12), dp(2))
+        nextDay.pressFeedback()
+        nextDay.setOnClickListener { stepRouteDay(-1) }
+        routeRow.addView(nextDay)
+        panel.addView(routeRow, lp(MATCH, WRAP, t = dp(4)))
         hintTv = tv(
             L.t("Map and satellite tiles need internet. The lock itself works offline on GPS.", "ম্যাপ ও স্যাটেলাইট দেখতে ইন্টারনেট লাগবে, লক নিজে GPS-এ অফলাইনে কাজ করে।"),
             12f, C.muted
@@ -311,7 +331,7 @@ class MapActivity : Activity() {
         updatePanel()
         pushMeJs()
         pushDataJs()
-        pushRouteJs()
+        updateRouteDay()
     }
 
     /** Switch the MapLibre style between Positron map and Esri satellite. */
@@ -402,21 +422,11 @@ class MapActivity : Activity() {
         } else {
             addBtn.visibility = View.GONE
             nameTv.text = L.t("Tap the map to add a place, or tap a marker.", "নতুন জায়গা যোগ করতে ম্যাপে চাপ দিন, বা জায়গা দেখতে মার্কারে চাপ দিন।")
-            val base = if (places.isEmpty()) {
+            distTv.text = if (places.isEmpty()) {
                 L.t("No places saved yet.", "এখনো কোনো জায়গা সেভ করা হয়নি।")
             } else {
                 L.num(places.size.toString()) + " " + L.t("place(s) saved", "টি জায়গা সেভ করা আছে")
             }
-            val distM = Store.todayDistanceM(this)
-            val distTxt = if (distM >= 1000f) {
-                val km10 = (distM / 100).toInt()
-                L.num("${km10 / 10}.${km10 % 10}") + " " + L.t("km", "কিমি")
-            } else if (distM > 0f) {
-                L.num(distM.toInt().toString()) + " " + L.t("m", "মি")
-            } else {
-                ""
-            }
-            distTv.text = if (distTxt.isEmpty()) base else base + " · " + L.t("Today's route", "আজকের রুট") + ": " + distTxt
         }
     }
 
@@ -566,16 +576,46 @@ class MapActivity : Activity() {
         eval("setMe(" + me.latitude + "," + me.longitude + ");")
     }
 
-    /** Today's route as [[lat, lng], ...] for the map polyline. */
+    /** Today's route as [[lat, lng], ...] for the map polyline (or the selected day). */
     private fun pushRouteJs() {
         val arr = JSONArray()
-        for (pt in Store.todayRoute(this)) {
+        for (pt in Store.routeForDay(this, Store.dayKey(routeDayOffset))) {
             val pair = JSONArray()
             pair.put(pt.lat)
             pair.put(pt.lng)
             arr.put(pair)
         }
         eval("setRoute($arr);")
+    }
+
+    private fun stepRouteDay(delta: Int) {
+        routeDayOffset = (routeDayOffset + delta).coerceIn(0, 29)
+        updateRouteDay()
+    }
+
+    /** Label + polyline for the selected day's route. */
+    private fun updateRouteDay() {
+        val day = Store.dayKey(routeDayOffset)
+        val distM = Store.distanceForDay(this, day)
+        val distTxt = if (distM >= 1000f) {
+            val km10 = (distM / 100).toInt()
+            L.num("${km10 / 10}.${km10 % 10}") + " " + L.t("km", "কিমি")
+        } else if (distM > 0f) {
+            L.num(distM.toInt().toString()) + " " + L.t("m", "মি")
+        } else {
+            L.t("no route", "কোনো রুট নেই")
+        }
+        val label = when (routeDayOffset) {
+            0 -> L.t("Today's route", "আজকের রুট")
+            1 -> L.t("Yesterday's route", "গতকালের রুট")
+            else -> {
+                val c = java.util.Calendar.getInstance()
+                c.add(java.util.Calendar.DAY_OF_YEAR, -routeDayOffset)
+                L.num(c.get(java.util.Calendar.DAY_OF_MONTH).toString()) + " " + L.month(c.get(java.util.Calendar.MONTH)) + L.t("'s route", "র রুট")
+            }
+        }
+        routeDayTv.text = "$label: $distTxt"
+        pushRouteJs()
     }
 
     private fun pushPendingJs() {
