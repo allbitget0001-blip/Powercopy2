@@ -32,6 +32,9 @@ import android.widget.LinearLayout
  *  4. a short "PowerLock active" shield blocks touches on the slider while the menu is closing.
  * The protection state is cached from SharedPreferences, so events do not read storage.
  * Settings / uninstall pages that show "PowerLock" are sent Home when "protect app settings" is on.
+ * App block (Protection section) also runs here while a session is active: fully
+ * blocked apps jump straight to Home, and Reels-blocked apps get Back (then Home
+ * on repeat) when a Reels / Shorts screen is detected.
  */
 class PowerBlockService : AccessibilityService() {
 
@@ -66,6 +69,20 @@ class PowerBlockService : AccessibilityService() {
     private var focusApps: Set<String> = emptySet()
 
     private var lastFocusAction = 0L
+
+    // App block (Protection section): full block + reels block.
+    @Volatile
+    private var abOn = true
+
+    @Volatile
+    private var abFull: Set<String> = emptySet()
+
+    @Volatile
+    private var abReels: Set<String> = emptySet()
+
+    private var lastAppBlockAction = 0L
+    private var lastReelsScan = 0L
+    private var lastReelsBack = 0L
 
     private var lastKeepAliveCheck = 0L // throttles the revive check (once per 30s)
 
@@ -140,6 +157,9 @@ class PowerBlockService : AccessibilityService() {
         val st = Store.settings(this)
         focusOn = st.getBoolean("focus_on", false)
         focusApps = (st.getString("focus_apps", "") ?: "").split(",").filter { it.isNotEmpty() }.toSet()
+        abOn = st.getBoolean("ab_on", true)
+        abFull = Extra.appBlockFull(this)
+        abReels = Extra.appBlockReels(this)
     }
 
     private fun protecting(): Boolean = (active && System.currentTimeMillis() < endAt) || locProtecting
@@ -174,6 +194,10 @@ class PowerBlockService : AccessibilityService() {
                 onSystemUi(e)
             } else if (!protecting()) {
                 return
+            } else if (abOn && abFull.contains(pkg)) {
+                onFullBlockedApp(e)
+            } else if (abOn && abReels.contains(pkg)) {
+                onReelsApp(e)
             } else if (focusOn && focusApps.contains(pkg)) {
                 onFocusApp(e)
             } else if (guardOn && isGuarded(pkg)) {
@@ -248,6 +272,53 @@ class PowerBlockService : AccessibilityService() {
         lastFocusAction = now
         Extra.logAttempt(this, "focus")
         performGlobalAction(GLOBAL_ACTION_HOME)
+    }
+
+    /** Full app block: the app opens and is sent straight back to Home. */
+    private fun onFullBlockedApp(e: AccessibilityEvent) {
+        val now = SystemClock.uptimeMillis()
+        if (now - lastAppBlockAction < 300) return
+        lastAppBlockAction = now
+        Extra.logAttempt(this, "appblock")
+        performGlobalAction(GLOBAL_ACTION_HOME)
+    }
+
+    /**
+     * Reels block: the app stays usable, only the Reels / Shorts feed is closed.
+     * First detection presses Back (out of the feed); if a Reels screen is still
+     * showing shortly after, Home is pressed instead.
+     * Detection uses the event itself (window class + text), not a full node
+     * scan: the "Reels" tab label sits in the node tree even on the home feed,
+     * so a tree search would close the app while just browsing.
+     */
+    private fun onReelsApp(e: AccessibilityEvent) {
+        val now = SystemClock.uptimeMillis()
+        if (e.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+            if (now - lastReelsScan < 800) return
+            lastReelsScan = now
+        }
+        if (!looksLikeReels(e)) return
+        if (now - lastAppBlockAction < 500) return
+        lastAppBlockAction = now
+        Extra.logAttempt(this, "reels")
+        if (now - lastReelsBack < 2500) {
+            lastReelsBack = 0L
+            performGlobalAction(GLOBAL_ACTION_HOME)
+        } else {
+            lastReelsBack = now
+            performGlobalAction(GLOBAL_ACTION_BACK)
+        }
+    }
+
+    private fun looksLikeReels(e: AccessibilityEvent): Boolean {
+        val cls = (e.className?.toString() ?: "").lowercase()
+        if (cls.contains("reel") || cls.contains("shorts") || cls.contains("clips")) return true
+        val sb = StringBuilder()
+        for (t in e.text) sb.append(t).append(' ')
+        if (e.contentDescription != null) sb.append(e.contentDescription)
+        val s = sb.toString().lowercase()
+        return s.contains("reels") || s.contains("shorts") ||
+                s.contains("রিলস") || s.contains("শর্টস")
     }
 
     private fun looksLikePowerMenu(e: AccessibilityEvent): Boolean {

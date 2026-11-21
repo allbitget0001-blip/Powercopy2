@@ -955,3 +955,17 @@ class SettingsScreen(private val a: MainActivity) {
         return sv
     }
 }
+
+// =====================================================================
+// PROTECTION (app block: full block + reels block)
+// =====================================================================
+class ProtectionScreen(private val a: MainActivity) {
+    fun build(): View {
+        val (sv, col) = a.page()
+        col.addView(a.tv(L.t("Protection", "সুরক্ষা"), 24f, C.text, 1), lp(MATCH, WRAP, b = a.dp(14)))
+        col.addView(a.protectionIntroCard(), lp(MATCH, WRAP, b = a.dp(12)))
+        col.addView(a.appBlockModeCard("full"), lp(MATCH, WRAP, b = a.dp(12)))
+        col.addView(a.appBlockModeCard("reels"), lp(MATCH, WRAP, b = a.dp(12)))
+        return sv
+    }
+}

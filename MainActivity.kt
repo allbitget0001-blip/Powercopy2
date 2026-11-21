@@ -173,7 +173,8 @@ class MainActivity : Activity() {
             }
             1 -> ScheduleScreen(this).build()
             2 -> StatsScreen(this).build()
-            else -> SettingsScreen(this).build()
+            3 -> SettingsScreen(this).build()
+            else -> ProtectionScreen(this).build()
         }
         content.addView(v, FrameLayout.LayoutParams(MATCH, MATCH))
         refreshNav(animate)
@@ -202,10 +203,11 @@ class MainActivity : Activity() {
             L.t("Home", "হোম"),
             L.t("Schedule", "সময়সূচি"),
             L.t("Statistics", "পরিসংখ্যান"),
-            L.t("Settings", "সেটিংস")
+            L.t("Settings", "সেটিংস"),
+            L.t("Protection", "সুরক্ষা")
         )
-        val kinds = listOf(Ic.HOME, Ic.CAL, Ic.BARS, Ic.GEAR)
-        for (i in 0..3) {
+        val kinds = listOf(Ic.HOME, Ic.CAL, Ic.BARS, Ic.GEAR, Ic.SHIELD)
+        for (i in 0..4) {
             val item = LinearLayout(this)
             item.orientation = LinearLayout.VERTICAL
             item.gravity = Gravity.CENTER

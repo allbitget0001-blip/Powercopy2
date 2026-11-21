@@ -117,7 +117,7 @@ object Extra {
 
     private val lastLog = HashMap<String, Long>()
 
-    /** kind: "power", "settings" or "focus". At most one entry per kind every 3 seconds. */
+    /** kind: "power", "settings", "focus", "appblock" or "reels". At most one entry per kind every 3 seconds. */
     @Synchronized
     fun logAttempt(ctx: Context, kind: String) {
         try {
@@ -167,6 +167,32 @@ object Extra {
 
     fun setFocusApps(ctx: Context, apps: Set<String>) {
         Store.settings(ctx).edit().putString("focus_apps", apps.joinToString(",")).apply()
+    }
+
+    // ---------- app block (Protection) ----------
+
+    /** Master switch for the Protection section's app block. On by default. */
+    fun appBlockOn(ctx: Context): Boolean =
+        Store.settings(ctx).getBoolean("ab_on", true)
+
+    /** Packages that are fully blocked: opening one jumps straight back to Home. */
+    fun appBlockFull(ctx: Context): Set<String> {
+        val s = Store.settings(ctx).getString("ab_full", "") ?: ""
+        return s.split(",").filter { it.isNotEmpty() }.toSet()
+    }
+
+    fun setAppBlockFull(ctx: Context, apps: Set<String>) {
+        Store.settings(ctx).edit().putString("ab_full", apps.joinToString(",")).apply()
+    }
+
+    /** Packages whose Reels / Shorts feed is blocked; the app itself stays usable. */
+    fun appBlockReels(ctx: Context): Set<String> {
+        val s = Store.settings(ctx).getString("ab_reels", "") ?: ""
+        return s.split(",").filter { it.isNotEmpty() }.toSet()
+    }
+
+    fun setAppBlockReels(ctx: Context, apps: Set<String>) {
+        Store.settings(ctx).edit().putString("ab_reels", apps.joinToString(",")).apply()
     }
 
     // ---------- places ----------
@@ -758,6 +784,135 @@ private fun MainActivity.appPicker(done: () -> Unit) {
 }
 
 // =====================================================================
+// UI: app block (Protection)
+// =====================================================================
+
+/** Master switch + how app block works. */
+fun MainActivity.protectionIntroCard(): View {
+    val c = card()
+    c.addView(section(L.t("App block", "অ্যাপ ব্লক")))
+    val st = Store.settings(this)
+    val locked = Store.isActive(this)
+    val sw = toggle(Extra.appBlockOn(this)) { v -> st.edit().putBoolean("ab_on", v).apply() }
+    if (locked) sw.isEnabled = false
+    c.addView(
+        row(
+            L.t("Block apps while the lock runs", "লক চলাকালীন অ্যাপ ব্লক"),
+            L.t("Choose apps below. Full block closes the app at once; Reels block only stops the Reels / Shorts feed.", "নিচে অ্যাপ বাছুন। সম্পূর্ণ ব্লক অ্যাপ সঙ্গে সঙ্গে বন্ধ করে দেয়; রিলস ব্লক শুধু রিলস / শর্টস ফিড আটকায়।"),
+            sw
+        ),
+        lp(MATCH, WRAP, t = dp(6))
+    )
+    val accOn = Perm.accessibilityOn(this)
+    c.addView(
+        tv(
+            when {
+                locked -> L.t("Locked while a session is active.", "সেশন চলাকালীন বদলানো যাবে না।")
+                !accOn -> L.t("Accessibility is off — app block needs it. Turn it on from Settings.", "Accessibility বন্ধ — অ্যাপ ব্লকের জন্য এটা লাগবে। সেটিংস থেকে চালু করুন।")
+                else -> L.t("Blocks apply while a lock session (or location lock) is running.", "লক সেশন (বা লোকেশন লক) চলাকালীন ব্লক কাজ করবে।")
+            },
+            12f, if (locked || !accOn) C.warn else C.muted
+        ),
+        lp(MATCH, WRAP, t = dp(8))
+    )
+    return c
+}
+
+/** One mode card: [mode] is "full" or "reels". */
+fun MainActivity.appBlockModeCard(mode: String): View {
+    val c = card()
+    val isFull = mode == "full"
+    c.addView(section(if (isFull) L.t("Full app block", "সম্পূর্ণ অ্যাপ ব্লক") else L.t("Reels block", "রিলস ব্লক")))
+    c.addView(
+        tv(
+            if (isFull) L.t("Opening a selected app jumps straight back to Home.", "নির্বাচিত অ্যাপ খুললেই সঙ্গে সঙ্গে হোমে ফিরে যাবে।")
+            else L.t("The app stays usable, but its Reels / Shorts feed is closed. Works best on Instagram, Facebook, YouTube and TikTok.", "অ্যাপ ব্যবহার করা যাবে, কিন্তু এর রিলস / শর্টস ফিড বন্ধ হয়ে যাবে। Instagram, Facebook, YouTube ও TikTok-এ সবচেয়ে ভালো কাজ করে।"),
+            13f, C.muted
+        ),
+        lp(MATCH, WRAP, t = dp(6))
+    )
+    val count = if (isFull) Extra.appBlockFull(this).size else Extra.appBlockReels(this).size
+    val locked = Store.isActive(this)
+    val pick = outlineBtn(L.t("Choose apps ($count selected)", "অ্যাপ বাছুন ($count টি নির্বাচিত)"), C.primary)
+    pick.setOnClickListener {
+        if (Store.isActive(this)) {
+            toast(L.t("Locked while a session is active", "সেশন চলাকালীন বদলানো যাবে না"))
+        } else {
+            appBlockPicker(mode) { go(4) }
+        }
+    }
+    c.addView(pick, lp(MATCH, dp(48), t = dp(10)))
+    if (locked) {
+        c.addView(tv(L.t("Locked while a session is active.", "সেশন চলাকালীন বদলানো যাবে না।"), 12f, C.warn), lp(MATCH, WRAP, t = dp(8)))
+    }
+    return c
+}
+
+private fun MainActivity.appBlockPicker(mode: String, done: () -> Unit) {
+    val pm = packageManager
+    val intent = Intent(Intent.ACTION_MAIN)
+    intent.addCategory(Intent.CATEGORY_LAUNCHER)
+    val skip = listOf("dialer", "incallui", "emergency", "telecom", "contacts")
+    val apps = ArrayList<Triple<String, String, Drawable>>()
+    val seen = HashSet<String>()
+    try {
+        for (ri in pm.queryIntentActivities(intent, 0)) {
+            val pkg = ri.activityInfo.packageName
+            if (pkg == packageName || !seen.add(pkg)) continue
+            if (skip.any { pkg.contains(it) }) continue
+            apps.add(Triple(pkg, ri.loadLabel(pm).toString(), ri.loadIcon(pm)))
+        }
+    } catch (e: Exception) {
+        Log.e(TAG, "app list failed", e)
+    }
+    apps.sortBy { it.second.lowercase() }
+    if (apps.isEmpty()) {
+        toast(L.t("No apps found", "কোনো অ্যাপ পাওয়া যায়নি"))
+        return
+    }
+    val isFull = mode == "full"
+    val chosen = HashSet<String>(if (isFull) Extra.appBlockFull(this) else Extra.appBlockReels(this))
+    val list = LinearLayout(this)
+    list.orientation = LinearLayout.VERTICAL
+    list.setPadding(dp(20), dp(4), dp(20), dp(4))
+    for (info in apps) {
+        val r = LinearLayout(this)
+        r.gravity = Gravity.CENTER_VERTICAL
+        r.setPadding(0, dp(8), 0, dp(8))
+        val icon = ImageView(this)
+        icon.setImageDrawable(info.third)
+        r.addView(icon, lp(dp(40), dp(40), r = dp(14)))
+        r.addView(tv(info.second, 15f, C.text), lp(0, WRAP, weight = 1f))
+        val pkg = info.first
+        r.addView(toggle(chosen.contains(pkg)) { v ->
+            if (v) chosen.add(pkg) else chosen.remove(pkg)
+        })
+        list.addView(r)
+    }
+    val sv = ScrollView(this)
+    sv.addView(list)
+    dlg()
+        .setTitle(
+            if (isFull) L.t("Choose apps to block fully", "সম্পূর্ণ ব্লক করার অ্যাপ বাছুন")
+            else L.t("Choose apps for Reels block", "রিলস ব্লকের অ্যাপ বাছুন")
+        )
+        .setView(sv)
+        .setPositiveButton(L.t("Save", "সংরক্ষণ")) { _, _ ->
+            // an app can only be in one list: full block wins over reels block
+            if (isFull) {
+                Extra.setAppBlockFull(this, chosen)
+                Extra.setAppBlockReels(this, Extra.appBlockReels(this) - chosen)
+            } else {
+                Extra.setAppBlockReels(this, chosen)
+                Extra.setAppBlockFull(this, Extra.appBlockFull(this) - chosen)
+            }
+            done()
+        }
+        .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+        .show()
+}
+
+// =====================================================================
 // UI: location lock (Settings)
 // =====================================================================
 
@@ -1140,12 +1295,16 @@ fun MainActivity.attemptsCard(): View {
     var nPower = 0
     var nSettings = 0
     var nFocus = 0
+    var nAppBlock = 0
+    var nReels = 0
     for ((t, k) in list) {
         if (t >= today) nToday++
         if (t >= week) nWeek++
         when (k) {
             "power" -> nPower++
             "settings" -> nSettings++
+            "appblock" -> nAppBlock++
+            "reels" -> nReels++
             else -> nFocus++
         }
     }
@@ -1183,8 +1342,8 @@ fun MainActivity.attemptsCard(): View {
     c.addView(
         tv(
             L.t(
-                "Power menu: $nPower · App settings: $nSettings · Focus apps: $nFocus",
-                "পাওয়ার মেনু: $nPower · অ্যাপ সেটিংস: $nSettings · ফোকাস অ্যাপ: $nFocus"
+                "Power menu: $nPower · App settings: $nSettings · Focus apps: $nFocus · App block: $nAppBlock · Reels block: $nReels",
+                "পাওয়ার মেনু: $nPower · অ্যাপ সেটিংস: $nSettings · ফোকাস অ্যাপ: $nFocus · অ্যাপ ব্লক: $nAppBlock · রিলস ব্লক: $nReels"
             ),
             12f, C.muted
         ),
