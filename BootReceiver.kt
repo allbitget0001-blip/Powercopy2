@@ -14,6 +14,9 @@ class BootReceiver : BroadcastReceiver() {
             Watchdog.enqueue(context) // safety net: restart the service every 15 min if it dies
             // the location lock has no session, so it must restart the service too
             if (Store.isActive(context) || Store.isLocProtecting(context)) Store.kickService(context)
+            // image guard: after a reboot the capture grant is gone, so this
+            // posts the re-grant notification when a lock is running
+            try { ImageGuardService.sync(context) } catch (e: Exception) { Log.e(TAG, "image guard sync failed", e) }
         } catch (e: Exception) {
             Log.e(TAG, "BootReceiver failed", e)
         }

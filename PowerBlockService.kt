@@ -210,6 +210,14 @@ class PowerBlockService : AccessibilityService() {
         abFull = Extra.appBlockFull(this)
         abReels = Extra.appBlockReels(this)
         abMsg = Extra.appBlockMsg(this)
+        // the image guard follows the same lock state; starting a foreground
+        // service from the background can throw, so never let it break the
+        // accessibility service
+        try {
+            ImageGuardService.sync(this)
+        } catch (e: Exception) {
+            Log.e(TAG, "image guard sync failed", e)
+        }
     }
 
     private fun protecting(): Boolean = (active && System.currentTimeMillis() < endAt) || locProtecting

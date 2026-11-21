@@ -20,6 +20,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.net.Uri
+import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
 import android.util.Log
@@ -69,7 +71,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "15"
+    const val BUILD_ID = "16"
 
     // ---------- presets ----------
 
@@ -130,7 +132,7 @@ object Extra {
 
     private val lastLog = HashMap<String, Long>()
 
-    /** kind: "power", "settings", "focus", "appblock", "reels" or "msgsearch". At most one entry per kind every 3 seconds. */
+    /** kind: "power", "settings", "focus", "appblock", "reels", "msgsearch" or "image". At most one entry per kind every 3 seconds. */
     @Synchronized
     fun logAttempt(ctx: Context, kind: String) {
         try {
@@ -229,6 +231,35 @@ object Extra {
     fun setManualPackages(ctx: Context, apps: Set<String>) {
         Store.settings(ctx).edit().putString("ab_manual", apps.joinToString(",")).apply()
     }
+
+    // ---------- image guard (on-screen NSFW detection) ----------
+
+    /** Master switch for image guard. Off by default; only scans while a lock runs. */
+    fun imageGuardOn(ctx: Context): Boolean =
+        Store.settings(ctx).getBoolean("ig_on", false)
+
+    fun setImageGuardOn(ctx: Context, on: Boolean) {
+        Store.settings(ctx).edit().putBoolean("ig_on", on).apply()
+    }
+
+    /** Sensitivity: 0 = high (catches more), 1 = medium, 2 = low (fewer false alarms). */
+    fun igLevel(ctx: Context): Int =
+        Store.settings(ctx).getInt("ig_level", 1).coerceIn(0, 2)
+
+    fun setIgLevel(ctx: Context, level: Int) {
+        Store.settings(ctx).edit().putInt("ig_level", level.coerceIn(0, 2)).apply()
+    }
+
+    /** NSFW score (0..1) at which the screen is covered. */
+    fun igThreshold(ctx: Context): Float = when (igLevel(ctx)) {
+        0 -> 0.5f
+        2 -> 0.85f
+        else -> 0.7f
+    }
+
+    /** True when the downloaded model file failed to load (corrupt download). */
+    fun igModelError(ctx: Context): Boolean =
+        Store.settings(ctx).getBoolean("ig_model_err", false)
 
     /** All launchable apps (label + icon), loaded once per session: loading ~150 icons is slow. */
     var appListCache: List<Triple<String, String, Drawable>>? = null
@@ -1242,6 +1273,160 @@ private fun MainActivity.showAppBlockPicker(
         .show()
 }
 
+// =====================================================================
+// UI: image guard (on-screen NSFW detection)
+// =====================================================================
+
+/** Image guard card: on-device AI watches the screen during a lock and covers
+ * NSFW photos / videos. Experimental: it can be wrong and uses more battery. */
+fun MainActivity.imageGuardCard(): View {
+    val c = card()
+    c.addView(section(L.t("Image guard", "ছবি সুরক্ষা")))
+    c.addView(
+        tv(
+            L.t(
+                "While a lock runs, on-device AI watches the screen and covers nude photos or videos the moment they appear. Experimental — it can sometimes be wrong, and it uses more battery. No image ever leaves the phone.",
+                "লক চলাকালীন ফোনের ভেতরেই AI স্ক্রিন দেখবে, আর নগ্ন ছবি বা ভিডিও আসলেই তা ঢেকে দেবে। পরীক্ষামূলক — মাঝে মাঝে ভুল হতে পারে, আর ব্যাটারি একটু বেশি খাবে। কোনো ছবি ফোনের বাইরে যাবে না।"
+            ),
+            13f, C.muted
+        ),
+        lp(MATCH, WRAP, t = dp(6))
+    )
+    val locked = Store.isActive(this)
+    val on = Extra.imageGuardOn(this)
+    val sw = toggle(on) { v ->
+        if (v) enableImageGuard()
+        else {
+            Extra.setImageGuardOn(this, false)
+            ImageGuardService.sync(this)
+            go(4)
+        }
+    }
+    // only strengthening during a session: the guard cannot be turned off
+    if (locked && on) sw.isEnabled = false
+    c.addView(
+        row(
+            L.t("Watch the screen during a lock", "লক চলাকালীন স্ক্রিন পর্যবেক্ষণ"),
+            null,
+            sw
+        ),
+        lp(MATCH, WRAP, t = dp(6))
+    )
+    // sensitivity: high / medium / low
+    val level = Extra.igLevel(this)
+    val seg = SegmentedControl(
+        this,
+        listOf(L.t("High", "বেশি"), L.t("Medium", "মাঝারি"), L.t("Low", "কম")),
+        level,
+        onPick = { i ->
+            if (locked && i > level) {
+                // weakening during a session is not allowed
+                toast(L.t("Sensitivity can only be increased during a session", "সেশন চলাকালীন সংবেদনশীলতা শুধু বাড়ানো যাবে"))
+                go(4)
+            } else {
+                Extra.setIgLevel(this, i)
+            }
+        },
+        onDone = { go(4) }
+    )
+    c.addView(seg, lp(MATCH, WRAP, t = dp(10)))
+    c.addView(
+        tv(
+            L.t("High catches more, but may cover harmless photos too.", "বেশি সংবেদনশীল হলে বেশি ধরবে, তবে সাধারণ ছবিও ভুল করে ঢাকতে পারে।"),
+            12f, C.muted
+        ),
+        lp(MATCH, WRAP, t = dp(6))
+    )
+    // status line
+    val modelErr = Extra.igModelError(this)
+    val status = when {
+        !on -> L.t("Off", "বন্ধ")
+        modelErr -> L.t("Model failed to load — turn it off and on again to re-download", "মডেল লোড হয়নি — আবার ডাউনলোড করতে বন্ধ করে চালু করুন")
+        !ImageGuardModel.ready(this) -> L.t("Model not downloaded yet", "মডেল এখনো ডাউনলোড হয়নি")
+        !ImageGuardService.hasProjection() -> L.t("Allow screen capture to start", "শুরু করতে স্ক্রিন দেখার অনুমতি দিন")
+        Store.isActive(this) || Store.isLocProtecting(this) -> L.t("Lock running — watching the screen", "লক চলছে — স্ক্রিন পর্যবেক্ষণ চলছে")
+        else -> L.t("On — active while a lock runs", "চালু আছে — লক চললে সক্রিয় হবে")
+    }
+    c.addView(tv(status, 12f, if (!on) C.muted else C.primary), lp(MATCH, WRAP, t = dp(8)))
+    // overlay permission: without it the cover cannot show (Home still works)
+    if (!Settings.canDrawOverlays(this)) {
+        val note = tv(
+            L.t("Overlay permission is off — allow it so the cover screen can appear. Tap here to open the setting.", "ওভারলে অনুমতি বন্ধ — কভার স্ক্রিন দেখাতে এটা চালু করুন। সেটিংস খুলতে এখানে চাপুন।"),
+            12f, C.warn
+        )
+        note.setOnClickListener {
+            try {
+                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+            } catch (e: Exception) {
+                Log.e(TAG, "overlay settings failed", e)
+            }
+        }
+        c.addView(note, lp(MATCH, WRAP, t = dp(8)))
+    }
+    if (locked) {
+        c.addView(tv(L.t("While a session runs, the guard cannot be turned off and sensitivity can only be increased.", "সেশন চলাকালীন সুরক্ষা বন্ধ করা যাবে না, আর সংবেদনশীলতা শুধু বাড়ানো যাবে।"), 12f, C.warn), lp(MATCH, WRAP, t = dp(8)))
+    }
+    return c
+}
+
+/** Enable flow: download the model first (once), then ask for screen-capture
+ * permission. ig_on is only written when the permission is granted (see
+ * MainActivity.onActivityResult) — a failed setup leaves the guard off. */
+private fun MainActivity.enableImageGuard() {
+    if (!ImageGuardModel.ready(this) || Extra.igModelError(this)) {
+        val prog = tv("0%", 18f, C.text, 1)
+        prog.gravity = Gravity.CENTER
+        val body = LinearLayout(this)
+        body.orientation = LinearLayout.VERTICAL
+        body.setPadding(dp(20), dp(12), dp(20), dp(4))
+        body.addView(
+            tv(L.t("Downloading the detection model (~14 MB, once only)…", "শনাক্তকরণের মডেল ডাউনলোড হচ্ছে (~১৪ MB, শুধু একবার)…"), 14f, C.muted),
+            lp(MATCH, WRAP, b = dp(10))
+        )
+        body.addView(prog, lp(MATCH, WRAP))
+        val d = dlg()
+            .setTitle(L.t("Downloading model…", "মডেল ডাউনলোড হচ্ছে…"))
+            .setView(body)
+            .setCancelable(false)
+            .show()
+        Thread {
+            val ok = ImageGuardModel.download(this) { pct ->
+                runOnUiThread {
+                    try {
+                        prog.text = L.num(pct.toString()) + "%"
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+            runOnUiThread {
+                try {
+                    d.dismiss()
+                } catch (_: Exception) {
+                }
+                if (!ok) {
+                    toast(L.t("Model download failed — check your internet and try again", "মডেল ডাউনলোড হয়নি — ইন্টারনেট দেখে আবার চেষ্টা করুন"))
+                    go(4)
+                    return@runOnUiThread
+                }
+                requestImageGuardPermission()
+            }
+        }.start()
+    } else {
+        requestImageGuardPermission()
+    }
+}
+
+@Suppress("DEPRECATION")
+private fun MainActivity.requestImageGuardPermission() {
+    try {
+        startActivityForResult(Intent(this, ImageGuardPermissionActivity::class.java), REQ_IMAGE_GUARD)
+    } catch (e: Exception) {
+        Log.e(TAG, "image guard permission failed", e)
+        toast(L.t("Could not open the permission screen", "অনুমতির স্ক্রিন খোলা যায়নি"))
+        go(4)
+    }
+}
+
 /** Diagnostic card: what the service sees on a reels screen, so a missed block
  * can be traced instead of guessed. The log is viewed here and copied to the
  * clipboard to be sent for analysis. */
@@ -1775,6 +1960,7 @@ fun MainActivity.attemptsCard(): View {
     var nAppBlock = 0
     var nReels = 0
     var nMsgSearch = 0
+    var nImage = 0
     for ((t, k) in list) {
         if (t >= today) nToday++
         if (t >= week) nWeek++
@@ -1784,6 +1970,7 @@ fun MainActivity.attemptsCard(): View {
             "appblock" -> nAppBlock++
             "reels" -> nReels++
             "msgsearch" -> nMsgSearch++
+            "image" -> nImage++
             else -> nFocus++
         }
     }
@@ -1821,8 +2008,8 @@ fun MainActivity.attemptsCard(): View {
     c.addView(
         tv(
             L.t(
-                "Power menu: $nPower · App settings: $nSettings · Focus apps: $nFocus · App block: $nAppBlock · Reels block: $nReels · Search block: $nMsgSearch",
-                "পাওয়ার মেনু: $nPower · অ্যাপ সেটিংস: $nSettings · ফোকাস অ্যাপ: $nFocus · অ্যাপ ব্লক: $nAppBlock · রিলস ব্লক: $nReels · সার্চ ব্লক: $nMsgSearch"
+                "Power menu: $nPower · App settings: $nSettings · Focus apps: $nFocus · App block: $nAppBlock · Reels block: $nReels · Search block: $nMsgSearch · Image guard: $nImage",
+                "পাওয়ার মেনু: $nPower · অ্যাপ সেটিংস: $nSettings · ফোকাস অ্যাপ: $nFocus · অ্যাপ ব্লক: $nAppBlock · রিলস ব্লক: $nReels · সার্চ ব্লক: $nMsgSearch · ছবি সুরক্ষা: $nImage"
             ),
             12f, C.muted
         ),

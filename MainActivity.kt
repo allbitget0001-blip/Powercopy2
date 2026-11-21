@@ -1,6 +1,7 @@
 package com.example.powerlocks
 
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -46,6 +47,7 @@ class MainActivity : Activity() {
             try {
                 Store.finalizeIfExpired(this@MainActivity)
                 home?.tick()
+                ImageGuardService.sync(this@MainActivity)
             } catch (e: Exception) {
                 Log.e(TAG, "tick failed", e)
             }
@@ -93,12 +95,29 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         handler.post(ticker)
+        ImageGuardService.sync(this)
         if (tab == 3) go(3, false) // refresh permission status after returning from system settings
     }
 
     override fun onPause() {
         handler.removeCallbacks(ticker)
         super.onPause()
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_IMAGE_GUARD) {
+            // the guard is only switched on once screen-capture permission
+            // was actually granted; a denial leaves it off
+            if (resultCode == RESULT_OK) {
+                Extra.setImageGuardOn(this, true)
+                ImageGuardService.sync(this)
+                toast(L.t("Image guard is on", "ছবি সুরক্ষা চালু হয়েছে"))
+            } else {
+                toast(L.t("Image guard needs screen-capture permission", "ছবি সুরক্ষার জন্য স্ক্রিন দেখার অনুমতি লাগবে"))
+            }
+            if (tab == 4) go(4, false)
+        }
     }
 
     fun toast(m: String) {
