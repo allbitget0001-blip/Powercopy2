@@ -662,7 +662,8 @@ class PowerBlockService : AccessibilityService() {
      * - viewer/player view IDs containing reel / short / story,
      * - the viewer's action rail: Like / Comment / Share stacked vertically
      *   on the right edge (the feed shows them in a horizontal row instead),
-     * - a full-screen video surface (Facebook apps only).
+     * - the viewer's count rail: bare count numbers (14K, 562, 58) stacked
+     *   at the right edge below the icons (their text is what FB Lite exposes).
      * All of the app's windows are scanned: story viewers can live in their
      * own window, not the active one.
      */
@@ -709,6 +710,10 @@ class PowerBlockService : AccessibilityService() {
         // right-edge action rail: kinds + y positions of Like / Comment / Share buttons
         val railKinds = HashSet<String>()
         val railTops = ArrayList<Int>()
+        // viewer count rail: y positions of bare count numbers at the right edge
+        val railCounts = ArrayList<Int>()
+        // a bare count: 562, 58, 14K, 1.2M (lowercase text, so [km] not [KM])
+        val countRe = Regex("^[0-9,]+(\\.[0-9]+)?[km]?$")
         try {
             while (stack.isNotEmpty() && used[0] < budget) {
                 val n = stack.removeFirst()
@@ -755,18 +760,21 @@ class PowerBlockService : AccessibilityService() {
                         val hint = n.hintText?.toString() ?: ""
                         if (hint.lowercase().startsWith("reply")) return true
                     }
-                    // Full-screen video surface (Facebook apps only): the Reels viewer
-                    // plays video over the whole screen; in the feed a video only covers
-                    // its own post. The rail buttons carry no text in FB Lite and
-                    // feed-opened reels have no "Reels" header, so this label-free
-                    // signal is what catches them. (A full-screen long video in FB
-                    // is caught too — accepted: in Lite that is nearly always a reel.)
-                    if ((pkg == "com.facebook.katana" || pkg == "com.facebook.lite") &&
-                        (clsN.contains("SurfaceView") || clsN.contains("TextureView"))
-                    ) {
+                    // Viewer count rail: the Like / Comment / Share icons carry no
+                    // text in FB Lite, but their counts do (14K, 562, 58) — short
+                    // bare numbers stacked vertically at the right edge, just below
+                    // each icon. The feed has no bare numbers at the right edge (its
+                    // "10 comments" text is not a bare number), and the top-bar
+                    // notification badge is excluded by the y > 15% rule.
+                    if (countRe.matches(lt)) {
                         val r = Rect()
                         n.getBoundsInScreen(r)
-                        if (r.width().toLong() * r.height().toLong() > screenW.toLong() * screenH.toLong() * 0.70) return true
+                        if (r.left > screenW * 0.80 && r.top > screenH * 0.15 && r.top >= 0) {
+                            railCounts.add(r.top)
+                            val top = railCounts.maxOrNull() ?: 0
+                            val bottom = railCounts.minOrNull() ?: 0
+                            if (railCounts.size >= 2 && top - bottom > screenH * 0.10) return true
+                        }
                     }
                     // Story viewer with replies off: "You can't reply to this story"
                     // sits at the bottom of the screen (Telegram)
