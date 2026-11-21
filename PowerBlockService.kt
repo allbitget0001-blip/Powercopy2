@@ -18,6 +18,8 @@ import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
+import android.view.animation.AccelerateDecelerateInterpolator
+import android.view.animation.OvershootInterpolator
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.LinearLayout
@@ -88,10 +90,17 @@ class PowerBlockService : AccessibilityService() {
     // Full-block protection screen: covers a blocked app the instant it opens.
     private var blockOverlay: View? = null
     private var blockOverlayTitle: TextView? = null
+    private var blockOverlayIcon: IconView? = null
     private var blockOverlayAttached = false
     private var blockedPkg: String? = null
     private var lastBlockPkg: String? = null
     private var lastBlockAt = 0L
+    private val appLabelCache = HashMap<String, String>()
+
+    // Tab labels that mean a Reels / Shorts / Status feed is showing when selected.
+    private val reelsTabMarkers = listOf(
+        "Reels", "Shorts", "রিলস", "শর্টস", "Spotlight", "For You", "Following", "Updates"
+    )
 
     private var lastKeepAliveCheck = 0L // throttles the revive check (once per 30s)
 
@@ -130,6 +139,7 @@ class PowerBlockService : AccessibilityService() {
             Store.lock(this).registerOnSharedPreferenceChangeListener(prefsListener)
             Store.settings(this).registerOnSharedPreferenceChangeListener(prefsListener)
             ensureOverlay() // pre-build the shield so it can appear instantly
+            ensureBlockOverlay() // pre-build the block screen too: it must appear instantly
             registerCloseDialogs()
             Store.kickService(this)
             Scheduler.onAlarm(this)
@@ -305,17 +315,20 @@ class PowerBlockService : AccessibilityService() {
         if (pkg == lastBlockPkg && now - lastBlockAt < 1000 && blockOverlayAttached) return
         lastBlockPkg = pkg
         lastBlockAt = now
+        showBlockOverlay(pkg) // screen first: it must cover the app before anything else runs
         Extra.logAttempt(this, "appblock")
-        showBlockOverlay(pkg)
     }
 
     private fun appLabel(pkg: String): String {
-        return try {
+        appLabelCache[pkg]?.let { return it }
+        val label = try {
             val pm = packageManager
             pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
         } catch (e: Exception) {
             pkg
         }
+        appLabelCache[pkg] = label
+        return label
     }
 
     private fun ensureBlockOverlay(): View {
@@ -327,7 +340,9 @@ class PowerBlockService : AccessibilityService() {
         root.setBackgroundColor(Color.argb(250, 8, 16, 12))
         root.isClickable = true // touches must not reach the app underneath
         root.setPadding(dp(32), dp(32), dp(32), dp(32))
-        root.addView(IconView(this, Ic.SHIELD, C.primary), lp(dp(84), dp(84)))
+        val icon = IconView(this, Ic.SHIELD, C.primary)
+        root.addView(icon, lp(dp(84), dp(84)))
+        blockOverlayIcon = icon
         val title = tv("", 22f, C.text, 1)
         title.gravity = Gravity.CENTER
         root.addView(title, lp(WRAP, WRAP, t = dp(16)))
@@ -354,7 +369,8 @@ class PowerBlockService : AccessibilityService() {
         }
         try {
             val v = ensureBlockOverlay()
-            blockOverlayTitle?.text = appLabel(pkg)
+            // attach first (label + animation after): the cover must be instant
+            v.alpha = 0f
             val wm = getSystemService(WINDOW_SERVICE) as WindowManager
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -368,6 +384,17 @@ class PowerBlockService : AccessibilityService() {
             )
             wm.addView(v, params)
             blockOverlayAttached = true
+            blockOverlayTitle?.text = appLabel(pkg)
+            // entrance: the screen fades in and the shield pops
+            v.animate().alpha(1f).setDuration(200)
+                .setInterpolator(AccelerateDecelerateInterpolator()).start()
+            val ic = blockOverlayIcon
+            if (ic != null) {
+                ic.scaleX = 0.6f
+                ic.scaleY = 0.6f
+                ic.animate().scaleX(1f).scaleY(1f).setDuration(380)
+                    .setInterpolator(OvershootInterpolator(1.8f)).start()
+            }
         } catch (ex: Exception) {
             Log.e(TAG, "showBlockOverlay failed", ex)
             blockOverlayAttached = false
@@ -396,14 +423,13 @@ class PowerBlockService : AccessibilityService() {
      * Reels block: the app stays usable, only the Reels / Shorts feed is closed.
      * First detection presses Back (out of the feed); if a Reels screen is still
      * showing shortly after, Home is pressed instead.
-     * Detection uses the event itself (window class + text), not a full node
-     * scan: the "Reels" tab label sits in the node tree even on the home feed,
-     * so a tree search would close the app while just browsing.
      */
     private fun onReelsApp(e: AccessibilityEvent) {
         val now = SystemClock.uptimeMillis()
-        if (e.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
-            if (now - lastReelsScan < 800) return
+        // window state changes always scan (a new screen may be the feed);
+        // other events are throttled so scrolling does not scan constantly
+        if (e.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            if (now - lastReelsScan < 400) return
             lastReelsScan = now
         }
         if (!looksLikeReels(e)) return
@@ -419,15 +445,61 @@ class PowerBlockService : AccessibilityService() {
         }
     }
 
+    /**
+     * Three signals, cheapest first:
+     * 1) the window class (reel / shorts / story viewer),
+     * 2) the event's own text,
+     * 3) the app's navigation: a Reels / Shorts / Status tab that is SELECTED.
+     * Signal 3 is the reliable one: opening the Reels tab rarely changes the
+     * window or its title, but the tab itself becomes selected. A plain text
+     * search would false-positive (the "Reels" tab label is in the tree even
+     * on the home feed), so selection state is what counts.
+     */
     private fun looksLikeReels(e: AccessibilityEvent): Boolean {
+        val pkg = e.packageName?.toString() ?: ""
         val cls = (e.className?.toString() ?: "").lowercase()
-        if (cls.contains("reel") || cls.contains("shorts") || cls.contains("clips")) return true
+        if (cls.contains("reel") || cls.contains("shorts") || cls.contains("clips") ||
+            cls.contains("spotlight") || cls.contains("story")
+        ) return true
+        if ((pkg == "com.whatsapp" || pkg == "com.whatsapp.w4b") && cls.contains("status")) return true
         val sb = StringBuilder()
         for (t in e.text) sb.append(t).append(' ')
         if (e.contentDescription != null) sb.append(e.contentDescription)
         val s = sb.toString().lowercase()
-        return s.contains("reels") || s.contains("shorts") ||
-                s.contains("রিলস") || s.contains("শর্টস")
+        if (s.contains("reels") || s.contains("shorts") || s.contains("spotlight") ||
+            s.contains("for you") || s.contains("রিলস") || s.contains("শর্টস")
+        ) return true
+        return reelsTabSelected()
+    }
+
+    private fun reelsTabSelected(): Boolean {
+        return try {
+            val root = rootInActiveWindow ?: return false
+            for (marker in reelsTabMarkers) {
+                val nodes = root.findAccessibilityNodeInfosByText(marker)
+                for (n in nodes) {
+                    // the label itself may not carry the state — its tab container does
+                    var found = n.isSelected
+                    var p1: AccessibilityNodeInfo? = null
+                    var p2: AccessibilityNodeInfo? = null
+                    if (!found) {
+                        p1 = n.parent
+                        found = p1?.isSelected == true
+                    }
+                    if (!found && p1 != null) {
+                        p2 = p1.parent
+                        found = p2?.isSelected == true
+                    }
+                    p2?.recycle()
+                    p1?.recycle()
+                    n.recycle()
+                    if (found) return true
+                }
+            }
+            false
+        } catch (ex: Exception) {
+            false
+        }
     }
 
     private fun looksLikePowerMenu(e: AccessibilityEvent): Boolean {

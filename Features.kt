@@ -962,23 +962,28 @@ private fun MainActivity.appBlockPicker(mode: String, done: () -> Unit) {
         .show()
 }
 
-/** The live list of locked apps, with their mode and a remove button each. */
-fun MainActivity.lockedAppsCard(): View {
+/** The live list of locked apps for one mode: [mode] is "full" or "reels". */
+fun MainActivity.lockedAppsCard(mode: String): View {
+    val isFull = mode == "full"
     val c = card()
-    c.addView(section(L.t("Locked apps", "লক করা অ্যাপ")))
+    c.addView(
+        section(
+            if (isFull) L.t("Fully blocked apps", "সম্পূর্ণ ব্লক করা অ্যাপ")
+            else L.t("Reels blocked apps", "রিলস ব্লক করা অ্যাপ")
+        )
+    )
     val locked = Store.isActive(this)
     val pm = packageManager
-    var full = Extra.appBlockFull(this)
-    var reels = Extra.appBlockReels(this)
-    if (full.isEmpty() && reels.isEmpty()) {
+    var pkgs = if (isFull) Extra.appBlockFull(this) else Extra.appBlockReels(this)
+    if (pkgs.isEmpty()) {
         c.addView(
-            tv(L.t("No apps blocked yet. Choose apps above.", "এখনো কোনো অ্যাপ ব্লক করা হয়নি। ওপরে অ্যাপ বাছুন।"), 13f, C.muted),
+            tv(L.t("No apps here yet. Choose apps above.", "এখানে এখনো কোনো অ্যাপ নেই। ওপরে অ্যাপ বাছুন।"), 13f, C.muted),
             lp(MATCH, WRAP, t = dp(6))
         )
         return c
     }
     // drop apps that were uninstalled since they were blocked
-    val missing = (full + reels).filter { pkg ->
+    val missing = pkgs.filter { pkg ->
         try {
             pm.getApplicationInfo(pkg, 0)
             false
@@ -987,24 +992,15 @@ fun MainActivity.lockedAppsCard(): View {
         }
     }.toSet()
     if (missing.isNotEmpty()) {
-        full -= missing
-        reels -= missing
-        Extra.setAppBlockFull(this, full)
-        Extra.setAppBlockReels(this, reels)
+        pkgs -= missing
+        if (isFull) Extra.setAppBlockFull(this, pkgs) else Extra.setAppBlockReels(this, pkgs)
     }
-    data class Row(val pkg: String, val label: String, val icon: Drawable, val isFull: Boolean)
+    data class Row(val pkg: String, val label: String, val icon: Drawable)
     val rows = ArrayList<Row>()
-    for (pkg in full) {
+    for (pkg in pkgs) {
         try {
             val ai = pm.getApplicationInfo(pkg, 0)
-            rows.add(Row(pkg, pm.getApplicationLabel(ai).toString(), pm.getApplicationIcon(ai), true))
-        } catch (e: Exception) {
-        }
-    }
-    for (pkg in reels) {
-        try {
-            val ai = pm.getApplicationInfo(pkg, 0)
-            rows.add(Row(pkg, pm.getApplicationLabel(ai).toString(), pm.getApplicationIcon(ai), false))
+            rows.add(Row(pkg, pm.getApplicationLabel(ai).toString(), pm.getApplicationIcon(ai)))
         } catch (e: Exception) {
         }
     }
@@ -1016,16 +1012,7 @@ fun MainActivity.lockedAppsCard(): View {
         val icon = ImageView(this)
         icon.setImageDrawable(row.icon)
         r.addView(icon, lp(dp(36), dp(36), r = dp(12)))
-        val texts = LinearLayout(this)
-        texts.orientation = LinearLayout.VERTICAL
-        texts.addView(tv(row.label, 15f, C.text))
-        texts.addView(
-            tv(
-                if (row.isFull) L.t("Full block", "সম্পূর্ণ ব্লক") else L.t("Reels block", "রিলস ব্লক"),
-                12f, if (row.isFull) C.danger else C.mint
-            )
-        )
-        r.addView(texts, lp(0, WRAP, weight = 1f))
+        r.addView(tv(row.label, 15f, C.text), lp(0, WRAP, weight = 1f))
         val remove = tv(L.t("Remove", "সরান"), 13f, C.warn)
         remove.setPadding(dp(8), dp(8), dp(8), dp(8))
         remove.pressFeedback()
@@ -1033,7 +1020,7 @@ fun MainActivity.lockedAppsCard(): View {
             if (Store.isActive(this)) {
                 toast(L.t("Locked while a session is active", "সেশন চলাকালীন বদলানো যাবে না"))
             } else {
-                if (row.isFull) Extra.setAppBlockFull(this, Extra.appBlockFull(this) - row.pkg)
+                if (isFull) Extra.setAppBlockFull(this, Extra.appBlockFull(this) - row.pkg)
                 else Extra.setAppBlockReels(this, Extra.appBlockReels(this) - row.pkg)
                 go(4)
             }
