@@ -37,8 +37,9 @@ import android.widget.LinearLayout
  * Settings / uninstall pages that show "PowerLock" are sent Home when "protect app settings" is on.
  * App block (Protection section) also runs here while a session is active: fully
  * blocked apps are covered instantly by a protection screen (with a Home button),
- * and Reels-blocked apps get Back (then Home on repeat) when a Reels / Shorts
- * screen is detected.
+ * and Reels-blocked apps get Back (repeated while the feed is still showing)
+ * when a Reels / Shorts screen is detected. Home is never used for Reels:
+ * it sends YouTube Shorts into picture-in-picture instead of closing it.
  */
 class PowerBlockService : AccessibilityService() {
 
@@ -86,7 +87,6 @@ class PowerBlockService : AccessibilityService() {
 
     private var lastAppBlockAction = 0L
     private var lastReelsScan = 0L
-    private var lastReelsBack = 0L
 
     // Full-block protection screen: covers a blocked app the instant it opens.
     private var blockOverlay: View? = null
@@ -425,8 +425,11 @@ class PowerBlockService : AccessibilityService() {
 
     /**
      * Reels block: the app stays usable, only the Reels / Shorts feed is closed.
-     * First detection presses Back (out of the feed); if a Reels screen is still
-     * showing shortly after, Home is pressed instead.
+     * Every detection presses Back (out of the feed/player). Home is never
+     * used: pressing Home while a Short plays sends YouTube into
+     * picture-in-picture, where the video keeps playing in a small floating
+     * window. Back closes the feed itself; if it is still showing, the next
+     * scan presses Back again until the app leaves the feed (or exits).
      */
     private fun onReelsApp(e: AccessibilityEvent) {
         val now = SystemClock.uptimeMillis()
@@ -440,13 +443,7 @@ class PowerBlockService : AccessibilityService() {
         if (now - lastAppBlockAction < 500) return
         lastAppBlockAction = now
         Extra.logAttempt(this, "reels")
-        if (now - lastReelsBack < 2500) {
-            lastReelsBack = 0L
-            performGlobalAction(GLOBAL_ACTION_HOME)
-        } else {
-            lastReelsBack = now
-            performGlobalAction(GLOBAL_ACTION_BACK)
-        }
+        performGlobalAction(GLOBAL_ACTION_BACK)
     }
 
     /**
@@ -513,35 +510,74 @@ class PowerBlockService : AccessibilityService() {
     }
 
     /**
-     * Thorough tree scan (bounded: 500 nodes), run only when the cheap signals
-     * miss. Catches what the text search cannot:
+     * Thorough tree scan (bounded: 500 nodes over all of the app's windows),
+     * run only when the cheap signals miss. Catches what the text search cannot:
      * - icon-only tabs whose label is a contentDescription,
      * - the story/status viewer: its reply field's hint starts with "Reply"
-     *   (Instagram / Facebook / WhatsApp / Telegram story viewers),
+     *   (Instagram / Facebook / WhatsApp / Telegram story viewers), or the
+     *   "You can't reply to this story" notice at the bottom of the screen
+     *   (Telegram stories with replies off have no reply field at all),
      * - the YouTube Shorts player: the "Remix" button exists only there
      *   (the bottom nav is hidden in the player, so the tab check can't see it),
      * - a Reels/Shorts header at the top of the screen (the viewer title,
-     *   not the bottom tab — the text must be exactly the marker).
+     *   not the bottom tab — the text must be exactly the marker),
+     * - viewer/player view IDs containing reel / short / story.
+     * All of the app's windows are scanned: story viewers can live in their
+     * own window, not the active one.
      */
     private fun reelsUiScan(pkg: String): Boolean {
-        val root = try {
-            rootInActiveWindow
-        } catch (ex: Exception) {
-            null
-        } ?: return false
         val screenH = resources.displayMetrics.heightPixels
+        val roots = ArrayList<AccessibilityNodeInfo>()
+        try {
+            try {
+                for (w in windows) {
+                    try {
+                        val r = w.root ?: continue
+                        if (r.packageName?.toString() == pkg) roots.add(r)
+                        else try { r.recycle() } catch (_: Exception) { }
+                    } catch (_: Exception) { }
+                }
+            } catch (_: Exception) { }
+            if (roots.isEmpty()) {
+                try {
+                    rootInActiveWindow?.let { roots.add(it) }
+                } catch (_: Exception) { }
+            }
+            var budget = 500
+            for (r in roots) {
+                if (budget <= 0) break
+                val used = intArrayOf(0)
+                if (scanReelsTree(r, pkg, screenH, budget, used)) return true
+                budget -= used[0]
+            }
+            return false
+        } finally {
+            for (r in roots) {
+                try { r.recycle() } catch (_: Exception) { }
+            }
+        }
+    }
+
+    /** Bounded DFS of one window's tree. Does not recycle [root]. */
+    private fun scanReelsTree(
+        root: AccessibilityNodeInfo, pkg: String, screenH: Int, budget: Int, used: IntArray
+    ): Boolean {
         val stack = ArrayDeque<AccessibilityNodeInfo>()
         stack.add(root)
-        var visited = 0
         try {
-            while (stack.isNotEmpty() && visited < 500) {
+            while (stack.isNotEmpty() && used[0] < budget) {
                 val n = stack.removeFirst()
-                visited++
+                used[0]++
                 try {
                     val text = n.text?.toString() ?: ""
                     val cd = n.contentDescription?.toString() ?: ""
                     val lt = text.lowercase()
                     val lc = cd.lowercase()
+                    // viewer / player view IDs (e.g. reels_viewer, story_viewer)
+                    val vid = n.viewIdResourceName?.lowercase() ?: ""
+                    if ((vid.contains("viewer") || vid.contains("player")) &&
+                        (vid.contains("reel") || vid.contains("short") || vid.contains("story"))
+                    ) return true
                     // YouTube Shorts player: Remix exists only in the Shorts player
                     if (pkg == "com.google.android.youtube" &&
                         (lt.contains("remix") || lc.contains("remix"))
@@ -551,6 +587,13 @@ class PowerBlockService : AccessibilityService() {
                     if (clsN.contains("EditText")) {
                         val hint = n.hintText?.toString() ?: ""
                         if (hint.lowercase().startsWith("reply")) return true
+                    }
+                    // Story viewer with replies off: "You can't reply to this story"
+                    // sits at the bottom of the screen (Telegram)
+                    if (lt.contains("this story")) {
+                        val r = Rect()
+                        n.getBoundsInScreen(r)
+                        if (r.top > screenH * 0.75) return true
                     }
                     if (reelsMarkersLower.any { lt.contains(it) || lc.contains(it) }) {
                         // marker tab, selected or checked (itself or an ancestor)
@@ -594,9 +637,11 @@ class PowerBlockService : AccessibilityService() {
             return false
         } finally {
             while (stack.isNotEmpty()) {
-                try { stack.removeFirst().recycle() } catch (_: Exception) { }
+                val x = stack.removeFirst()
+                if (x !== root) {
+                    try { x.recycle() } catch (_: Exception) { }
+                }
             }
-            try { root.recycle() } catch (_: Exception) { }
         }
     }
 
