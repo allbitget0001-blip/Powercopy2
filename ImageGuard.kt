@@ -64,8 +64,10 @@ object ImageGuardModel {
     const val MODEL_URL =
         "https://huggingface.co/OwenElliott/image-safety-classifier-l/resolve/main/onnx/image-safety-classifier-l.onnx"
 
-    /** A complete download is ~106 MB; anything smaller is a failed download. */
-    const val MIN_BYTES = 50_000_000L
+    /** The exact size of the model file on Hugging Face, in bytes. A
+     * download is only complete when it matches this exactly — a shorter
+     * file is a silently truncated download, not a model. */
+    const val EXPECTED_BYTES = 111_121_598L
 
     fun dir(ctx: Context): File = File(ctx.filesDir, "imageguard")
 
@@ -73,9 +75,10 @@ object ImageGuardModel {
      * on the phone is never mistaken for this one. */
     fun file(ctx: Context): File = File(dir(ctx), "model-l.onnx")
 
+    /** True only when the file is present AND complete (exact size). */
     fun ready(ctx: Context): Boolean = try {
         val f = file(ctx)
-        f.exists() && f.length() > MIN_BYTES
+        f.exists() && f.length() == EXPECTED_BYTES
     } catch (_: Exception) {
         false
     }
@@ -107,7 +110,11 @@ object ImageGuardModel {
         return last
     }
 
-    /** One download attempt. */
+    /** One download attempt. Resumable: a partial .tmp from an interrupted
+     * download is continued with an HTTP Range request instead of starting
+     * over, so a dropped connection does not waste mobile data. The
+     * finished file must match the expected size exactly, or it is
+     * reported incomplete (and retried, resuming again). */
     private fun downloadOnce(ctx: Context, onProgress: (Int) -> Unit): ModelDownloadResult {
         return try {
             val d = dir(ctx)
@@ -118,23 +125,46 @@ object ImageGuardModel {
                 if (old.exists()) old.delete()
             } catch (_: Exception) {
             }
+            // a file that failed to load is corrupt, not short: delete it
+            // (and any partial download) so this attempt starts clean
+            if (Extra.igModelError(ctx)) {
+                try {
+                    file(ctx).delete()
+                } catch (_: Exception) {
+                }
+                try {
+                    File(d, "model-l.onnx.tmp").delete()
+                } catch (_: Exception) {
+                }
+            }
             val tmp = File(d, "model-l.onnx.tmp")
-            if (tmp.exists()) tmp.delete()
+            val existing = if (tmp.exists()) tmp.length() else 0L
             val conn = URL(MODEL_URL).openConnection() as HttpsURLConnection
             conn.instanceFollowRedirects = true
             conn.connectTimeout = 15_000
             conn.readTimeout = 30_000
+            if (existing > 0) conn.setRequestProperty("Range", "bytes=$existing-")
             conn.connect()
-            if (conn.responseCode !in 200..299) {
-                val code = conn.responseCode
+            val code = conn.responseCode
+            val resume = code == 206 && existing > 0
+            if (code !in 200..299) {
                 conn.disconnect()
                 return ModelDownloadResult(false, "HTTP $code")
             }
-            val total = conn.contentLengthLong
-            var done = 0L
+            if (!resume && tmp.exists()) tmp.delete()
+            // total size: Content-Range on a resumed download, else
+            // Content-Length; fall back to the known file size
+            val total = when {
+                code == 206 -> totalFromContentRange(conn.getHeaderField("Content-Range"))
+                    .takeIf { it > 0 } ?: (existing + conn.contentLengthLong)
+                conn.contentLengthLong > 0 -> conn.contentLengthLong
+                else -> EXPECTED_BYTES
+            }
+            var done = if (resume) existing else 0L
+            if (total > 0) onProgress(((done * 100) / total).toInt().coerceIn(0, 100))
             var lastPct = -1
             conn.inputStream.use { input ->
-                FileOutputStream(tmp).use { out ->
+                FileOutputStream(tmp, resume).use { out ->
                     val buf = ByteArray(8192)
                     while (true) {
                         val n = input.read(buf)
@@ -152,8 +182,9 @@ object ImageGuardModel {
                 }
             }
             conn.disconnect()
-            if (tmp.length() <= MIN_BYTES) {
-                tmp.delete()
+            // the file must be complete, not just big: a silently
+            // truncated download loads as a corrupt model otherwise
+            if (tmp.length() != EXPECTED_BYTES) {
                 return ModelDownloadResult(false, "incomplete")
             }
             if (!tmp.renameTo(file(ctx))) {
@@ -164,12 +195,18 @@ object ImageGuardModel {
             ModelDownloadResult(true)
         } catch (e: Exception) {
             Log.e(TAG, "model download failed", e)
-            try {
-                File(dir(ctx), "model-l.onnx.tmp").delete()
-            } catch (_: Exception) {
-            }
+            // keep the partial .tmp: the next attempt resumes it instead
+            // of downloading from zero again
             ModelDownloadResult(false, reasonFor(e))
         }
+    }
+
+    /** Total size from a "bytes <start>-<end>/<total>" Content-Range, or -1. */
+    private fun totalFromContentRange(header: String?): Long {
+        if (header == null) return -1
+        val slash = header.lastIndexOf('/')
+        if (slash < 0) return -1
+        return header.substring(slash + 1).trim().toLongOrNull() ?: -1
     }
 
     /** Short plain-English reason for a download exception. */
@@ -192,9 +229,19 @@ private class NsfwModel private constructor(
     private val session: OrtSession
 ) {
     companion object {
-        fun load(ctx: Context): NsfwModel? {
+        /**
+         * Loads the model. Returns the model plus an empty reason on
+         * success, or null plus a short reason on failure: "file missing",
+         * "wrong size: N bytes", or the ORT error. The reason goes into
+         * the diagnostic log so a load failure can be traced instead of
+         * guessed.
+         */
+        fun load(ctx: Context): Pair<NsfwModel?, String> {
             val file = ImageGuardModel.file(ctx)
-            if (!file.exists() || file.length() <= ImageGuardModel.MIN_BYTES) return null
+            if (!file.exists()) return null to "file missing"
+            if (file.length() != ImageGuardModel.EXPECTED_BYTES) {
+                return null to "wrong size: ${file.length()} bytes"
+            }
             return try {
                 val env = OrtEnvironment.getEnvironment()
                 val opts = OrtSession.SessionOptions()
@@ -204,10 +251,10 @@ private class NsfwModel private constructor(
                     opts.close()
                 } catch (_: Exception) {
                 }
-                NsfwModel(env, session)
+                NsfwModel(env, session) to ""
             } catch (e: Exception) {
                 Log.e(TAG, "NsfwModel load failed", e)
-                null
+                null to "ORT error: ${e.message ?: e.javaClass.simpleName}"
             }
         }
     }
@@ -827,11 +874,11 @@ class ImageGuardService : Service() {
         model?.let { return it }
         if (modelFailed) return null
         val t0 = SystemClock.uptimeMillis()
-        val m = NsfwModel.load(this)
+        val (m, reason) = NsfwModel.load(this)
         if (m == null) {
             modelFailed = true
-            dbgSummary("[${stamp()}] মডেল লোড হয়নি")
-            dbg("model load failed")
+            dbgSummary("[${stamp()}] মডেল লোড হয়নি: $reason")
+            dbg("model load failed: $reason")
             Store.settings(this).edit().putBoolean("ig_model_err", true).apply()
             handler.post { notifyModelError() }
             return null
