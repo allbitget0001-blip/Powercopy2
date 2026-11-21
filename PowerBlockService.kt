@@ -95,6 +95,7 @@ class PowerBlockService : AccessibilityService() {
 
     private var lastAppBlockAction = 0L
     private var lastReelsScan = 0L
+    private var lastReelsBack = 0L // cooldown after a reels Back (the close animation)
     private var lastMsgScan = 0L
     private var lastMsgAction = 0L
 
@@ -443,11 +444,12 @@ class PowerBlockService : AccessibilityService() {
 
     /**
      * Reels block: the app stays usable, only the Reels / Shorts feed is closed.
-     * Every detection presses Back (out of the feed/player). Home is never
-     * used: pressing Home while a Short plays sends YouTube into
-     * picture-in-picture, where the video keeps playing in a small floating
-     * window. Back closes the feed itself; if it is still showing, the next
-     * scan presses Back again until the app leaves the feed (or exits).
+     * A detection presses Back (out of the feed/player). Home is never used:
+     * pressing Home while a Short plays sends YouTube into picture-in-picture,
+     * where the video keeps playing in a small floating window. After a Back
+     * there is a short cooldown: the close animation keeps the reel in the
+     * tree for a moment, and Backing again would leave the app instead of
+     * just the reel. Only the reel is closed — never the app itself.
      */
     private fun onReelsApp(e: AccessibilityEvent) {
         val now = SystemClock.uptimeMillis()
@@ -459,7 +461,9 @@ class PowerBlockService : AccessibilityService() {
         }
         if (!looksLikeReels(e)) return
         if (now - lastAppBlockAction < 500) return
+        if (now - lastReelsBack < 1500) return
         lastAppBlockAction = now
+        lastReelsBack = now
         Extra.logAttempt(this, "reels")
         performGlobalAction(GLOBAL_ACTION_BACK)
     }
@@ -628,37 +632,37 @@ class PowerBlockService : AccessibilityService() {
 
     /**
      * Signals, cheapest first:
-     * 1) the window class (reel / shorts / story viewer),
-     * 2) the event's own text,
-     * 3) the app's navigation: a Reels / Shorts / Status tab that is selected
+     * 1) the window class on a window-state change (reel / shorts / story
+     *    viewer) — on a content change the class is the changed node's class,
+     *    and a story cell in the feed would false-positive,
+     * 2) the app's navigation: a Reels / Shorts / Status tab that is selected
      *    or checked (bottom-nav items are Checkable, so isChecked is the state
      *    that actually changes — checking only isSelected missed them),
-     * 4) a bounded tree scan: icon-only tabs (label in contentDescription),
+     * 3) a bounded tree scan: icon-only tabs (label in contentDescription),
      *    the story/status reply field, the YouTube Shorts "Remix" button, and
      *    a Reels/Shorts header at the top of the screen.
      * A plain text search would false-positive (the "Reels" tab label is in
-     * the tree even on the home feed), so selection/checked state — or a
-     * viewer-only fingerprint — is what counts. Chat/messages screens are
-     * excluded up front: they are never a Reels feed.
+     * the tree even on the home feed, and the feed's Reels carousel carries
+     * the same text), so selection/checked state — or a viewer-only
+     * fingerprint — is what counts. Chat/messages screens are excluded up
+     * front: they are never a Reels feed.
      */
     private fun looksLikeReels(e: AccessibilityEvent): Boolean {
         if (isChatScreen()) return false
         val pkg = e.packageName?.toString() ?: ""
         val cls = (e.className?.toString() ?: "").lowercase()
-        // a messaging screen is never a Reels feed (second layer: the event's
-        // own class — a message/chat/conversation screen must not be Backed out of)
+        // a messaging screen is never a Reels feed (the event's own class —
+        // a message/chat/conversation screen must not be Backed out of)
         if (cls.contains("message") || cls.contains("chat") || cls.contains("conversation")) return false
-        if (cls.contains("reel") || cls.contains("shorts") || cls.contains("clips") ||
-            cls.contains("spotlight") || cls.contains("story")
-        ) return true
-        if ((pkg == "com.whatsapp" || pkg == "com.whatsapp.w4b") && cls.contains("status")) return true
-        val sb = StringBuilder()
-        for (t in e.text) sb.append(t).append(' ')
-        if (e.contentDescription != null) sb.append(e.contentDescription)
-        val s = sb.toString().lowercase()
-        if (s.contains("reels") || s.contains("shorts") || s.contains("spotlight") ||
-            s.contains("for you") || s.contains("রিলস") || s.contains("শর্টস")
-        ) return true
+        // the window class only identifies a screen on a window-state change:
+        // on a content change it is the changed node's class (a story cell
+        // in the feed would false-positive and Back the user out of the app)
+        if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            if (cls.contains("reel") || cls.contains("shorts") || cls.contains("clips") ||
+                cls.contains("spotlight") || cls.contains("story")
+            ) return true
+            if ((pkg == "com.whatsapp" || pkg == "com.whatsapp.w4b") && cls.contains("status")) return true
+        }
         if (reelsTabSelected()) return true
         return reelsUiScan(pkg)
     }

@@ -21,6 +21,7 @@ import android.text.Editable
 import android.text.TextWatcher
 import android.util.Log
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
@@ -206,6 +207,9 @@ object Extra {
     fun setAppBlockMsg(ctx: Context, apps: Set<String>) {
         Store.settings(ctx).edit().putString("ab_msg", apps.joinToString(",")).apply()
     }
+
+    /** All launchable apps (label + icon), loaded once per session: loading ~150 icons is slow. */
+    var appListCache: List<Triple<String, String, Drawable>>? = null
 
     /** Packages with a Reels / Shorts / Status feed — only these are offered for Reels block. */
     val reelsPackages = setOf(
@@ -892,11 +896,40 @@ fun MainActivity.appBlockModeCard(mode: String): View {
 }
 
 private fun MainActivity.appBlockPicker(mode: String, done: () -> Unit) {
+    // the app list (with icons) is loaded once per session on a background
+    // thread: loading ~150 icons on the main thread froze the UI
+    val cached = Extra.appListCache
+    if (cached != null) {
+        showAppBlockPicker(mode, cached, done)
+        return
+    }
+    val loading = dlg()
+        .setTitle(L.t("Loading apps…", "অ্যাপ লোড হচ্ছে…"))
+        .setView(tv(L.t("Please wait…", "একটু অপেক্ষা করুন…"), 14f, C.muted).apply {
+            setPadding(dp(20), dp(16), dp(20), dp(16))
+        })
+        .setCancelable(false)
+        .show()
+    Thread {
+        val apps = loadLaunchableApps()
+        runOnUiThread {
+            try { loading.dismiss() } catch (_: Exception) { }
+            if (apps.isEmpty()) {
+                toast(L.t("No apps found", "কোনো অ্যাপ পাওয়া যায়নি"))
+                return@runOnUiThread
+            }
+            Extra.appListCache = apps
+            showAppBlockPicker(mode, apps, done)
+        }
+    }.start()
+}
+
+/** All launchable apps (label + icon), sorted by name. Runs off the main thread. */
+private fun MainActivity.loadLaunchableApps(): List<Triple<String, String, Drawable>> {
     val pm = packageManager
     val intent = Intent(Intent.ACTION_MAIN)
     intent.addCategory(Intent.CATEGORY_LAUNCHER)
     val skip = listOf("dialer", "incallui", "emergency", "telecom", "contacts")
-    val isFull = mode == "full"
     val apps = ArrayList<Triple<String, String, Drawable>>()
     val seen = HashSet<String>()
     try {
@@ -904,15 +937,21 @@ private fun MainActivity.appBlockPicker(mode: String, done: () -> Unit) {
             val pkg = ri.activityInfo.packageName
             if (pkg == packageName || !seen.add(pkg)) continue
             if (skip.any { pkg.contains(it) }) continue
-            // Reels block is only offered for apps that actually have Reels / Shorts / Status;
-            // search block lists every app, so all Telegram-type apps (and any other) show up
-            if (mode == "reels" && pkg !in Extra.reelsPackages) continue
             apps.add(Triple(pkg, ri.loadLabel(pm).toString(), ri.loadIcon(pm)))
         }
     } catch (e: Exception) {
         Log.e(TAG, "app list failed", e)
     }
     apps.sortBy { it.second.lowercase() }
+    return apps
+}
+
+private fun MainActivity.showAppBlockPicker(
+    mode: String, allApps: List<Triple<String, String, Drawable>>, done: () -> Unit
+) {
+    // Reels block is only offered for apps that actually have Reels / Shorts / Status;
+    // search block lists every app, so all Telegram-type apps (and any other) show up
+    val apps = if (mode == "reels") allApps.filter { it.first in Extra.reelsPackages } else allApps
     if (apps.isEmpty()) {
         toast(
             when (mode) {
@@ -930,33 +969,88 @@ private fun MainActivity.appBlockPicker(mode: String, done: () -> Unit) {
         }
     )
     var query = ""
+    // rows are built once; the search filter only toggles visibility (fast typing)
     val list = LinearLayout(this)
     list.orientation = LinearLayout.VERTICAL
-    fun renderList() {
-        list.removeAllViews()
+    val rows = ArrayList<Pair<View, String>>() // (row, lowercase label)
+    for (info in apps) {
+        val r = LinearLayout(this)
+        r.gravity = Gravity.CENTER_VERTICAL
+        r.setPadding(0, dp(8), 0, dp(8))
+        val icon = ImageView(this)
+        icon.setImageDrawable(info.third)
+        r.addView(icon, lp(dp(40), dp(40), r = dp(14)))
+        r.addView(tv(info.second, 15f, C.text), lp(0, WRAP, weight = 1f))
+        val pkg = info.first
+        r.addView(toggle(chosen.contains(pkg)) { v ->
+            if (v) chosen.add(pkg) else chosen.remove(pkg)
+        })
+        list.addView(r)
+        rows.add(r to info.second.lowercase())
+    }
+    val emptyView = tv(L.t("No matching apps", "মিলছে এমন কোনো অ্যাপ নেই"), 13f, C.muted)
+    list.addView(emptyView, lp(MATCH, WRAP, t = dp(8)))
+    emptyView.visibility = View.GONE
+    // A-Z fast-scroll index beside the list: touch or drag a letter to jump
+    // to the first app starting with it (only for long lists, and hidden
+    // while searching)
+    val showIndex = apps.size > 20
+    val lettersCol = LinearLayout(this)
+    lettersCol.orientation = LinearLayout.VERTICAL
+    lettersCol.gravity = Gravity.CENTER
+    val letters = ('A'..'Z').toList()
+    val letterViews = ArrayList<TextView>()
+    for (ch in letters) {
+        val lt = tv(ch.toString(), 10f, C.muted)
+        lt.gravity = Gravity.CENTER
+        lt.setPadding(0, dp(1), 0, dp(1))
+        lettersCol.addView(lt, lp(MATCH, WRAP))
+        letterViews.add(lt)
+    }
+    fun applyFilter() {
         val q = query.trim().lowercase()
         var shown = 0
-        for (info in apps) {
-            if (q.isNotEmpty() && !info.second.lowercase().contains(q)) continue
-            shown++
-            val r = LinearLayout(this)
-            r.gravity = Gravity.CENTER_VERTICAL
-            r.setPadding(0, dp(8), 0, dp(8))
-            val icon = ImageView(this)
-            icon.setImageDrawable(info.third)
-            r.addView(icon, lp(dp(40), dp(40), r = dp(14)))
-            r.addView(tv(info.second, 15f, C.text), lp(0, WRAP, weight = 1f))
-            val pkg = info.first
-            r.addView(toggle(chosen.contains(pkg)) { v ->
-                if (v) chosen.add(pkg) else chosen.remove(pkg)
-            })
-            list.addView(r)
+        for ((row, label) in rows) {
+            val vis = q.isEmpty() || label.contains(q)
+            row.visibility = if (vis) View.VISIBLE else View.GONE
+            if (vis) shown++
         }
-        if (shown == 0) {
-            list.addView(tv(L.t("No matching apps", "মিলছে এমন কোনো অ্যাপ নেই"), 13f, C.muted), lp(MATCH, WRAP, t = dp(8)))
+        emptyView.visibility = if (shown == 0) View.VISIBLE else View.GONE
+        lettersCol.visibility = if (showIndex && q.isEmpty()) View.VISIBLE else View.GONE
+    }
+    val sv = ScrollView(this)
+    sv.addView(list)
+    fun jumpToLetter(ch: Char) {
+        // first app whose name starts with this letter (or the next letter that has apps)
+        val target = ch.lowercaseChar()
+        for ((row, label) in rows) {
+            val first = label.firstOrNull() ?: continue
+            if (first >= target) {
+                sv.smoothScrollTo(0, row.top)
+                return
+            }
         }
     }
-    renderList()
+    lettersCol.setOnTouchListener { _, ev ->
+        when (ev.action) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                val h = lettersCol.height
+                if (h > 0) {
+                    val idx = ((ev.y / h) * letters.size).toInt().coerceIn(0, letters.size - 1)
+                    jumpToLetter(letters[idx])
+                    letterViews.forEachIndexed { i, v ->
+                        v.setTextColor(if (i == idx) C.primary else C.muted)
+                    }
+                }
+                true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                letterViews.forEach { it.setTextColor(C.muted) }
+                true
+            }
+            else -> false
+        }
+    }
     val search = edit(L.t("Search apps…", "অ্যাপ খুঁজুন…"), false)
     search.gravity = Gravity.START or Gravity.CENTER_VERTICAL
     search.addTextChangedListener(object : TextWatcher {
@@ -964,16 +1058,19 @@ private fun MainActivity.appBlockPicker(mode: String, done: () -> Unit) {
         override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
         override fun afterTextChanged(s: Editable?) {
             query = s?.toString() ?: ""
-            renderList()
+            applyFilter()
         }
     })
     val body = LinearLayout(this)
     body.orientation = LinearLayout.VERTICAL
     body.setPadding(dp(20), dp(12), dp(20), dp(4))
     body.addView(search, lp(MATCH, WRAP, b = dp(8)))
-    val sv = ScrollView(this)
-    sv.addView(list)
-    body.addView(sv, lp(MATCH, dp(400)))
+    val contentRow = LinearLayout(this)
+    contentRow.orientation = LinearLayout.HORIZONTAL
+    contentRow.addView(sv, lp(0, MATCH, weight = 1f))
+    contentRow.addView(lettersCol, lp(dp(22), MATCH, l = dp(4)))
+    body.addView(contentRow, lp(MATCH, dp(400)))
+    applyFilter()
     dlg()
         .setTitle(
             when (mode) {
