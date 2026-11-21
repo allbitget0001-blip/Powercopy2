@@ -38,8 +38,8 @@ import android.widget.LinearLayout
  * App block (Protection section) also runs here while a session is active: fully
  * blocked apps are covered instantly by a protection screen (with a Home button),
  * Reels-blocked apps get Back (repeated while the feed is still showing)
- * when a Reels / Shorts screen is detected, and messaging apps with search
- * block get the protection screen when their search opens (chats stay usable).
+ * when a Reels / Shorts screen is detected, and apps with search block get
+ * the protection screen when their search opens (the app stays usable).
  * Home is never used for Reels: it sends YouTube Shorts into picture-in-picture
  * instead of closing it.
  */
@@ -77,7 +77,7 @@ class PowerBlockService : AccessibilityService() {
 
     private var lastFocusAction = 0L
 
-    // App block (Protection section): full block + reels block + messaging search block.
+    // App block (Protection section): full block + reels block + search block.
     @Volatile
     private var abOn = true
 
@@ -462,10 +462,10 @@ class PowerBlockService : AccessibilityService() {
     }
 
     /**
-     * Messaging search block: chats stay usable, but opening search in a
-     * messaging app (Telegram, WhatsApp, Messenger…) covers the screen with
-     * the protection screen. If search is closed again (Back goes through to
-     * the app behind the overlay), the screen is uncovered so chats work.
+     * Search block: the app stays usable, but opening search in a selected
+     * app (Telegram, WhatsApp, or any other) covers the screen with the
+     * protection screen. If search is closed again (Back goes through to
+     * the app behind the overlay), the screen is uncovered so the app works.
      */
     private fun onMsgSearchApp(e: AccessibilityEvent) {
         val now = SystemClock.uptimeMillis()
@@ -681,7 +681,8 @@ class PowerBlockService : AccessibilityService() {
     ): Boolean {
         val stack = ArrayDeque<AccessibilityNodeInfo>()
         stack.add(root)
-        // right-edge action rail: y positions of Like / Comment / Share buttons
+        // right-edge action rail: kinds + y positions of Like / Comment / Share buttons
+        val railKinds = HashSet<String>()
         val railTops = ArrayList<Int>()
         try {
             while (stack.isNotEmpty() && used[0] < budget) {
@@ -693,16 +694,25 @@ class PowerBlockService : AccessibilityService() {
                     val lt = text.lowercase()
                     val lc = cd.lowercase()
                     // viewer action rail: Like / Comment / Share stacked vertically
-                    // on the right edge (a feed post has at most one of them there)
-                    if (railTops.size < 4) {
-                        val label = lt.trim().ifEmpty { lc.trim() }
-                        if (label == "like" || label == "comment" || label == "comments" || label == "share") {
-                            val r = Rect()
-                            n.getBoundsInScreen(r)
-                            if (r.left > screenW * 0.80 && r.top >= 0) {
-                                railTops.add(r.top)
-                                if (railTops.size >= 2 && railTops.max() - railTops.min() > screenH * 0.10) return true
-                            }
+                    // on the right edge. At least two DIFFERENT kinds must be there:
+                    // a feed post has only its Share button at the right edge, and
+                    // two posts on screen would otherwise false-positive.
+                    val label = lt.trim().ifEmpty { lc.trim() }
+                    val kind = when {
+                        label.startsWith("like") -> "like"
+                        label.startsWith("comment") -> "comment"
+                        label.startsWith("share") -> "share"
+                        else -> null
+                    }
+                    if (kind != null) {
+                        val r = Rect()
+                        n.getBoundsInScreen(r)
+                        if (r.left > screenW * 0.80 && r.top >= 0) {
+                            railKinds.add(kind)
+                            railTops.add(r.top)
+                            val top = railTops.maxOrNull() ?: 0
+                            val bottom = railTops.minOrNull() ?: 0
+                            if (railKinds.size >= 2 && railTops.size >= 2 && top - bottom > screenH * 0.10) return true
                         }
                     }
                     // viewer / player view IDs (e.g. reels_viewer, story_viewer)

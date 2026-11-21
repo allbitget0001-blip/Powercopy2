@@ -224,23 +224,6 @@ object Extra {
         "com.versebrain.josh"         // Josh short videos
     )
 
-    /** Messaging apps (Telegram-type) — only these are offered for messaging search block. */
-    val messagingPackages = setOf(
-        "org.telegram.messenger",     // Telegram
-        "com.whatsapp",               // WhatsApp
-        "com.whatsapp.w4b",           // WhatsApp Business
-        "com.facebook.orca",          // Messenger
-        "com.facebook.mlite",         // Messenger Lite
-        "org.thoughtcrime.securesms", // Signal
-        "com.imo.android.imoim",      // IMO
-        "com.viber.voip",             // Viber
-        "com.tencent.mm",             // WeChat
-        "jp.naver.line.android",      // LINE
-        "com.discord",                // Discord
-        "com.snapchat.android",       // Snapchat
-        "com.skype.raider"            // Skype
-    )
-
     // ---------- places ----------
 
     fun places(ctx: Context): List<Place> {
@@ -844,7 +827,7 @@ fun MainActivity.protectionIntroCard(): View {
     c.addView(
         row(
             L.t("Block apps while the lock runs", "লক চলাকালীন অ্যাপ ব্লক"),
-            L.t("Choose apps below. Full block covers the app with a protection screen at once; Reels block only stops the Reels / Shorts feed; messaging search block covers the screen when search opens in a messaging app.", "নিচে অ্যাপ বাছুন। সম্পূর্ণ ব্লক সঙ্গে সঙ্গে সুরক্ষা স্ক্রিন দেখায়; রিলস ব্লক শুধু রিলস / শর্টস ফিড আটকায়; মেসেজিং সার্চ ব্লক মেসেজিং অ্যাপে সার্চ খুললে সুরক্ষা স্ক্রিন দেখায়।"),
+            L.t("Choose apps below. Full block covers the app with a protection screen at once; Reels block only stops the Reels / Shorts feed; search block covers the screen when search opens in a selected app.", "নিচে অ্যাপ বাছুন। সম্পূর্ণ ব্লক সঙ্গে সঙ্গে সুরক্ষা স্ক্রিন দেখায়; রিলস ব্লক শুধু রিলস / শর্টস ফিড আটকায়; সার্চ ব্লক নির্বাচিত অ্যাপে সার্চ খুললে সুরক্ষা স্ক্রিন দেখায়।"),
             sw
         ),
         lp(MATCH, WRAP, t = dp(6))
@@ -871,7 +854,7 @@ fun MainActivity.appBlockModeCard(mode: String): View {
         section(
             when (mode) {
                 "full" -> L.t("Full app block", "সম্পূর্ণ অ্যাপ ব্লক")
-                "msg" -> L.t("Messaging search block", "মেসেজিং সার্চ ব্লক")
+                "msg" -> L.t("Search block", "সার্চ ব্লক")
                 else -> L.t("Reels block", "রিলস ব্লক")
             }
         )
@@ -880,7 +863,7 @@ fun MainActivity.appBlockModeCard(mode: String): View {
         tv(
             when (mode) {
                 "full" -> L.t("Opening a selected app instantly shows a protection screen — the app stays covered.", "নির্বাচিত অ্যাপ খুললেই সঙ্গে সঙ্গে সুরক্ষা স্ক্রিন আসবে — অ্যাপের ভেতরে ঢোকা যাবে না।")
-                "msg" -> L.t("Opening search in a selected messaging app (Telegram, WhatsApp, Messenger…) shows the protection screen. Chats stay usable.", "নির্বাচিত মেসেজিং অ্যাপে (Telegram, WhatsApp, Messenger…) সার্চ খুললেই সুরক্ষা স্ক্রিন আসবে। চ্যাট ব্যবহার করা যাবে।")
+                "msg" -> L.t("Opening search in a selected app shows the protection screen — the app itself stays usable. Choose any app, e.g. Telegram or WhatsApp.", "নির্বাচিত অ্যাপে সার্চ খুললেই সুরক্ষা স্ক্রিন আসবে — অ্যাপ ব্যবহার করা যাবে। যেকোনো অ্যাপ বাছা যাবে, যেমন Telegram বা WhatsApp।")
                 else -> L.t("The app stays usable, but its Reels / Shorts feed is closed. Only apps with Reels, Shorts or Status are listed.", "অ্যাপ ব্যবহার করা যাবে, কিন্তু এর রিলস / শর্টস ফিড বন্ধ হয়ে যাবে। শুধু রিলস, শর্টস বা স্ট্যাটাস আছে এমন অ্যাপ তালিকায় আসবে।")
             },
             13f, C.muted
@@ -914,7 +897,6 @@ private fun MainActivity.appBlockPicker(mode: String, done: () -> Unit) {
     intent.addCategory(Intent.CATEGORY_LAUNCHER)
     val skip = listOf("dialer", "incallui", "emergency", "telecom", "contacts")
     val isFull = mode == "full"
-    val isMsg = mode == "msg"
     val apps = ArrayList<Triple<String, String, Drawable>>()
     val seen = HashSet<String>()
     try {
@@ -923,9 +905,8 @@ private fun MainActivity.appBlockPicker(mode: String, done: () -> Unit) {
             if (pkg == packageName || !seen.add(pkg)) continue
             if (skip.any { pkg.contains(it) }) continue
             // Reels block is only offered for apps that actually have Reels / Shorts / Status;
-            // messaging search block only for messaging (Telegram-type) apps
-            if (isMsg && pkg !in Extra.messagingPackages) continue
-            if (!isFull && !isMsg && pkg !in Extra.reelsPackages) continue
+            // search block lists every app, so all Telegram-type apps (and any other) show up
+            if (mode == "reels" && pkg !in Extra.reelsPackages) continue
             apps.add(Triple(pkg, ri.loadLabel(pm).toString(), ri.loadIcon(pm)))
         }
     } catch (e: Exception) {
@@ -935,9 +916,8 @@ private fun MainActivity.appBlockPicker(mode: String, done: () -> Unit) {
     if (apps.isEmpty()) {
         toast(
             when (mode) {
-                "full" -> L.t("No apps found", "কোনো অ্যাপ পাওয়া যায়নি")
-                "msg" -> L.t("No messaging app found", "কোনো মেসেজিং অ্যাপ পাওয়া যায়নি")
-                else -> L.t("No app with Reels / Shorts / Status found", "রিলস / শর্টস / স্ট্যাটাস আছে এমন কোনো অ্যাপ পাওয়া যায়নি")
+                "reels" -> L.t("No app with Reels / Shorts / Status found", "রিলস / শর্টস / স্ট্যাটাস আছে এমন কোনো অ্যাপ পাওয়া যায়নি")
+                else -> L.t("No apps found", "কোনো অ্যাপ পাওয়া যায়নি")
             }
         )
         return
@@ -998,7 +978,7 @@ private fun MainActivity.appBlockPicker(mode: String, done: () -> Unit) {
         .setTitle(
             when (mode) {
                 "full" -> L.t("Choose apps to block fully", "সম্পূর্ণ ব্লক করার অ্যাপ বাছুন")
-                "msg" -> L.t("Choose messaging apps for search block", "সার্চ ব্লকের মেসেজিং অ্যাপ বাছুন")
+                "msg" -> L.t("Choose apps for search block", "সার্চ ব্লকের অ্যাপ বাছুন")
                 else -> L.t("Choose apps for Reels block", "রিলস ব্লকের অ্যাপ বাছুন")
             }
         )

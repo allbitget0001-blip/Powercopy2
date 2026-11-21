@@ -957,7 +957,7 @@ class SettingsScreen(private val a: MainActivity) {
 }
 
 // =====================================================================
-// PROTECTION (app block: full block + reels block + messaging search block)
+// PROTECTION (app block: full block + reels block + search block)
 // =====================================================================
 class ProtectionScreen(private val a: MainActivity) {
     fun build(): View {
