@@ -252,7 +252,10 @@ private class NsfwModel private constructor(
  * (see [sync]); the sampling loop itself also checks the lock, so no frame
  * is ever captured outside a lock. Screen-capture permission is granted
  * through [ImageGuardPermissionActivity] and is lost on reboot — in that
- * case the user gets a notification asking to allow it again.
+ * case the user gets a notification asking to allow it again. The live
+ * MediaProjection is held statically and reused across service restarts:
+ * its token dies once the projection is stopped, so stopping the service
+ * must never stop the projection (see [releaseGrant]).
  */
 class ImageGuardService : Service() {
 
@@ -284,10 +287,38 @@ class ImageGuardService : Service() {
         @Volatile
         private var projectionData: Intent? = null
 
+        /**
+         * The live MediaProjection, held statically and reused across
+         * service restarts. This matters: the token in [projectionData]
+         * dies once the MediaProjection built from it is stopped, so a
+         * stopped service must NOT stop the projection — the next lock
+         * would find a dead token and the guard would silently never run.
+         * Only cleared when the user revokes it (onStop), turns the guard
+         * off ([releaseGrant]), or the process dies.
+         */
+        @Volatile
+        private var mediaProjection: MediaProjection? = null
+
         @Volatile
         private var lastRegrantNotify = 0L
 
         fun hasProjection(): Boolean = projectionData != null
+
+        /**
+         * Fully releases the screen-capture session: stops the projection
+         * and forgets the grant. Called when the user turns the guard off,
+         * so no capture session lingers while the guard is off. The next
+         * enable runs the permission flow again for a fresh grant.
+         */
+        fun releaseGrant() {
+            try {
+                mediaProjection?.stop()
+            } catch (_: Exception) {
+            }
+            mediaProjection = null
+            projectionData = null
+            projectionResultCode = Activity.RESULT_CANCELED
+        }
 
         /**
          * Starts the service iff the guard is on, a lock is protecting, the
@@ -365,7 +396,9 @@ class ImageGuardService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private var inferThread: HandlerThread? = null
     private var inferHandler: Handler? = null
-    private var mediaProjection: MediaProjection? = null
+    // the live MediaProjection lives in the companion object (see there);
+    // each service instance only tracks whether ITS callback is registered
+    private var callbackRegistered = false
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
 
@@ -390,13 +423,19 @@ class ImageGuardService : Service() {
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
-            // the grant was revoked (e.g. from the status bar): forget it,
-            // tell the user, and stop — sync() will not restart us without
-            // a fresh grant
+            // the grant was revoked (e.g. from the status bar) or released:
+            // forget the token AND the dead projection, and stop — sync()
+            // will not restart us without a fresh grant. Only notify when
+            // the guard is still on: a deliberate turn-off releases the
+            // projection too, and that needs no reminder.
             try {
                 projectionData = null
+                mediaProjection = null
+                callbackRegistered = false
                 releaseCapture()
-                notifyRegrantNow(this@ImageGuardService)
+                if (Extra.imageGuardOn(this@ImageGuardService)) {
+                    notifyRegrantNow(this@ImageGuardService)
+                }
                 stopSelf()
             } catch (e: Exception) {
                 Log.e(TAG, "projection callback failed", e)
@@ -497,15 +536,17 @@ class ImageGuardService : Service() {
             handler.removeCallbacks(tick)
             handler.removeCallbacksAndMessages(null)
             releaseCapture()
+            // NOTE: the MediaProjection is deliberately NOT stopped here —
+            // stopping it kills the token, and the next lock would find a
+            // dead grant. The projection stays alive (no display attached,
+            // so nothing is captured) and is reused by the next start.
             try {
-                mediaProjection?.unregisterCallback(projectionCallback)
+                if (callbackRegistered) {
+                    mediaProjection?.unregisterCallback(projectionCallback)
+                }
             } catch (_: Exception) {
             }
-            try {
-                mediaProjection?.stop()
-            } catch (_: Exception) {
-            }
-            mediaProjection = null
+            callbackRegistered = false
             hideCover()
             try {
                 model?.close()
@@ -551,16 +592,30 @@ class ImageGuardService : Service() {
     }
 
     private fun initProjection() {
-        if (mediaProjection != null) return
+        // reuse the live projection from an earlier start: the token can
+        // only build one projection, so a second getMediaProjection call
+        // with the same token would fail
+        mediaProjection?.let { proj ->
+            if (!callbackRegistered) {
+                try {
+                    proj.registerCallback(projectionCallback, handler)
+                    callbackRegistered = true
+                } catch (_: Exception) {
+                }
+            }
+            return
+        }
         val data = projectionData ?: return
         try {
             val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             val proj = mpm.getMediaProjection(projectionResultCode, data)
             proj.registerCallback(projectionCallback, handler)
+            callbackRegistered = true
             mediaProjection = proj
         } catch (e: Exception) {
             Log.e(TAG, "getMediaProjection failed", e)
             projectionData = null
+            mediaProjection = null
             notifyRegrantNow(this)
             stopSelf()
         }

@@ -71,7 +71,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "18"
+    const val BUILD_ID = "19"
 
     // ---------- presets ----------
 
@@ -1299,6 +1299,9 @@ fun MainActivity.imageGuardCard(): View {
         else {
             Extra.setImageGuardOn(this, false)
             ImageGuardService.sync(this)
+            // release the capture session too: a stopped projection kills
+            // its token, so keeping the grant would leave a dead one behind
+            ImageGuardService.releaseGrant()
             go(4)
         }
     }
@@ -1339,15 +1342,22 @@ fun MainActivity.imageGuardCard(): View {
     )
     // status line
     val modelErr = Extra.igModelError(this)
+    val needsGrant = on && !modelErr && ImageGuardModel.ready(this) && !ImageGuardService.hasProjection()
     val status = when {
         !on -> L.t("Off", "বন্ধ")
         modelErr -> L.t("Model failed to load — turn it off and on again to re-download", "মডেল লোড হয়নি — আবার ডাউনলোড করতে বন্ধ করে চালু করুন")
         !ImageGuardModel.ready(this) -> L.t("Model not downloaded yet", "মডেল এখনো ডাউনলোড হয়নি")
-        !ImageGuardService.hasProjection() -> L.t("Allow screen capture to start", "শুরু করতে স্ক্রিন দেখার অনুমতি দিন")
+        needsGrant -> L.t("Tap here to allow screen capture", "স্ক্রিন দেখার অনুমতি দিতে এখানে চাপুন")
         Store.isActive(this) || Store.isLocProtecting(this) -> L.t("Lock running — watching the screen", "লক চলছে — স্ক্রিন পর্যবেক্ষণ চলছে")
         else -> L.t("On — active while a lock runs", "চালু আছে — লক চললে সক্রিয় হবে")
     }
-    c.addView(tv(status, 12f, if (!on) C.muted else C.primary), lp(MATCH, WRAP, t = dp(8)))
+    val statusTv = tv(status, 12f, if (!on) C.muted else C.primary)
+    // the grant can be lost mid-session (revoked, or the service stopped);
+    // re-granting restores protection, so it is allowed even during a lock
+    if (needsGrant) {
+        statusTv.setOnClickListener { requestImageGuardPermission() }
+    }
+    c.addView(statusTv, lp(MATCH, WRAP, t = dp(8)))
     // overlay permission: without it the cover cannot show (Home still works)
     if (!Settings.canDrawOverlays(this)) {
         val note = tv(
