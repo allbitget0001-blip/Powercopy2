@@ -11,6 +11,7 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -100,6 +101,9 @@ class PowerBlockService : AccessibilityService() {
     // Tab labels that mean a Reels / Shorts / Status feed is showing when selected.
     private val reelsTabMarkers = listOf(
         "Reels", "Shorts", "রিলস", "শর্টস", "Spotlight", "For You", "Following", "Updates"
+    )
+    private val reelsMarkersLower = listOf(
+        "reels", "shorts", "রিলস", "শর্টস", "spotlight", "for you", "following", "updates"
     )
 
     private var lastKeepAliveCheck = 0L // throttles the revive check (once per 30s)
@@ -446,14 +450,18 @@ class PowerBlockService : AccessibilityService() {
     }
 
     /**
-     * Three signals, cheapest first:
+     * Signals, cheapest first:
      * 1) the window class (reel / shorts / story viewer),
      * 2) the event's own text,
-     * 3) the app's navigation: a Reels / Shorts / Status tab that is SELECTED.
-     * Signal 3 is the reliable one: opening the Reels tab rarely changes the
-     * window or its title, but the tab itself becomes selected. A plain text
-     * search would false-positive (the "Reels" tab label is in the tree even
-     * on the home feed), so selection state is what counts.
+     * 3) the app's navigation: a Reels / Shorts / Status tab that is selected
+     *    or checked (bottom-nav items are Checkable, so isChecked is the state
+     *    that actually changes — checking only isSelected missed them),
+     * 4) a bounded tree scan: icon-only tabs (label in contentDescription),
+     *    the story/status reply field, the YouTube Shorts "Remix" button, and
+     *    a Reels/Shorts header at the top of the screen.
+     * A plain text search would false-positive (the "Reels" tab label is in
+     * the tree even on the home feed), so selection/checked state — or a
+     * viewer-only fingerprint — is what counts.
      */
     private fun looksLikeReels(e: AccessibilityEvent): Boolean {
         val pkg = e.packageName?.toString() ?: ""
@@ -469,9 +477,11 @@ class PowerBlockService : AccessibilityService() {
         if (s.contains("reels") || s.contains("shorts") || s.contains("spotlight") ||
             s.contains("for you") || s.contains("রিলস") || s.contains("শর্টস")
         ) return true
-        return reelsTabSelected()
+        if (reelsTabSelected()) return true
+        return reelsUiScan(pkg)
     }
 
+    /** A marker tab is selected or checked (node, parent or grandparent). */
     private fun reelsTabSelected(): Boolean {
         return try {
             val root = rootInActiveWindow ?: return false
@@ -479,26 +489,114 @@ class PowerBlockService : AccessibilityService() {
                 val nodes = root.findAccessibilityNodeInfosByText(marker)
                 for (n in nodes) {
                     // the label itself may not carry the state — its tab container does
-                    var found = n.isSelected
+                    var found = n.isSelected || n.isChecked
                     var p1: AccessibilityNodeInfo? = null
                     var p2: AccessibilityNodeInfo? = null
                     if (!found) {
                         p1 = n.parent
-                        found = p1?.isSelected == true
+                        found = p1?.let { it.isSelected || it.isChecked } == true
                     }
                     if (!found && p1 != null) {
                         p2 = p1.parent
-                        found = p2?.isSelected == true
+                        found = p2?.let { it.isSelected || it.isChecked } == true
                     }
-                    p2?.recycle()
-                    p1?.recycle()
-                    n.recycle()
+                    try { p2?.recycle() } catch (_: Exception) { }
+                    try { p1?.recycle() } catch (_: Exception) { }
+                    try { n.recycle() } catch (_: Exception) { }
                     if (found) return true
                 }
             }
             false
         } catch (ex: Exception) {
             false
+        }
+    }
+
+    /**
+     * Thorough tree scan (bounded: 500 nodes), run only when the cheap signals
+     * miss. Catches what the text search cannot:
+     * - icon-only tabs whose label is a contentDescription,
+     * - the story/status viewer: its reply field's hint starts with "Reply"
+     *   (Instagram / Facebook / WhatsApp / Telegram story viewers),
+     * - the YouTube Shorts player: the "Remix" button exists only there
+     *   (the bottom nav is hidden in the player, so the tab check can't see it),
+     * - a Reels/Shorts header at the top of the screen (the viewer title,
+     *   not the bottom tab — the text must be exactly the marker).
+     */
+    private fun reelsUiScan(pkg: String): Boolean {
+        val root = try {
+            rootInActiveWindow
+        } catch (ex: Exception) {
+            null
+        } ?: return false
+        val screenH = resources.displayMetrics.heightPixels
+        val stack = ArrayDeque<AccessibilityNodeInfo>()
+        stack.add(root)
+        var visited = 0
+        try {
+            while (stack.isNotEmpty() && visited < 500) {
+                val n = stack.removeFirst()
+                visited++
+                try {
+                    val text = n.text?.toString() ?: ""
+                    val cd = n.contentDescription?.toString() ?: ""
+                    val lt = text.lowercase()
+                    val lc = cd.lowercase()
+                    // YouTube Shorts player: Remix exists only in the Shorts player
+                    if (pkg == "com.google.android.youtube" &&
+                        (lt.contains("remix") || lc.contains("remix"))
+                    ) return true
+                    // Story / Status viewer: the reply field's hint starts with "Reply"
+                    val clsN = n.className?.toString() ?: ""
+                    if (clsN.contains("EditText")) {
+                        val hint = n.hintText?.toString() ?: ""
+                        if (hint.lowercase().startsWith("reply")) return true
+                    }
+                    if (reelsMarkersLower.any { lt.contains(it) || lc.contains(it) }) {
+                        // marker tab, selected or checked (itself or an ancestor)
+                        if (n.isSelected || n.isChecked) return true
+                        var p1: AccessibilityNodeInfo? = null
+                        var p2: AccessibilityNodeInfo? = null
+                        var found = false
+                        try {
+                            p1 = n.parent
+                            found = p1?.let { it.isSelected || it.isChecked } == true
+                            if (!found && p1 != null) {
+                                p2 = p1.parent
+                                found = p2?.let { it.isSelected || it.isChecked } == true
+                            }
+                        } catch (_: Exception) {
+                        }
+                        try { p2?.recycle() } catch (_: Exception) { }
+                        try { p1?.recycle() } catch (_: Exception) { }
+                        if (found) return true
+                        // viewer header: exactly the marker text, at the top of the screen
+                        if (reelsMarkersLower.any { lt.trim() == it || lc.trim() == it }) {
+                            val r = Rect()
+                            n.getBoundsInScreen(r)
+                            if (r.top >= 0 && r.top < screenH * 0.20) return true
+                        }
+                    }
+                    for (i in 0 until n.childCount) {
+                        try {
+                            n.getChild(i)?.let { stack.add(it) }
+                        } catch (_: Exception) {
+                        }
+                    }
+                } finally {
+                    if (n !== root) {
+                        try { n.recycle() } catch (_: Exception) { }
+                    }
+                }
+            }
+            return false
+        } catch (ex: Exception) {
+            return false
+        } finally {
+            while (stack.isNotEmpty()) {
+                try { stack.removeFirst().recycle() } catch (_: Exception) { }
+            }
+            try { root.recycle() } catch (_: Exception) { }
         }
     }
 
