@@ -827,7 +827,7 @@ fun MainActivity.protectionIntroCard(): View {
     c.addView(
         row(
             L.t("Block apps while the lock runs", "লক চলাকালীন অ্যাপ ব্লক"),
-            L.t("Choose apps below. Full block covers the app with a protection screen at once; Reels block only stops the Reels / Shorts feed; search block covers the screen when search opens in a selected app.", "নিচে অ্যাপ বাছুন। সম্পূর্ণ ব্লক সঙ্গে সঙ্গে সুরক্ষা স্ক্রিন দেখায়; রিলস ব্লক শুধু রিলস / শর্টস ফিড আটকায়; সার্চ ব্লক নির্বাচিত অ্যাপে সার্চ খুললে সুরক্ষা স্ক্রিন দেখায়।"),
+            L.t("Choose apps below. Full block covers the app with a protection screen at once; Reels block only stops the Reels / Shorts feed; search block closes search at once and clears what was typed.", "নিচে অ্যাপ বাছুন। সম্পূর্ণ ব্লক সঙ্গে সঙ্গে সুরক্ষা স্ক্রিন দেখায়; রিলস ব্লক শুধু রিলস / শর্টস ফিড আটকায়; সার্চ ব্লক সার্চ খুললেই তা বন্ধ করে লেখা মুছে দেয়।"),
             sw
         ),
         lp(MATCH, WRAP, t = dp(6))
@@ -863,7 +863,7 @@ fun MainActivity.appBlockModeCard(mode: String): View {
         tv(
             when (mode) {
                 "full" -> L.t("Opening a selected app instantly shows a protection screen — the app stays covered.", "নির্বাচিত অ্যাপ খুললেই সঙ্গে সঙ্গে সুরক্ষা স্ক্রিন আসবে — অ্যাপের ভেতরে ঢোকা যাবে না।")
-                "msg" -> L.t("Opening search in a selected app shows the protection screen — the app itself stays usable. Choose any app, e.g. Telegram or WhatsApp.", "নির্বাচিত অ্যাপে সার্চ খুললেই সুরক্ষা স্ক্রিন আসবে — অ্যাপ ব্যবহার করা যাবে। যেকোনো অ্যাপ বাছা যাবে, যেমন Telegram বা WhatsApp।")
+                "msg" -> L.t("Opening search in a selected app closes it at once and clears what was typed — the app itself stays usable. Choose any app, e.g. Telegram or WhatsApp.", "নির্বাচিত অ্যাপে সার্চ খুললেই তা বন্ধ হয়ে যাবে আর লেখা মুছে যাবে — অ্যাপ ব্যবহার করা যাবে। যেকোনো অ্যাপ বাছা যাবে, যেমন Telegram বা WhatsApp।")
                 else -> L.t("The app stays usable, but its Reels / Shorts feed is closed. Only apps with Reels, Shorts or Status are listed.", "অ্যাপ ব্যবহার করা যাবে, কিন্তু এর রিলস / শর্টস ফিড বন্ধ হয়ে যাবে। শুধু রিলস, শর্টস বা স্ট্যাটাস আছে এমন অ্যাপ তালিকায় আসবে।")
             },
             13f, C.muted

@@ -12,6 +12,7 @@ import android.content.SharedPreferences
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Rect
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -39,7 +40,8 @@ import android.widget.LinearLayout
  * blocked apps are covered instantly by a protection screen (with a Home button),
  * Reels-blocked apps get Back (repeated while the feed is still showing)
  * when a Reels / Shorts screen is detected, and apps with search block get
- * the protection screen when their search opens (the app stays usable).
+ * Back (with the typed query cleared) when their search opens, so the user
+ * lands back in the app instead of Home.
  * Home is never used for Reels: it sends YouTube Shorts into picture-in-picture
  * instead of closing it.
  */
@@ -463,9 +465,9 @@ class PowerBlockService : AccessibilityService() {
 
     /**
      * Search block: the app stays usable, but opening search in a selected
-     * app (Telegram, WhatsApp, or any other) covers the screen with the
-     * protection screen. If search is closed again (Back goes through to
-     * the app behind the overlay), the screen is uncovered so the app works.
+     * app (Telegram, WhatsApp, or any other) is closed with Back — the user
+     * lands back in the app, never Home — and the typed query is cleared so
+     * the next search starts empty.
      */
     private fun onMsgSearchApp(e: AccessibilityEvent) {
         val now = SystemClock.uptimeMillis()
@@ -473,16 +475,35 @@ class PowerBlockService : AccessibilityService() {
             if (now - lastMsgScan < 400) return
             lastMsgScan = now
         }
-        val pkg = e.packageName?.toString() ?: return
-        if (looksLikeSearch(e)) {
-            // showBlockOverlay is idempotent: instant on first sight, a no-op after
-            showBlockOverlay(pkg, L.t("Search is blocked while the lock runs", "লক চলাকালীন সার্চ ব্লক করা আছে"))
-            if (now - lastMsgAction >= 1000) {
-                lastMsgAction = now
-                Extra.logAttempt(this, "msgsearch")
+        if (!looksLikeSearch(e)) return
+        if (now - lastMsgAction < 500) return
+        lastMsgAction = now
+        clearFocusedSearchField() // erase the query so the next search starts empty
+        Extra.logAttempt(this, "msgsearch")
+        performGlobalAction(GLOBAL_ACTION_BACK)
+    }
+
+    /** Clears the focused search field (if any) via ACTION_SET_TEXT with "". */
+    private fun clearFocusedSearchField() {
+        try {
+            val root = rootInActiveWindow ?: return
+            try {
+                val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return
+                try {
+                    val isEdit = (focused.className?.toString() ?: "").contains("EditText")
+                    val hint = focused.hintText?.toString() ?: ""
+                    if (!isEdit || !hint.lowercase().contains("search")) return
+                    val args = Bundle()
+                    args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
+                    focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+                } finally {
+                    try { focused.recycle() } catch (_: Exception) { }
+                }
+            } finally {
+                try { root.recycle() } catch (_: Exception) { }
             }
-        } else if (blockOverlayAttached && blockedPkg == pkg) {
-            hideBlockOverlay()
+        } catch (ex: Exception) {
+            Log.e(TAG, "clear search field failed", ex)
         }
     }
 
@@ -577,6 +598,9 @@ class PowerBlockService : AccessibilityService() {
         if (isChatScreen()) return false
         val pkg = e.packageName?.toString() ?: ""
         val cls = (e.className?.toString() ?: "").lowercase()
+        // a messaging screen is never a Reels feed (second layer: the event's
+        // own class — a message/chat/conversation screen must not be Backed out of)
+        if (cls.contains("message") || cls.contains("chat") || cls.contains("conversation")) return false
         if (cls.contains("reel") || cls.contains("shorts") || cls.contains("clips") ||
             cls.contains("spotlight") || cls.contains("story")
         ) return true
@@ -637,7 +661,8 @@ class PowerBlockService : AccessibilityService() {
      *   not the bottom tab — the text must be exactly the marker),
      * - viewer/player view IDs containing reel / short / story,
      * - the viewer's action rail: Like / Comment / Share stacked vertically
-     *   on the right edge (the feed shows them in a horizontal row instead).
+     *   on the right edge (the feed shows them in a horizontal row instead),
+     * - a full-screen video surface (Facebook apps only).
      * All of the app's windows are scanned: story viewers can live in their
      * own window, not the active one.
      */
@@ -729,6 +754,19 @@ class PowerBlockService : AccessibilityService() {
                     if (clsN.contains("EditText")) {
                         val hint = n.hintText?.toString() ?: ""
                         if (hint.lowercase().startsWith("reply")) return true
+                    }
+                    // Full-screen video surface (Facebook apps only): the Reels viewer
+                    // plays video over the whole screen; in the feed a video only covers
+                    // its own post. The rail buttons carry no text in FB Lite and
+                    // feed-opened reels have no "Reels" header, so this label-free
+                    // signal is what catches them. (A full-screen long video in FB
+                    // is caught too — accepted: in Lite that is nearly always a reel.)
+                    if ((pkg == "com.facebook.katana" || pkg == "com.facebook.lite") &&
+                        (clsN.contains("SurfaceView") || clsN.contains("TextureView"))
+                    ) {
+                        val r = Rect()
+                        n.getBoundsInScreen(r)
+                        if (r.width().toLong() * r.height().toLong() > screenW.toLong() * screenH.toLong() * 0.70) return true
                     }
                     // Story viewer with replies off: "You can't reply to this story"
                     // sits at the bottom of the screen (Telegram)
