@@ -25,6 +25,9 @@ import android.view.animation.OvershootInterpolator
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.LinearLayout
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * Power menu protection engine (event driven, no polling).
@@ -47,6 +50,12 @@ import android.widget.LinearLayout
  * instead of closing it.
  */
 class PowerBlockService : AccessibilityService() {
+
+    companion object {
+        /** Diagnostic log: what the service sees on reels screens. Read by the
+         * Protection screen's Diagnostic card. Capped at 120 lines. */
+        val debugLog = mutableListOf<String>()
+    }
 
     private val handler = Handler(Looper.getMainLooper())
     private var lastAction = 0L
@@ -95,6 +104,7 @@ class PowerBlockService : AccessibilityService() {
 
     private var lastAppBlockAction = 0L
     private var lastReelsScan = 0L
+    private var lastDebugScan = 0L
     private var lastReelsBack = 0L // cooldown after a reels Back (the close animation)
     private var lastMsgScan = 0L
     private var lastMsgAction = 0L
@@ -459,13 +469,115 @@ class PowerBlockService : AccessibilityService() {
             if (now - lastReelsScan < 400) return
             lastReelsScan = now
         }
-        if (!looksLikeReels(e)) return
+        val detected = looksLikeReels(e)
+        // diagnostic: every 3s, record what the service actually sees on this
+        // screen, so a missed block can be traced instead of guessed
+        if (now - lastDebugScan >= 3000) {
+            lastDebugScan = now
+            debugScanReels(e.packageName?.toString() ?: "?", e, detected)
+        }
+        if (!detected) return
         if (now - lastAppBlockAction < 500) return
         if (now - lastReelsBack < 1500) return
         lastAppBlockAction = now
         lastReelsBack = now
         Extra.logAttempt(this, "reels")
         performGlobalAction(GLOBAL_ACTION_BACK)
+    }
+
+    /**
+     * Diagnostic: records what the service actually sees on a reels app's
+     * screen — which signals are present (marker text, counts, action labels,
+     * viewer view IDs) and how many nodes were scanned. Written to
+     * [debugLog], shown in the Protection screen's Diagnostic card. The log
+     * is capped so it never grows without bound.
+     */
+    private fun debugScanReels(pkg: String, e: AccessibilityEvent, detected: Boolean) {
+        val lines = mutableListOf<String>()
+        val time = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
+        lines.add("[$time] $pkg detected=$detected event=${e.eventType} cls=${e.className}")
+        val countRe = Regex("^[0-9,]+(\\.[0-9]+)?[km]?$")
+        val roots = mutableListOf<AccessibilityNodeInfo>()
+        try {
+            val wins = windows ?: emptyList()
+            for (w in wins) {
+                try { w.root?.let { roots.add(it) } } catch (_: Exception) { }
+            }
+            lines.add("  windows=${roots.size}")
+            var total = 0
+            val markers = mutableListOf<String>()
+            val counts = mutableListOf<String>()
+            val actions = mutableListOf<String>()
+            val viewIds = mutableListOf<String>()
+            for (root in roots.asReversed()) {
+                val stack = ArrayDeque<AccessibilityNodeInfo>()
+                stack.add(root)
+                var used = 0
+                while (stack.isNotEmpty() && used < 800) {
+                    val n = stack.removeFirst()
+                    used++
+                    total++
+                    try {
+                        val lt = (n.text?.toString() ?: "").lowercase()
+                        val lc = (n.contentDescription?.toString() ?: "").lowercase()
+                        val cls = n.className?.toString() ?: ""
+                        if (reelsMarkersLower.any { lt.contains(it) || lc.contains(it) }) {
+                            if (markers.size < 5) {
+                                val r = Rect()
+                                n.getBoundsInScreen(r)
+                                markers.add("marker cls=$cls t='$lt' cd='$lc' sel=${n.isSelected} chk=${n.isChecked} b=(${r.left},${r.top}-${r.right},${r.bottom})")
+                            }
+                        }
+                        if (countRe.matches(lt)) {
+                            if (counts.size < 8) {
+                                val r = Rect()
+                                n.getBoundsInScreen(r)
+                                counts.add("count '$lt' b=(${r.left},${r.top}-${r.right},${r.bottom})")
+                            }
+                        }
+                        val label = lt.trim().ifEmpty { lc.trim() }
+                        if (label.startsWith("like") || label.startsWith("comment") || label.startsWith("share")) {
+                            if (actions.size < 8) {
+                                val r = Rect()
+                                n.getBoundsInScreen(r)
+                                actions.add("action '$label' b=(${r.left},${r.top}-${r.right},${r.bottom})")
+                            }
+                        }
+                        val vid = n.viewIdResourceName ?: ""
+                        if (vid.isNotEmpty() && (vid.contains("viewer") || vid.contains("player")) && reelsMarkersLower.any { vid.contains(it) }) {
+                            if (viewIds.size < 5) viewIds.add("viewId $vid")
+                        }
+                        for (i in 0 until n.childCount) {
+                            try { n.getChild(i)?.let { stack.add(it) } } catch (_: Exception) { }
+                        }
+                    } catch (_: Exception) {
+                    } finally {
+                        if (n !== root) {
+                            try { n.recycle() } catch (_: Exception) { }
+                        }
+                    }
+                }
+                while (stack.isNotEmpty()) {
+                    val x = stack.removeFirst()
+                    if (x !== root) {
+                        try { x.recycle() } catch (_: Exception) { }
+                    }
+                }
+            }
+            lines.add("  nodes=$total markers=${markers.size} counts=${counts.size} actions=${actions.size} viewIds=${viewIds.size}")
+            markers.forEach { lines.add("  $it") }
+            counts.forEach { lines.add("  $it") }
+            actions.forEach { lines.add("  $it") }
+            viewIds.forEach { lines.add("  $it") }
+        } catch (ex: Exception) {
+            lines.add("  debug error: ${ex.message}")
+        } finally {
+            for (r in roots) {
+                try { r.recycle() } catch (_: Exception) { }
+            }
+        }
+        debugLog.addAll(lines)
+        while (debugLog.size > 120) debugLog.removeAt(0)
     }
 
     /**

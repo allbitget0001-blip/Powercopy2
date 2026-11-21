@@ -940,6 +940,7 @@ class SettingsScreen(private val a: MainActivity) {
         about.addView(a.section(L.t("About PowerLock", "PowerLock সম্পর্কে")))
         about.addView(a.tv("PowerLock", 18f, C.text, 1), lp(MATCH, WRAP, t = a.dp(10)))
         about.addView(a.tv(L.t("Version ", "সংস্করণ ") + L.num(APP_VERSION), 13f, C.muted))
+        about.addView(a.tv(L.t("Build ", "বিল্ড ") + L.num(Extra.BUILD_ID), 13f, C.muted))
         about.addView(a.tv(a.packageName, 12f, C.muted))
         about.addView(
             a.tv(
@@ -970,6 +971,7 @@ class ProtectionScreen(private val a: MainActivity) {
         col.addView(a.lockedAppsCard("reels"), lp(MATCH, WRAP, b = a.dp(12)))
         col.addView(a.appBlockModeCard("msg"), lp(MATCH, WRAP, b = a.dp(12)))
         col.addView(a.lockedAppsCard("msg"), lp(MATCH, WRAP, b = a.dp(12)))
+        col.addView(a.diagnosticCard(), lp(MATCH, WRAP, b = a.dp(12)))
         return sv
     }
 }

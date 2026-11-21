@@ -3,6 +3,8 @@ package com.example.powerlocks
 import android.Manifest
 import android.animation.ObjectAnimator
 import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.app.AlertDialog
 import android.app.Notification
 import android.app.NotificationManager
@@ -32,6 +34,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.Toast
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Calendar
@@ -63,6 +66,10 @@ data class RoutePoint(val lat: Double, val lng: Double, val t: Long)
 data class PlaceEvent(val placeId: Long, val name: String, val inTime: Long, val outTime: Long)
 
 object Extra {
+
+    /** Build number, bumped on every push — shown in Settings so the user can
+     * confirm which build is installed. */
+    const val BUILD_ID = 14
 
     // ---------- presets ----------
 
@@ -1026,17 +1033,24 @@ private fun MainActivity.showAppBlockPicker(
     // smooth animated scroll to a letter (a motion animation, not a jump):
     // the previous animation is cancelled so a fast drag chases the finger
     var scrollAnimator: ObjectAnimator? = null
-    fun jumpToLetter(ch: Char) {
+    // animate on a tap (smooth motion); instant while dragging so the list
+    // follows the finger in real time instead of lagging behind it
+    fun jumpToLetter(ch: Char, animate: Boolean) {
         // first app whose name starts with this letter (or the next letter that has apps)
         val target = ch.lowercaseChar()
         for ((row, label) in rows) {
             val first = label.firstOrNull() ?: continue
             if (first >= target) {
                 scrollAnimator?.cancel()
-                scrollAnimator = ObjectAnimator.ofInt(sv, "scrollY", row.top).apply {
-                    duration = 350
-                    interpolator = AccelerateDecelerateInterpolator()
-                    start()
+                scrollAnimator = null
+                if (animate) {
+                    scrollAnimator = ObjectAnimator.ofInt(sv, "scrollY", row.top).apply {
+                        duration = 200
+                        interpolator = AccelerateDecelerateInterpolator()
+                        start()
+                    }
+                } else {
+                    sv.scrollTo(0, row.top)
                 }
                 return
             }
@@ -1085,7 +1099,7 @@ private fun MainActivity.showAppBlockPicker(
                         enlargedIdx = idx
                     }
                     showBubble(letters[idx])
-                    jumpToLetter(letters[idx])
+                    jumpToLetter(letters[idx], ev.action == MotionEvent.ACTION_DOWN)
                 }
                 true
             }
@@ -1153,6 +1167,48 @@ private fun MainActivity.showAppBlockPicker(
         }
         .setNegativeButton(L.t("Cancel", "বাতিল"), null)
         .show()
+}
+
+/** Diagnostic card: what the service sees on a reels screen, so a missed block
+ * can be traced instead of guessed. The log is viewed here and copied to the
+ * clipboard to be sent for analysis. */
+fun MainActivity.diagnosticCard(): View {
+    val c = card()
+    c.addView(section(L.t("Diagnostic", "ডায়াগনস্টিক")), lp(MATCH, WRAP, b = dp(6)))
+    c.addView(tv(L.t("When a reels app is open during a lock, the service records what it sees on screen. Open the log, copy it and send it to find out why a reel was not blocked.", "লক চলাকালীন রিলস অ্যাপ খুললে সার্ভিস স্ক্রিনে কী দেখছে তা রেকর্ড করে। লগ দেখে কপি করে পাঠালে বোঝা যাবে কেন রিলস ব্লক হয়নি।"), 13f, C.muted), lp(MATCH, WRAP, b = dp(10)))
+    val row = LinearLayout(this)
+    row.orientation = LinearLayout.HORIZONTAL
+    val viewBtn = outlineBtn(L.t("View log", "লগ দেখুন"), C.primary)
+    viewBtn.setOnClickListener {
+        val lines = PowerBlockService.debugLog
+        val text = if (lines.isEmpty()) L.t("No log yet — open a reels app during a lock first.", "এখনো লগ নেই — আগে লক চলাকালীন রিলস অ্যাপ খুলুন।") else lines.joinToString("\n")
+        val tvLog = tv(text, 11f, C.text)
+        val svLog = ScrollView(this)
+        svLog.addView(tvLog)
+        val body = LinearLayout(this)
+        body.orientation = LinearLayout.VERTICAL
+        body.setPadding(dp(20), dp(12), dp(20), dp(4))
+        body.addView(svLog, lp(MATCH, dp(400)))
+        dlg()
+            .setTitle(L.t("Diagnostic log", "ডায়াগনস্টিক লগ"))
+            .setView(body)
+            .setPositiveButton(L.t("Copy", "কপি করুন")) { _, _ ->
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("PowerLock debug", text))
+                Toast.makeText(this, L.t("Copied", "কপি হয়েছে"), Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton(L.t("Close", "বন্ধ"), null)
+            .show()
+    }
+    row.addView(viewBtn, lp(0, WRAP, r = dp(8), weight = 1f))
+    val clearBtn = outlineBtn(L.t("Clear", "মুছুন"), C.primary)
+    clearBtn.setOnClickListener {
+        PowerBlockService.debugLog.clear()
+        Toast.makeText(this, L.t("Log cleared", "লগ মুছে ফেলা হয়েছে"), Toast.LENGTH_SHORT).show()
+    }
+    row.addView(clearBtn, lp(0, WRAP, weight = 1f))
+    c.addView(row)
+    return c
 }
 
 /** The live list of locked apps for one mode: [mode] is "full", "reels" or "msg". */
