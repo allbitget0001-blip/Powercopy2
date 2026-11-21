@@ -3,6 +3,20 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// The debug key is committed as base64 text (debug.keystore.b64) because the
+// push tooling only handles text files. Decode it to debug.keystore at
+// configuration time so the signing config below always finds it. Without a
+// fixed key, every CI build is signed with a fresh random key, Android
+// refuses to update the app, and the user must uninstall first — which wipes
+// the downloaded AI model (106 MB) and all settings every time.
+run {
+    val ksFile = file("debug.keystore")
+    val b64File = file("debug.keystore.b64")
+    if (!ksFile.exists() && b64File.exists()) {
+        ksFile.writeBytes(java.util.Base64.getDecoder().decode(b64File.readText().trim()))
+    }
+}
+
 android {
     namespace = "com.example.powerlocks"
     compileSdk = 34
@@ -13,6 +27,17 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
+    }
+
+    signingConfigs {
+        // Fixed debug key (decoded from debug.keystore.b64 above).
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+            storeType = "PKCS12"
+        }
     }
 
     buildTypes {
