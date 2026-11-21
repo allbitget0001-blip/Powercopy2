@@ -119,7 +119,7 @@ object Extra {
 
     private val lastLog = HashMap<String, Long>()
 
-    /** kind: "power", "settings", "focus", "appblock" or "reels". At most one entry per kind every 3 seconds. */
+    /** kind: "power", "settings", "focus", "appblock", "reels" or "msgsearch". At most one entry per kind every 3 seconds. */
     @Synchronized
     fun logAttempt(ctx: Context, kind: String) {
         try {
@@ -197,6 +197,16 @@ object Extra {
         Store.settings(ctx).edit().putString("ab_reels", apps.joinToString(",")).apply()
     }
 
+    /** Packages whose in-app search is blocked: opening search shows the protection screen. */
+    fun appBlockMsg(ctx: Context): Set<String> {
+        val s = Store.settings(ctx).getString("ab_msg", "") ?: ""
+        return s.split(",").filter { it.isNotEmpty() }.toSet()
+    }
+
+    fun setAppBlockMsg(ctx: Context, apps: Set<String>) {
+        Store.settings(ctx).edit().putString("ab_msg", apps.joinToString(",")).apply()
+    }
+
     /** Packages with a Reels / Shorts / Status feed — only these are offered for Reels block. */
     val reelsPackages = setOf(
         "com.instagram.android",      // Instagram Reels
@@ -212,6 +222,23 @@ object Extra {
         "com.twitter.android",        // X short videos
         "in.mohalla.sharechat",       // ShareChat short videos
         "com.versebrain.josh"         // Josh short videos
+    )
+
+    /** Messaging apps (Telegram-type) — only these are offered for messaging search block. */
+    val messagingPackages = setOf(
+        "org.telegram.messenger",     // Telegram
+        "com.whatsapp",               // WhatsApp
+        "com.whatsapp.w4b",           // WhatsApp Business
+        "com.facebook.orca",          // Messenger
+        "com.facebook.mlite",         // Messenger Lite
+        "org.thoughtcrime.securesms", // Signal
+        "com.imo.android.imoim",      // IMO
+        "com.viber.voip",             // Viber
+        "com.tencent.mm",             // WeChat
+        "jp.naver.line.android",      // LINE
+        "com.discord",                // Discord
+        "com.snapchat.android",       // Snapchat
+        "com.skype.raider"            // Skype
     )
 
     // ---------- places ----------
@@ -817,7 +844,7 @@ fun MainActivity.protectionIntroCard(): View {
     c.addView(
         row(
             L.t("Block apps while the lock runs", "লক চলাকালীন অ্যাপ ব্লক"),
-            L.t("Choose apps below. Full block covers the app with a protection screen at once; Reels block only stops the Reels / Shorts feed.", "নিচে অ্যাপ বাছুন। সম্পূর্ণ ব্লক সঙ্গে সঙ্গে সুরক্ষা স্ক্রিন দেখায়; রিলস ব্লক শুধু রিলস / শর্টস ফিড আটকায়।"),
+            L.t("Choose apps below. Full block covers the app with a protection screen at once; Reels block only stops the Reels / Shorts feed; messaging search block covers the screen when search opens in a messaging app.", "নিচে অ্যাপ বাছুন। সম্পূর্ণ ব্লক সঙ্গে সঙ্গে সুরক্ষা স্ক্রিন দেখায়; রিলস ব্লক শুধু রিলস / শর্টস ফিড আটকায়; মেসেজিং সার্চ ব্লক মেসেজিং অ্যাপে সার্চ খুললে সুরক্ষা স্ক্রিন দেখায়।"),
             sw
         ),
         lp(MATCH, WRAP, t = dp(6))
@@ -837,20 +864,34 @@ fun MainActivity.protectionIntroCard(): View {
     return c
 }
 
-/** One mode card: [mode] is "full" or "reels". */
+/** One mode card: [mode] is "full", "reels" or "msg". */
 fun MainActivity.appBlockModeCard(mode: String): View {
     val c = card()
-    val isFull = mode == "full"
-    c.addView(section(if (isFull) L.t("Full app block", "সম্পূর্ণ অ্যাপ ব্লক") else L.t("Reels block", "রিলস ব্লক")))
+    c.addView(
+        section(
+            when (mode) {
+                "full" -> L.t("Full app block", "সম্পূর্ণ অ্যাপ ব্লক")
+                "msg" -> L.t("Messaging search block", "মেসেজিং সার্চ ব্লক")
+                else -> L.t("Reels block", "রিলস ব্লক")
+            }
+        )
+    )
     c.addView(
         tv(
-            if (isFull) L.t("Opening a selected app instantly shows a protection screen — the app stays covered.", "নির্বাচিত অ্যাপ খুললেই সঙ্গে সঙ্গে সুরক্ষা স্ক্রিন আসবে — অ্যাপের ভেতরে ঢোকা যাবে না।")
-            else L.t("The app stays usable, but its Reels / Shorts feed is closed. Only apps with Reels, Shorts or Status are listed.", "অ্যাপ ব্যবহার করা যাবে, কিন্তু এর রিলস / শর্টস ফিড বন্ধ হয়ে যাবে। শুধু রিলস, শর্টস বা স্ট্যাটাস আছে এমন অ্যাপ তালিকায় আসবে।"),
+            when (mode) {
+                "full" -> L.t("Opening a selected app instantly shows a protection screen — the app stays covered.", "নির্বাচিত অ্যাপ খুললেই সঙ্গে সঙ্গে সুরক্ষা স্ক্রিন আসবে — অ্যাপের ভেতরে ঢোকা যাবে না।")
+                "msg" -> L.t("Opening search in a selected messaging app (Telegram, WhatsApp, Messenger…) shows the protection screen. Chats stay usable.", "নির্বাচিত মেসেজিং অ্যাপে (Telegram, WhatsApp, Messenger…) সার্চ খুললেই সুরক্ষা স্ক্রিন আসবে। চ্যাট ব্যবহার করা যাবে।")
+                else -> L.t("The app stays usable, but its Reels / Shorts feed is closed. Only apps with Reels, Shorts or Status are listed.", "অ্যাপ ব্যবহার করা যাবে, কিন্তু এর রিলস / শর্টস ফিড বন্ধ হয়ে যাবে। শুধু রিলস, শর্টস বা স্ট্যাটাস আছে এমন অ্যাপ তালিকায় আসবে।")
+            },
             13f, C.muted
         ),
         lp(MATCH, WRAP, t = dp(6))
     )
-    val count = if (isFull) Extra.appBlockFull(this).size else Extra.appBlockReels(this).size
+    val count = when (mode) {
+        "full" -> Extra.appBlockFull(this).size
+        "msg" -> Extra.appBlockMsg(this).size
+        else -> Extra.appBlockReels(this).size
+    }
     val locked = Store.isActive(this)
     val pick = outlineBtn(L.t("Choose apps ($count selected)", "অ্যাপ বাছুন ($count টি নির্বাচিত)"), C.primary)
     pick.setOnClickListener {
@@ -873,6 +914,7 @@ private fun MainActivity.appBlockPicker(mode: String, done: () -> Unit) {
     intent.addCategory(Intent.CATEGORY_LAUNCHER)
     val skip = listOf("dialer", "incallui", "emergency", "telecom", "contacts")
     val isFull = mode == "full"
+    val isMsg = mode == "msg"
     val apps = ArrayList<Triple<String, String, Drawable>>()
     val seen = HashSet<String>()
     try {
@@ -880,8 +922,10 @@ private fun MainActivity.appBlockPicker(mode: String, done: () -> Unit) {
             val pkg = ri.activityInfo.packageName
             if (pkg == packageName || !seen.add(pkg)) continue
             if (skip.any { pkg.contains(it) }) continue
-            // Reels block is only offered for apps that actually have Reels / Shorts / Status
-            if (!isFull && pkg !in Extra.reelsPackages) continue
+            // Reels block is only offered for apps that actually have Reels / Shorts / Status;
+            // messaging search block only for messaging (Telegram-type) apps
+            if (isMsg && pkg !in Extra.messagingPackages) continue
+            if (!isFull && !isMsg && pkg !in Extra.reelsPackages) continue
             apps.add(Triple(pkg, ri.loadLabel(pm).toString(), ri.loadIcon(pm)))
         }
     } catch (e: Exception) {
@@ -890,12 +934,21 @@ private fun MainActivity.appBlockPicker(mode: String, done: () -> Unit) {
     apps.sortBy { it.second.lowercase() }
     if (apps.isEmpty()) {
         toast(
-            if (isFull) L.t("No apps found", "কোনো অ্যাপ পাওয়া যায়নি")
-            else L.t("No app with Reels / Shorts / Status found", "রিলস / শর্টস / স্ট্যাটাস আছে এমন কোনো অ্যাপ পাওয়া যায়নি")
+            when (mode) {
+                "full" -> L.t("No apps found", "কোনো অ্যাপ পাওয়া যায়নি")
+                "msg" -> L.t("No messaging app found", "কোনো মেসেজিং অ্যাপ পাওয়া যায়নি")
+                else -> L.t("No app with Reels / Shorts / Status found", "রিলস / শর্টস / স্ট্যাটাস আছে এমন কোনো অ্যাপ পাওয়া যায়নি")
+            }
         )
         return
     }
-    val chosen = HashSet<String>(if (isFull) Extra.appBlockFull(this) else Extra.appBlockReels(this))
+    val chosen = HashSet<String>(
+        when (mode) {
+            "full" -> Extra.appBlockFull(this)
+            "msg" -> Extra.appBlockMsg(this)
+            else -> Extra.appBlockReels(this)
+        }
+    )
     var query = ""
     val list = LinearLayout(this)
     list.orientation = LinearLayout.VERTICAL
@@ -943,18 +996,26 @@ private fun MainActivity.appBlockPicker(mode: String, done: () -> Unit) {
     body.addView(sv, lp(MATCH, dp(400)))
     dlg()
         .setTitle(
-            if (isFull) L.t("Choose apps to block fully", "সম্পূর্ণ ব্লক করার অ্যাপ বাছুন")
-            else L.t("Choose apps for Reels block", "রিলস ব্লকের অ্যাপ বাছুন")
+            when (mode) {
+                "full" -> L.t("Choose apps to block fully", "সম্পূর্ণ ব্লক করার অ্যাপ বাছুন")
+                "msg" -> L.t("Choose messaging apps for search block", "সার্চ ব্লকের মেসেজিং অ্যাপ বাছুন")
+                else -> L.t("Choose apps for Reels block", "রিলস ব্লকের অ্যাপ বাছুন")
+            }
         )
         .setView(body)
         .setPositiveButton(L.t("Save", "সংরক্ষণ")) { _, _ ->
-            // an app can only be in one list: full block wins over reels block
-            if (isFull) {
-                Extra.setAppBlockFull(this, chosen)
-                Extra.setAppBlockReels(this, Extra.appBlockReels(this) - chosen)
-            } else {
-                Extra.setAppBlockReels(this, chosen)
-                Extra.setAppBlockFull(this, Extra.appBlockFull(this) - chosen)
+            // an app can only be in one list: full block wins over reels block;
+            // the search list is independent (an app can block both its feed and its search)
+            when (mode) {
+                "full" -> {
+                    Extra.setAppBlockFull(this, chosen)
+                    Extra.setAppBlockReels(this, Extra.appBlockReels(this) - chosen)
+                }
+                "msg" -> Extra.setAppBlockMsg(this, chosen)
+                else -> {
+                    Extra.setAppBlockReels(this, chosen)
+                    Extra.setAppBlockFull(this, Extra.appBlockFull(this) - chosen)
+                }
             }
             done()
         }
@@ -962,19 +1023,25 @@ private fun MainActivity.appBlockPicker(mode: String, done: () -> Unit) {
         .show()
 }
 
-/** The live list of locked apps for one mode: [mode] is "full" or "reels". */
+/** The live list of locked apps for one mode: [mode] is "full", "reels" or "msg". */
 fun MainActivity.lockedAppsCard(mode: String): View {
-    val isFull = mode == "full"
     val c = card()
     c.addView(
         section(
-            if (isFull) L.t("Fully blocked apps", "সম্পূর্ণ ব্লক করা অ্যাপ")
-            else L.t("Reels blocked apps", "রিলস ব্লক করা অ্যাপ")
+            when (mode) {
+                "full" -> L.t("Fully blocked apps", "সম্পূর্ণ ব্লক করা অ্যাপ")
+                "msg" -> L.t("Search blocked apps", "সার্চ ব্লক করা অ্যাপ")
+                else -> L.t("Reels blocked apps", "রিলস ব্লক করা অ্যাপ")
+            }
         )
     )
     val locked = Store.isActive(this)
     val pm = packageManager
-    var pkgs = if (isFull) Extra.appBlockFull(this) else Extra.appBlockReels(this)
+    var pkgs = when (mode) {
+        "full" -> Extra.appBlockFull(this)
+        "msg" -> Extra.appBlockMsg(this)
+        else -> Extra.appBlockReels(this)
+    }
     if (pkgs.isEmpty()) {
         c.addView(
             tv(L.t("No apps here yet. Choose apps above.", "এখানে এখনো কোনো অ্যাপ নেই। ওপরে অ্যাপ বাছুন।"), 13f, C.muted),
@@ -993,7 +1060,11 @@ fun MainActivity.lockedAppsCard(mode: String): View {
     }.toSet()
     if (missing.isNotEmpty()) {
         pkgs -= missing
-        if (isFull) Extra.setAppBlockFull(this, pkgs) else Extra.setAppBlockReels(this, pkgs)
+        when (mode) {
+            "full" -> Extra.setAppBlockFull(this, pkgs)
+            "msg" -> Extra.setAppBlockMsg(this, pkgs)
+            else -> Extra.setAppBlockReels(this, pkgs)
+        }
     }
     data class Row(val pkg: String, val label: String, val icon: Drawable)
     val rows = ArrayList<Row>()
@@ -1020,8 +1091,11 @@ fun MainActivity.lockedAppsCard(mode: String): View {
             if (Store.isActive(this)) {
                 toast(L.t("Locked while a session is active", "সেশন চলাকালীন বদলানো যাবে না"))
             } else {
-                if (isFull) Extra.setAppBlockFull(this, Extra.appBlockFull(this) - row.pkg)
-                else Extra.setAppBlockReels(this, Extra.appBlockReels(this) - row.pkg)
+                when (mode) {
+                    "full" -> Extra.setAppBlockFull(this, Extra.appBlockFull(this) - row.pkg)
+                    "msg" -> Extra.setAppBlockMsg(this, Extra.appBlockMsg(this) - row.pkg)
+                    else -> Extra.setAppBlockReels(this, Extra.appBlockReels(this) - row.pkg)
+                }
                 go(4)
             }
         }
@@ -1419,6 +1493,7 @@ fun MainActivity.attemptsCard(): View {
     var nFocus = 0
     var nAppBlock = 0
     var nReels = 0
+    var nMsgSearch = 0
     for ((t, k) in list) {
         if (t >= today) nToday++
         if (t >= week) nWeek++
@@ -1427,6 +1502,7 @@ fun MainActivity.attemptsCard(): View {
             "settings" -> nSettings++
             "appblock" -> nAppBlock++
             "reels" -> nReels++
+            "msgsearch" -> nMsgSearch++
             else -> nFocus++
         }
     }
@@ -1464,8 +1540,8 @@ fun MainActivity.attemptsCard(): View {
     c.addView(
         tv(
             L.t(
-                "Power menu: $nPower · App settings: $nSettings · Focus apps: $nFocus · App block: $nAppBlock · Reels block: $nReels",
-                "পাওয়ার মেনু: $nPower · অ্যাপ সেটিংস: $nSettings · ফোকাস অ্যাপ: $nFocus · অ্যাপ ব্লক: $nAppBlock · রিলস ব্লক: $nReels"
+                "Power menu: $nPower · App settings: $nSettings · Focus apps: $nFocus · App block: $nAppBlock · Reels block: $nReels · Search block: $nMsgSearch",
+                "পাওয়ার মেনু: $nPower · অ্যাপ সেটিংস: $nSettings · ফোকাস অ্যাপ: $nFocus · অ্যাপ ব্লক: $nAppBlock · রিলস ব্লক: $nReels · সার্চ ব্লক: $nMsgSearch"
             ),
             12f, C.muted
         ),

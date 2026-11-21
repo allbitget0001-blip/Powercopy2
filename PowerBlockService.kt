@@ -37,9 +37,11 @@ import android.widget.LinearLayout
  * Settings / uninstall pages that show "PowerLock" are sent Home when "protect app settings" is on.
  * App block (Protection section) also runs here while a session is active: fully
  * blocked apps are covered instantly by a protection screen (with a Home button),
- * and Reels-blocked apps get Back (repeated while the feed is still showing)
- * when a Reels / Shorts screen is detected. Home is never used for Reels:
- * it sends YouTube Shorts into picture-in-picture instead of closing it.
+ * Reels-blocked apps get Back (repeated while the feed is still showing)
+ * when a Reels / Shorts screen is detected, and messaging apps with search
+ * block get the protection screen when their search opens (chats stay usable).
+ * Home is never used for Reels: it sends YouTube Shorts into picture-in-picture
+ * instead of closing it.
  */
 class PowerBlockService : AccessibilityService() {
 
@@ -75,7 +77,7 @@ class PowerBlockService : AccessibilityService() {
 
     private var lastFocusAction = 0L
 
-    // App block (Protection section): full block + reels block.
+    // App block (Protection section): full block + reels block + messaging search block.
     @Volatile
     private var abOn = true
 
@@ -85,12 +87,18 @@ class PowerBlockService : AccessibilityService() {
     @Volatile
     private var abReels: Set<String> = emptySet()
 
+    @Volatile
+    private var abMsg: Set<String> = emptySet()
+
     private var lastAppBlockAction = 0L
     private var lastReelsScan = 0L
+    private var lastMsgScan = 0L
+    private var lastMsgAction = 0L
 
     // Full-block protection screen: covers a blocked app the instant it opens.
     private var blockOverlay: View? = null
     private var blockOverlayTitle: TextView? = null
+    private var blockOverlaySub: TextView? = null
     private var blockOverlayIcon: IconView? = null
     private var blockOverlayAttached = false
     private var blockedPkg: String? = null
@@ -183,6 +191,7 @@ class PowerBlockService : AccessibilityService() {
         abOn = st.getBoolean("ab_on", true)
         abFull = Extra.appBlockFull(this)
         abReels = Extra.appBlockReels(this)
+        abMsg = Extra.appBlockMsg(this)
     }
 
     private fun protecting(): Boolean = (active && System.currentTimeMillis() < endAt) || locProtecting
@@ -229,8 +238,10 @@ class PowerBlockService : AccessibilityService() {
                 return
             } else if (abOn && abFull.contains(pkg)) {
                 onFullBlockedApp(e)
-            } else if (abOn && abReels.contains(pkg)) {
-                onReelsApp(e)
+            } else if (abOn && (abReels.contains(pkg) || abMsg.contains(pkg))) {
+                // reels and search blocks are independent: an app can have both
+                if (abReels.contains(pkg)) onReelsApp(e)
+                if (abMsg.contains(pkg)) onMsgSearchApp(e)
             } else if (focusOn && focusApps.contains(pkg)) {
                 onFocusApp(e)
             } else if (guardOn && isGuarded(pkg)) {
@@ -353,6 +364,7 @@ class PowerBlockService : AccessibilityService() {
         val sub = tv(L.t("This app is blocked while the lock runs", "লক চলাকালীন এই অ্যাপ ব্লক করা আছে"), 15f, C.muted)
         sub.gravity = Gravity.CENTER
         root.addView(sub, lp(WRAP, WRAP, t = dp(8)))
+        blockOverlaySub = sub
         val btn = primaryBtn(L.t("Back to Home", "হোমে ফিরুন"))
         btn.setOnClickListener {
             hideBlockOverlay()
@@ -364,11 +376,13 @@ class PowerBlockService : AccessibilityService() {
         return root
     }
 
-    private fun showBlockOverlay(pkg: String) {
+    private fun showBlockOverlay(pkg: String, sub: String? = null) {
         hideOverlay() // never stack the power-menu shield under the block screen
         blockedPkg = pkg
+        val subText = sub ?: L.t("This app is blocked while the lock runs", "লক চলাকালীন এই অ্যাপ ব্লক করা আছে")
         if (blockOverlayAttached) {
             blockOverlayTitle?.text = appLabel(pkg)
+            blockOverlaySub?.text = subText
             return
         }
         try {
@@ -389,6 +403,7 @@ class PowerBlockService : AccessibilityService() {
             wm.addView(v, params)
             blockOverlayAttached = true
             blockOverlayTitle?.text = appLabel(pkg)
+            blockOverlaySub?.text = subText
             // entrance: the screen fades in and the shield pops
             v.animate().alpha(1f).setDuration(200)
                 .setInterpolator(AccelerateDecelerateInterpolator()).start()
@@ -447,6 +462,103 @@ class PowerBlockService : AccessibilityService() {
     }
 
     /**
+     * Messaging search block: chats stay usable, but opening search in a
+     * messaging app (Telegram, WhatsApp, Messenger…) covers the screen with
+     * the protection screen. If search is closed again (Back goes through to
+     * the app behind the overlay), the screen is uncovered so chats work.
+     */
+    private fun onMsgSearchApp(e: AccessibilityEvent) {
+        val now = SystemClock.uptimeMillis()
+        if (e.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            if (now - lastMsgScan < 400) return
+            lastMsgScan = now
+        }
+        val pkg = e.packageName?.toString() ?: return
+        if (looksLikeSearch(e)) {
+            // showBlockOverlay is idempotent: instant on first sight, a no-op after
+            showBlockOverlay(pkg, L.t("Search is blocked while the lock runs", "লক চলাকালীন সার্চ ব্লক করা আছে"))
+            if (now - lastMsgAction >= 1000) {
+                lastMsgAction = now
+                Extra.logAttempt(this, "msgsearch")
+            }
+        } else if (blockOverlayAttached && blockedPkg == pkg) {
+            hideBlockOverlay()
+        }
+    }
+
+    /**
+     * Is a search screen open right now? Two precise signals only:
+     * 1) a new window whose class contains "search" (a dedicated search screen),
+     * 2) the focused input is a search field (its hint contains "search").
+     * The chat list's own search bar is never focused, and a message input's
+     * hint is "Message", so neither false-positives. No plain text check:
+     * "Search" text sits on the chat list too.
+     */
+    private fun looksLikeSearch(e: AccessibilityEvent): Boolean {
+        if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            val cls = (e.className?.toString() ?: "").lowercase()
+            if (cls.contains("search")) return true
+        }
+        return try {
+            val root = rootInActiveWindow ?: return false
+            try {
+                val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
+                try {
+                    val isEdit = (focused.className?.toString() ?: "").contains("EditText")
+                    val hint = focused.hintText?.toString() ?: ""
+                    isEdit && hint.lowercase().contains("search")
+                } finally {
+                    try { focused.recycle() } catch (_: Exception) { }
+                }
+            } finally {
+                try { root.recycle() } catch (_: Exception) { }
+            }
+        } catch (ex: Exception) {
+            false
+        }
+    }
+
+    /**
+     * A chat/messages screen (a "Messages" or "Chats" header at the top) is
+     * never a Reels feed. This guards the Reels block against false-positives
+     * inside messaging tabs (e.g. Facebook Lite's Messages tab with its notes
+     * row), where a Back press would kick the user out of their chats.
+     */
+    private fun isChatScreen(): Boolean {
+        return try {
+            val root = rootInActiveWindow ?: return false
+            val screenH = resources.displayMetrics.heightPixels
+            var found = false
+            try {
+                for (marker in listOf("Messages", "Chats")) {
+                    val nodes = root.findAccessibilityNodeInfosByText(marker)
+                    for (n in nodes) {
+                        try {
+                            val t = n.text?.toString()?.trim() ?: ""
+                            if (t.equals(marker, ignoreCase = true)) {
+                                val r = Rect()
+                                n.getBoundsInScreen(r)
+                                if (r.top >= 0 && r.top < screenH * 0.20) {
+                                    found = true
+                                    break
+                                }
+                            }
+                        } finally {
+                            try { n.recycle() } catch (_: Exception) { }
+                        }
+                    }
+                    if (found) break
+                }
+            } finally {
+                try { root.recycle() } catch (_: Exception) { }
+            }
+            found
+        } catch (ex: Exception) {
+            false
+        }
+    }
+
+    /**
      * Signals, cheapest first:
      * 1) the window class (reel / shorts / story viewer),
      * 2) the event's own text,
@@ -458,9 +570,11 @@ class PowerBlockService : AccessibilityService() {
      *    a Reels/Shorts header at the top of the screen.
      * A plain text search would false-positive (the "Reels" tab label is in
      * the tree even on the home feed), so selection/checked state — or a
-     * viewer-only fingerprint — is what counts.
+     * viewer-only fingerprint — is what counts. Chat/messages screens are
+     * excluded up front: they are never a Reels feed.
      */
     private fun looksLikeReels(e: AccessibilityEvent): Boolean {
+        if (isChatScreen()) return false
         val pkg = e.packageName?.toString() ?: ""
         val cls = (e.className?.toString() ?: "").lowercase()
         if (cls.contains("reel") || cls.contains("shorts") || cls.contains("clips") ||
@@ -521,12 +635,15 @@ class PowerBlockService : AccessibilityService() {
      *   (the bottom nav is hidden in the player, so the tab check can't see it),
      * - a Reels/Shorts header at the top of the screen (the viewer title,
      *   not the bottom tab — the text must be exactly the marker),
-     * - viewer/player view IDs containing reel / short / story.
+     * - viewer/player view IDs containing reel / short / story,
+     * - the viewer's action rail: Like / Comment / Share stacked vertically
+     *   on the right edge (the feed shows them in a horizontal row instead).
      * All of the app's windows are scanned: story viewers can live in their
      * own window, not the active one.
      */
     private fun reelsUiScan(pkg: String): Boolean {
         val screenH = resources.displayMetrics.heightPixels
+        val screenW = resources.displayMetrics.widthPixels
         val roots = ArrayList<AccessibilityNodeInfo>()
         try {
             try {
@@ -547,7 +664,7 @@ class PowerBlockService : AccessibilityService() {
             for (r in roots) {
                 if (budget <= 0) break
                 val used = intArrayOf(0)
-                if (scanReelsTree(r, pkg, screenH, budget, used)) return true
+                if (scanReelsTree(r, pkg, screenH, screenW, budget, used)) return true
                 budget -= used[0]
             }
             return false
@@ -560,10 +677,12 @@ class PowerBlockService : AccessibilityService() {
 
     /** Bounded DFS of one window's tree. Does not recycle [root]. */
     private fun scanReelsTree(
-        root: AccessibilityNodeInfo, pkg: String, screenH: Int, budget: Int, used: IntArray
+        root: AccessibilityNodeInfo, pkg: String, screenH: Int, screenW: Int, budget: Int, used: IntArray
     ): Boolean {
         val stack = ArrayDeque<AccessibilityNodeInfo>()
         stack.add(root)
+        // right-edge action rail: y positions of Like / Comment / Share buttons
+        val railTops = ArrayList<Int>()
         try {
             while (stack.isNotEmpty() && used[0] < budget) {
                 val n = stack.removeFirst()
@@ -573,6 +692,19 @@ class PowerBlockService : AccessibilityService() {
                     val cd = n.contentDescription?.toString() ?: ""
                     val lt = text.lowercase()
                     val lc = cd.lowercase()
+                    // viewer action rail: Like / Comment / Share stacked vertically
+                    // on the right edge (a feed post has at most one of them there)
+                    if (railTops.size < 4) {
+                        val label = lt.trim().ifEmpty { lc.trim() }
+                        if (label == "like" || label == "comment" || label == "comments" || label == "share") {
+                            val r = Rect()
+                            n.getBoundsInScreen(r)
+                            if (r.left > screenW * 0.80 && r.top >= 0) {
+                                railTops.add(r.top)
+                                if (railTops.size >= 2 && railTops.max() - railTops.min() > screenH * 0.10) return true
+                            }
+                        }
+                    }
                     // viewer / player view IDs (e.g. reels_viewer, story_viewer)
                     val vid = n.viewIdResourceName?.lowercase() ?: ""
                     if ((vid.contains("viewer") || vid.contains("player")) &&

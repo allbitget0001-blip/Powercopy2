@@ -957,7 +957,7 @@ class SettingsScreen(private val a: MainActivity) {
 }
 
 // =====================================================================
-// PROTECTION (app block: full block + reels block)
+// PROTECTION (app block: full block + reels block + messaging search block)
 // =====================================================================
 class ProtectionScreen(private val a: MainActivity) {
     fun build(): View {
@@ -968,6 +968,8 @@ class ProtectionScreen(private val a: MainActivity) {
         col.addView(a.lockedAppsCard("full"), lp(MATCH, WRAP, b = a.dp(12)))
         col.addView(a.appBlockModeCard("reels"), lp(MATCH, WRAP, b = a.dp(12)))
         col.addView(a.lockedAppsCard("reels"), lp(MATCH, WRAP, b = a.dp(12)))
+        col.addView(a.appBlockModeCard("msg"), lp(MATCH, WRAP, b = a.dp(12)))
+        col.addView(a.lockedAppsCard("msg"), lp(MATCH, WRAP, b = a.dp(12)))
         return sv
     }
 }
