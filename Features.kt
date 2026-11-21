@@ -68,8 +68,8 @@ data class PlaceEvent(val placeId: Long, val name: String, val inTime: Long, val
 object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
-     * confirm which build is installed. */
-    const val BUILD_ID = 14
+     * confirm which build is installed. A String because L.num takes a String. */
+    const val BUILD_ID = "14"
 
     // ---------- presets ----------
 
