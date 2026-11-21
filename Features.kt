@@ -71,7 +71,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "21"
+    const val BUILD_ID = "22"
 
     // ---------- presets ----------
 
@@ -1358,6 +1358,42 @@ fun MainActivity.imageGuardCard(): View {
         statusTv.setOnClickListener { requestImageGuardPermission() }
     }
     c.addView(statusTv, lp(MATCH, WRAP, t = dp(8)))
+    // diagnostic log: what the guard actually did on the phone — open it
+    // and copy it to find out why a photo was not blocked
+    val logRow = LinearLayout(this)
+    logRow.orientation = LinearLayout.HORIZONTAL
+    val viewLogBtn = outlineBtn(L.t("View log", "লগ দেখুন"), C.primary)
+    viewLogBtn.setOnClickListener {
+        val summary = ImageGuardService.debugSummary
+        val text = if (summary.isEmpty()) L.t("No log yet — start a lock with image guard on first.", "এখনো লগ নেই — আগে ছবি সুরক্ষা চালু করে লক চালু করুন।") else synchronized(summary) { summary.joinToString("\n") }
+        val detail = synchronized(ImageGuardService.debugLog) { ImageGuardService.debugLog.joinToString("\n") }
+        val copyText = if (detail.isEmpty()) text else text + "\n\n--- " + L.t("Details", "বিস্তারিত") + " ---\n" + detail
+        val tvLog = tv(text, 11f, C.text)
+        val svLog = ScrollView(this)
+        svLog.addView(tvLog)
+        val body = LinearLayout(this)
+        body.orientation = LinearLayout.VERTICAL
+        body.setPadding(dp(20), dp(12), dp(20), dp(4))
+        body.addView(svLog, lp(MATCH, dp(400)))
+        dlg()
+            .setTitle(L.t("Image guard log", "ছবি সুরক্ষা লগ"))
+            .setView(body)
+            .setPositiveButton(L.t("Copy", "কপি করুন")) { _, _ ->
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("PowerLock image guard", copyText))
+                Toast.makeText(this, L.t("Copied", "কপি হয়েছে"), Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton(L.t("Close", "বন্ধ"), null)
+            .show()
+    }
+    logRow.addView(viewLogBtn, lp(0, WRAP, r = dp(8), weight = 1f))
+    val clearLogBtn = outlineBtn(L.t("Clear", "মুছুন"), C.primary)
+    clearLogBtn.setOnClickListener {
+        ImageGuardService.clearDebug()
+        Toast.makeText(this, L.t("Log cleared", "লগ মুছে ফেলা হয়েছে"), Toast.LENGTH_SHORT).show()
+    }
+    logRow.addView(clearLogBtn, lp(0, WRAP, weight = 1f))
+    c.addView(logRow, lp(MATCH, WRAP, t = dp(10)))
     // overlay permission: without it the cover cannot show (Home still works)
     if (!Settings.canDrawOverlays(this)) {
         val note = tv(

@@ -41,6 +41,9 @@ import java.net.SocketTimeoutException
 import java.net.URL
 import java.net.UnknownHostException
 import java.nio.FloatBuffer
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import javax.net.ssl.HttpsURLConnection
 
 /** Request code for the screen-capture permission activity. */
@@ -320,6 +323,35 @@ class ImageGuardService : Service() {
             projectionResultCode = Activity.RESULT_CANCELED
         }
 
+        /** Plain-language diagnostic lines (newest last), capped at 60. */
+        val debugSummary = mutableListOf<String>()
+
+        /** Technical diagnostic lines (newest last), capped at 120. */
+        val debugLog = mutableListOf<String>()
+
+        /** "[HH:mm]" stamp for diagnostic lines. */
+        fun stamp(): String =
+            SimpleDateFormat("HH:mm", Locale.US).format(Date())
+
+        fun dbgSummary(line: String) {
+            synchronized(debugSummary) {
+                debugSummary.add(line)
+                while (debugSummary.size > 60) debugSummary.removeAt(0)
+            }
+        }
+
+        fun dbg(line: String) {
+            synchronized(debugLog) {
+                debugLog.add(line)
+                while (debugLog.size > 120) debugLog.removeAt(0)
+            }
+        }
+
+        fun clearDebug() {
+            synchronized(debugSummary) { debugSummary.clear() }
+            synchronized(debugLog) { debugLog.clear() }
+        }
+
         /**
          * Starts the service iff the guard is on, a lock is protecting, the
          * model is downloaded and the screen-capture grant exists; otherwise
@@ -432,6 +464,8 @@ class ImageGuardService : Service() {
                 projectionData = null
                 mediaProjection = null
                 callbackRegistered = false
+                dbgSummary("[${stamp()}] স্ক্রিন অনুমতি শেষ হয়ে গেছে")
+                dbg("projection onStop (revoked)")
                 releaseCapture()
                 if (Extra.imageGuardOn(this@ImageGuardService)) {
                     notifyRegrantNow(this@ImageGuardService)
@@ -508,6 +542,8 @@ class ImageGuardService : Service() {
                     if (code == Activity.RESULT_OK && data != null) {
                         projectionResultCode = code
                         projectionData = data
+                        dbgSummary("[${stamp()}] স্ক্রিন অনুমতি পাওয়া গেছে")
+                        dbg("SET_PROJECTION ok")
                         initProjection()
                         startSampling()
                     }
@@ -516,8 +552,12 @@ class ImageGuardService : Service() {
                     if (projectionData == null) {
                         // no grant (e.g. process was killed): stop, and let
                         // sync() post the re-grant reminder instead
+                        dbgSummary("[${stamp()}] গার্ড চালু হতে পারেনি — স্ক্রিন অনুমতি নেই")
+                        dbg("START: no grant, stopSelf")
                         stopSelf()
                     } else {
+                        dbgSummary("[${stamp()}] গার্ড চালু হয়েছে")
+                        dbg("START: service started")
                         goForeground()
                         initProjection()
                         startSampling()
@@ -532,6 +572,8 @@ class ImageGuardService : Service() {
 
     override fun onDestroy() {
         destroyed = true
+        dbgSummary("[${stamp()}] গার্ড বন্ধ হয়েছে")
+        dbg("onDestroy")
         try {
             handler.removeCallbacks(tick)
             handler.removeCallbacksAndMessages(null)
@@ -603,6 +645,7 @@ class ImageGuardService : Service() {
                 } catch (_: Exception) {
                 }
             }
+            dbg("projection reused")
             return
         }
         val data = projectionData ?: return
@@ -612,10 +655,14 @@ class ImageGuardService : Service() {
             proj.registerCallback(projectionCallback, handler)
             callbackRegistered = true
             mediaProjection = proj
+            dbgSummary("[${stamp()}] স্ক্রিন সংযোগ হয়েছে")
+            dbg("projection created")
         } catch (e: Exception) {
             Log.e(TAG, "getMediaProjection failed", e)
             projectionData = null
             mediaProjection = null
+            dbgSummary("[${stamp()}] স্ক্রিন সংযোগ হয়নি")
+            dbg("getMediaProjection failed: ${e.message}")
             notifyRegrantNow(this)
             stopSelf()
         }
@@ -641,6 +688,7 @@ class ImageGuardService : Service() {
             virtualDisplay = vd
         } catch (e: Exception) {
             Log.e(TAG, "startCapture failed", e)
+            dbg("startCapture failed: ${e.message}")
             releaseCapture()
         }
     }
@@ -732,8 +780,16 @@ class ImageGuardService : Service() {
         try {
             val m = getModel() ?: return
             val score = m.nsfwScore(small)
-            if (score != null && score >= Extra.igThreshold(this)) {
-                handler.post { onDetected(score) }
+            val threshold = Extra.igThreshold(this)
+            if (score != null) {
+                val hit = score >= threshold
+                val s = String.format(Locale.US, "%.2f", score)
+                val t = String.format(Locale.US, "%.2f", threshold)
+                dbgSummary("[${stamp()}] স্কোর $s (সীমা $t) — " + if (hit) "ধরা পড়েছে ✓" else "ধরা পড়েনি ✗")
+                dbg("score=$s threshold=$t hit=$hit")
+                if (hit) handler.post { onDetected(score) }
+            } else {
+                dbg("inference failed (null score)")
             }
         } catch (e: Exception) {
             Log.e(TAG, "inference failed", e)
@@ -750,13 +806,19 @@ class ImageGuardService : Service() {
     private fun getModel(): NsfwModel? {
         model?.let { return it }
         if (modelFailed) return null
+        val t0 = SystemClock.uptimeMillis()
         val m = NsfwModel.load(this)
         if (m == null) {
             modelFailed = true
+            dbgSummary("[${stamp()}] মডেল লোড হয়নি")
+            dbg("model load failed")
             Store.settings(this).edit().putBoolean("ig_model_err", true).apply()
             handler.post { notifyModelError() }
             return null
         }
+        val ms = SystemClock.uptimeMillis() - t0
+        dbgSummary("[${stamp()}] মডেল লোড হয়েছে (${ms}ms)")
+        dbg("model loaded in ${ms}ms")
         Store.settings(this).edit().putBoolean("ig_model_err", false).apply()
         model = m
         return m
@@ -788,6 +850,8 @@ class ImageGuardService : Service() {
         if (now - lastDetectAt < DETECT_COOLDOWN_MS) return
         lastDetectAt = now
         Log.i(TAG, "image guard: NSFW detected score=$score")
+        dbgSummary("[${stamp()}] ধরা পড়েছে! স্কোর " + String.format(Locale.US, "%.2f", score) + " — স্ক্রিন ঢাকা হয়েছে")
+        dbg("DETECTED score=$score")
         try {
             Extra.logAttempt(this, "image")
         } catch (_: Exception) {
