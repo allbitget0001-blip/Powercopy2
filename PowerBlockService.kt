@@ -55,6 +55,10 @@ class PowerBlockService : AccessibilityService() {
         /** Diagnostic log: what the service sees on reels screens. Read by the
          * Protection screen's Diagnostic card. Capped at 120 lines. */
         val debugLog = mutableListOf<String>()
+
+        /** Plain-language summary of the same scans (2 lines per scan), shown
+         * in the Diagnostic card so it reads simply. Capped at 60 lines. */
+        val debugSummary = mutableListOf<String>()
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -569,6 +573,22 @@ class PowerBlockService : AccessibilityService() {
             counts.forEach { lines.add("  $it") }
             actions.forEach { lines.add("  $it") }
             viewIds.forEach { lines.add("  $it") }
+            // plain-language summary (2 lines per scan) for the Diagnostic card
+            val label = try {
+                val ai = packageManager.getApplicationInfo(pkg, 0)
+                packageManager.getApplicationLabel(ai).toString()
+            } catch (_: Exception) {
+                pkg
+            }
+            val status = if (detected) L.t("Reels detected ✓", "রিলস ধরা পড়েছে ✓") else L.t("Reels not detected ✗", "রিলস ধরা পড়েনি ✗")
+            debugSummary.add("[${time.take(5)}] $label — $status")
+            debugSummary.add(
+                "  " + L.t("Reels text", "Reels লেখা") + ": ${markers.size} • " +
+                    L.t("counts", "সংখ্যা") + ": ${counts.size} • " +
+                    L.t("buttons", "বোতাম") + ": ${actions.size} • " +
+                    L.t("viewer", "ভিউয়ার") + ": " + if (viewIds.isNotEmpty()) L.t("yes", "আছে") else L.t("no", "নেই")
+            )
+            while (debugSummary.size > 60) debugSummary.removeAt(0)
         } catch (ex: Exception) {
             lines.add("  debug error: ${ex.message}")
         } finally {

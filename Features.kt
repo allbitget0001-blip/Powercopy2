@@ -69,7 +69,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "14"
+    const val BUILD_ID = "15"
 
     // ---------- presets ----------
 
@@ -216,6 +216,18 @@ object Extra {
 
     fun setAppBlockMsg(ctx: Context, apps: Set<String>) {
         Store.settings(ctx).edit().putString("ab_msg", apps.joinToString(",")).apply()
+    }
+
+    /** Packages added by typing the package name (not from the picker): they
+     * stay in the block list even while the app is not installed, so
+     * installing the app later still blocks it. */
+    fun manualPackages(ctx: Context): Set<String> {
+        val s = Store.settings(ctx).getString("ab_manual", "") ?: ""
+        return s.split(",").filter { it.isNotEmpty() }.toSet()
+    }
+
+    fun setManualPackages(ctx: Context, apps: Set<String>) {
+        Store.settings(ctx).edit().putString("ab_manual", apps.joinToString(",")).apply()
     }
 
     /** All launchable apps (label + icon), loaded once per session: loading ~150 icons is slow. */
@@ -892,25 +904,71 @@ fun MainActivity.appBlockModeCard(mode: String): View {
     val locked = Store.isActive(this)
     val pick = outlineBtn(L.t("Choose apps ($count selected)", "অ্যাপ বাছুন ($count টি নির্বাচিত)"), C.primary)
     pick.setOnClickListener {
-        if (Store.isActive(this)) {
-            toast(L.t("Locked while a session is active", "সেশন চলাকালীন বদলানো যাবে না"))
-        } else {
-            appBlockPicker(mode) { go(4) }
-        }
+        // adding only strengthens the lock, so it stays allowed during a
+        // session — the picker just won't let an already-blocked app be unchecked
+        appBlockPicker(mode, Store.isActive(this)) { go(4) }
     }
     c.addView(pick, lp(MATCH, dp(48), t = dp(10)))
+    val pkgBtn = outlineBtn(L.t("Add by package name", "প্যাকেজ নাম দিয়ে অ্যাড করুন"), C.primary)
+    pkgBtn.setOnClickListener { addPackageDialog(mode) { go(4) } }
+    c.addView(pkgBtn, lp(MATCH, dp(48), t = dp(8)))
     if (locked) {
-        c.addView(tv(L.t("Locked while a session is active.", "সেশন চলাকালীন বদলানো যাবে না।"), 12f, C.warn), lp(MATCH, WRAP, t = dp(8)))
+        c.addView(tv(L.t("While a session runs, apps can only be added, not removed.", "সেশন চলাকালীন শুধু অ্যাপ যোগ করা যাবে, সরানো যাবে না।"), 12f, C.warn), lp(MATCH, WRAP, t = dp(8)))
     }
     return c
 }
 
-private fun MainActivity.appBlockPicker(mode: String, done: () -> Unit) {
+/** Add a package name by typing it — the app need not be installed yet, it is
+ * blocked as soon as it is installed. [mode] is "full", "reels" or "msg". */
+private fun MainActivity.addPackageDialog(mode: String, done: () -> Unit) {
+    val input = edit(L.t("Package name, e.g. com.facebook.katana", "প্যাকেজ নাম, যেমন com.facebook.katana"), false)
+    val body = LinearLayout(this)
+    body.orientation = LinearLayout.VERTICAL
+    body.setPadding(dp(20), dp(12), dp(20), dp(4))
+    body.addView(input, lp(MATCH, WRAP))
+    body.addView(
+        tv(L.t("The app does not need to be installed yet — once it is installed, the block applies automatically.", "অ্যাপ এখন ইনস্টল না থাকলেও চলবে — ইনস্টল করলেই ব্লক কাজ করবে।"), 13f, C.muted),
+        lp(MATCH, WRAP, t = dp(10))
+    )
+    dlg()
+        .setTitle(L.t("Add by package name", "প্যাকেজ নাম দিয়ে অ্যাড করুন"))
+        .setView(body)
+        .setPositiveButton(L.t("Add", "যোগ করুন")) { _, _ ->
+            val pkg = input.text.toString().trim().lowercase()
+            if (pkg.isEmpty()) {
+                toast(L.t("Type a package name", "প্যাকেজ নাম লিখুন"))
+                return@setPositiveButton
+            }
+            if (!pkg.matches(Regex("^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)+$"))) {
+                toast(L.t("Not a valid package name", "সঠিক প্যাকেজ নাম নয়"))
+                return@setPositiveButton
+            }
+            // an app can only be in one list: full block wins over reels block;
+            // the search list is independent
+            when (mode) {
+                "full" -> {
+                    Extra.setAppBlockFull(this, Extra.appBlockFull(this) + pkg)
+                    Extra.setAppBlockReels(this, Extra.appBlockReels(this) - pkg)
+                }
+                "msg" -> Extra.setAppBlockMsg(this, Extra.appBlockMsg(this) + pkg)
+                else -> {
+                    Extra.setAppBlockReels(this, Extra.appBlockReels(this) + pkg)
+                    Extra.setAppBlockFull(this, Extra.appBlockFull(this) - pkg)
+                }
+            }
+            Extra.setManualPackages(this, Extra.manualPackages(this) + pkg)
+            done()
+        }
+        .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+        .show()
+}
+
+private fun MainActivity.appBlockPicker(mode: String, addOnly: Boolean, done: () -> Unit) {
     // the app list (with icons) is loaded once per session on a background
     // thread: loading ~150 icons on the main thread froze the UI
     val cached = Extra.appListCache
     if (cached != null) {
-        showAppBlockPicker(mode, cached, done)
+        showAppBlockPicker(mode, cached, addOnly, done)
         return
     }
     val loading = dlg()
@@ -929,7 +987,7 @@ private fun MainActivity.appBlockPicker(mode: String, done: () -> Unit) {
                 return@runOnUiThread
             }
             Extra.appListCache = apps
-            showAppBlockPicker(mode, apps, done)
+            showAppBlockPicker(mode, apps, addOnly, done)
         }
     }.start()
 }
@@ -957,7 +1015,7 @@ private fun MainActivity.loadLaunchableApps(): List<Triple<String, String, Drawa
 }
 
 private fun MainActivity.showAppBlockPicker(
-    mode: String, allApps: List<Triple<String, String, Drawable>>, done: () -> Unit
+    mode: String, allApps: List<Triple<String, String, Drawable>>, addOnly: Boolean, done: () -> Unit
 ) {
     // Reels block is only offered for apps that actually have Reels / Shorts / Status;
     // search block lists every app, so all Telegram-type apps (and any other) show up
@@ -992,9 +1050,16 @@ private fun MainActivity.showAppBlockPicker(
         r.addView(icon, lp(dp(40), dp(40), r = dp(14)))
         r.addView(tv(info.second, 15f, C.text), lp(0, WRAP, weight = 1f))
         val pkg = info.first
-        r.addView(toggle(chosen.contains(pkg)) { v ->
-            if (v) chosen.add(pkg) else chosen.remove(pkg)
-        })
+        val wasChosen = chosen.contains(pkg)
+        val sw = toggle(wasChosen) { v ->
+            if (v) chosen.add(pkg) else if (!(addOnly && wasChosen)) chosen.remove(pkg)
+        }
+        if (addOnly && wasChosen) {
+            // add-only during a lock: an already-blocked app cannot be unchecked
+            sw.isEnabled = false
+            r.alpha = 0.6f
+        }
+        r.addView(sw)
         list.addView(r)
         rows.add(r to info.second.lowercase())
     }
@@ -1151,15 +1216,23 @@ private fun MainActivity.showAppBlockPicker(
         .setView(body)
         .setPositiveButton(L.t("Save", "সংরক্ষণ")) { _, _ ->
             // an app can only be in one list: full block wins over reels block;
-            // the search list is independent (an app can block both its feed and its search)
+            // the search list is independent (an app can block both its feed and its search).
+            // manually added package names (not installed, so not in the picker)
+            // are kept — saving must not wipe them
+            val manual = Extra.manualPackages(this)
             when (mode) {
                 "full" -> {
-                    Extra.setAppBlockFull(this, chosen)
+                    val keep = Extra.appBlockFull(this).filter { it in manual }
+                    Extra.setAppBlockFull(this, chosen + keep)
                     Extra.setAppBlockReels(this, Extra.appBlockReels(this) - chosen)
                 }
-                "msg" -> Extra.setAppBlockMsg(this, chosen)
+                "msg" -> {
+                    val keep = Extra.appBlockMsg(this).filter { it in manual }
+                    Extra.setAppBlockMsg(this, chosen + keep)
+                }
                 else -> {
-                    Extra.setAppBlockReels(this, chosen)
+                    val keep = Extra.appBlockReels(this).filter { it in manual }
+                    Extra.setAppBlockReels(this, chosen + keep)
                     Extra.setAppBlockFull(this, Extra.appBlockFull(this) - chosen)
                 }
             }
@@ -1175,13 +1248,17 @@ private fun MainActivity.showAppBlockPicker(
 fun MainActivity.diagnosticCard(): View {
     val c = card()
     c.addView(section(L.t("Diagnostic", "ডায়াগনস্টিক")), lp(MATCH, WRAP, b = dp(6)))
-    c.addView(tv(L.t("When a reels app is open during a lock, the service records what it sees on screen. Open the log, copy it and send it to find out why a reel was not blocked.", "লক চলাকালীন রিলস অ্যাপ খুললে সার্ভিস স্ক্রিনে কী দেখছে তা রেকর্ড করে। লগ দেখে কপি করে পাঠালে বোঝা যাবে কেন রিলস ব্লক হয়নি।"), 13f, C.muted), lp(MATCH, WRAP, b = dp(10)))
+    c.addView(tv(L.t("When a reels app is open during a lock, the service records a simple summary of what it sees on screen. Open the log, copy it and send it to find out why a reel was not blocked.", "লক চলাকালীন রিলস অ্যাপ খুললে সার্ভিস স্ক্রিনে কী দেখছে তার সহজ সারাংশ এখানে দেখা যাবে। লগ দেখে কপি করে পাঠালে বোঝা যাবে কেন রিলস ব্লক হয়নি।"), 13f, C.muted), lp(MATCH, WRAP, b = dp(10)))
     val row = LinearLayout(this)
     row.orientation = LinearLayout.HORIZONTAL
     val viewBtn = outlineBtn(L.t("View log", "লগ দেখুন"), C.primary)
     viewBtn.setOnClickListener {
-        val lines = PowerBlockService.debugLog
-        val text = if (lines.isEmpty()) L.t("No log yet — open a reels app during a lock first.", "এখনো লগ নেই — আগে লক চলাকালীন রিলস অ্যাপ খুলুন।") else lines.joinToString("\n")
+        // the dialog shows the plain summary; copying includes the full
+        // technical log too, so the details are available when sent for analysis
+        val summary = PowerBlockService.debugSummary
+        val text = if (summary.isEmpty()) L.t("No log yet — open a reels app during a lock first.", "এখনো লগ নেই — আগে লক চলাকালীন রিলস অ্যাপ খুলুন।") else summary.joinToString("\n")
+        val detail = PowerBlockService.debugLog.joinToString("\n")
+        val copyText = if (detail.isEmpty()) text else text + "\n\n--- " + L.t("Details", "বিস্তারিত") + " ---\n" + detail
         val tvLog = tv(text, 11f, C.text)
         val svLog = ScrollView(this)
         svLog.addView(tvLog)
@@ -1194,7 +1271,7 @@ fun MainActivity.diagnosticCard(): View {
             .setView(body)
             .setPositiveButton(L.t("Copy", "কপি করুন")) { _, _ ->
                 val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                cm.setPrimaryClip(ClipData.newPlainText("PowerLock debug", text))
+                cm.setPrimaryClip(ClipData.newPlainText("PowerLock debug", copyText))
                 Toast.makeText(this, L.t("Copied", "কপি হয়েছে"), Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton(L.t("Close", "বন্ধ"), null)
@@ -1204,6 +1281,7 @@ fun MainActivity.diagnosticCard(): View {
     val clearBtn = outlineBtn(L.t("Clear", "মুছুন"), C.primary)
     clearBtn.setOnClickListener {
         PowerBlockService.debugLog.clear()
+        PowerBlockService.debugSummary.clear()
         Toast.makeText(this, L.t("Log cleared", "লগ মুছে ফেলা হয়েছে"), Toast.LENGTH_SHORT).show()
     }
     row.addView(clearBtn, lp(0, WRAP, weight = 1f))
@@ -1237,9 +1315,11 @@ fun MainActivity.lockedAppsCard(mode: String): View {
         )
         return c
     }
-    // drop apps that were uninstalled since they were blocked
+    // drop apps that were uninstalled since they were blocked — except
+    // manually added package names, which stay blocked for a later install
+    val manual = Extra.manualPackages(this)
     val missing = pkgs.filter { pkg ->
-        try {
+        pkg !in manual && try {
             pm.getApplicationInfo(pkg, 0)
             false
         } catch (e: Exception) {
@@ -1254,13 +1334,15 @@ fun MainActivity.lockedAppsCard(mode: String): View {
             else -> Extra.setAppBlockReels(this, pkgs)
         }
     }
-    data class Row(val pkg: String, val label: String, val icon: Drawable)
+    data class Row(val pkg: String, val label: String, val icon: Drawable?, val installed: Boolean)
     val rows = ArrayList<Row>()
     for (pkg in pkgs) {
         try {
             val ai = pm.getApplicationInfo(pkg, 0)
-            rows.add(Row(pkg, pm.getApplicationLabel(ai).toString(), pm.getApplicationIcon(ai)))
+            rows.add(Row(pkg, pm.getApplicationLabel(ai).toString(), pm.getApplicationIcon(ai), true))
         } catch (e: Exception) {
+            // a manually added package that is not installed (yet)
+            if (pkg in manual) rows.add(Row(pkg, pkg, null, false))
         }
     }
     rows.sortBy { it.label.lowercase() }
@@ -1268,10 +1350,20 @@ fun MainActivity.lockedAppsCard(mode: String): View {
         val r = LinearLayout(this)
         r.gravity = Gravity.CENTER_VERTICAL
         r.setPadding(0, dp(8), 0, dp(8))
-        val icon = ImageView(this)
-        icon.setImageDrawable(row.icon)
-        r.addView(icon, lp(dp(36), dp(36), r = dp(12)))
-        r.addView(tv(row.label, 15f, C.text), lp(0, WRAP, weight = 1f))
+        if (row.icon != null) {
+            val icon = ImageView(this)
+            icon.setImageDrawable(row.icon)
+            r.addView(icon, lp(dp(36), dp(36), r = dp(12)))
+        } else {
+            r.addView(View(this), lp(dp(36), dp(36), r = dp(12)))
+        }
+        val labelCol = LinearLayout(this)
+        labelCol.orientation = LinearLayout.VERTICAL
+        labelCol.addView(tv(row.label, 15f, C.text))
+        if (!row.installed) {
+            labelCol.addView(tv(L.t("Not installed — blocked once installed", "ইনস্টল হয়নি — ইনস্টল করলেই ব্লক হবে"), 12f, C.muted))
+        }
+        r.addView(labelCol, lp(0, WRAP, weight = 1f))
         val remove = tv(L.t("Remove", "সরান"), 13f, C.warn)
         remove.setPadding(dp(8), dp(8), dp(8), dp(8))
         remove.pressFeedback()
@@ -1284,6 +1376,7 @@ fun MainActivity.lockedAppsCard(mode: String): View {
                     "msg" -> Extra.setAppBlockMsg(this, Extra.appBlockMsg(this) - row.pkg)
                     else -> Extra.setAppBlockReels(this, Extra.appBlockReels(this) - row.pkg)
                 }
+                Extra.setManualPackages(this, Extra.manualPackages(this) - row.pkg)
                 go(4)
             }
         }
@@ -1291,7 +1384,7 @@ fun MainActivity.lockedAppsCard(mode: String): View {
         c.addView(r, lp(MATCH, WRAP, t = dp(4)))
     }
     if (locked) {
-        c.addView(tv(L.t("Locked while a session is active.", "সেশন চলাকালীন বদলানো যাবে না।"), 12f, C.warn), lp(MATCH, WRAP, t = dp(8)))
+        c.addView(tv(L.t("While a session runs, apps cannot be removed here — but new ones can be added above.", "সেশন চলাকালীন এখান থেকে সরানো যাবে না — তবে ওপরে নতুন যোগ করা যাবে।"), 12f, C.warn), lp(MATCH, WRAP, t = dp(8)))
     }
     return c
 }
