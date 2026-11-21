@@ -71,7 +71,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "16"
+    const val BUILD_ID = "17"
 
     // ---------- presets ----------
 
@@ -1285,8 +1285,8 @@ fun MainActivity.imageGuardCard(): View {
     c.addView(
         tv(
             L.t(
-                "While a lock runs, on-device AI watches the screen and covers nude photos or videos the moment they appear. Experimental — it can sometimes be wrong, and it uses more battery. No image ever leaves the phone.",
-                "লক চলাকালীন ফোনের ভেতরেই AI স্ক্রিন দেখবে, আর নগ্ন ছবি বা ভিডিও আসলেই তা ঢেকে দেবে। পরীক্ষামূলক — মাঝে মাঝে ভুল হতে পারে, আর ব্যাটারি একটু বেশি খাবে। কোনো ছবি ফোনের বাইরে যাবে না।"
+                "While a lock runs, on-device AI watches the screen and covers nude photos or videos the moment they appear. Experimental — it can sometimes be wrong, and it uses more battery. No image ever leaves the phone. The powerful model downloads once (~106 MB — Wi-Fi recommended).",
+                "লক চলাকালীন ফোনের ভেতরেই AI স্ক্রিন দেখবে, আর নগ্ন ছবি বা ভিডিও আসলেই তা ঢেকে দেবে। পরীক্ষামূলক — মাঝে মাঝে ভুল হতে পারে, আর ব্যাটারি একটু বেশি খাবে। কোনো ছবি ফোনের বাইরে যাবে না। শক্তিশালী মডেল একবার ডাউনলোড হবে (~১০৬ MB — Wi-Fi দিয়ে করা ভালো)।"
             ),
             13f, C.muted
         ),
@@ -1380,7 +1380,7 @@ private fun MainActivity.enableImageGuard() {
         body.orientation = LinearLayout.VERTICAL
         body.setPadding(dp(20), dp(12), dp(20), dp(4))
         body.addView(
-            tv(L.t("Downloading the detection model (~14 MB, once only)…", "শনাক্তকরণের মডেল ডাউনলোড হচ্ছে (~১৪ MB, শুধু একবার)…"), 14f, C.muted),
+            tv(L.t("Downloading the detection model (~106 MB, once only)…", "শনাক্তকরণের মডেল ডাউনলোড হচ্ছে (~১০৬ MB, শুধু একবার)…"), 14f, C.muted),
             lp(MATCH, WRAP, b = dp(10))
         )
         body.addView(prog, lp(MATCH, WRAP))

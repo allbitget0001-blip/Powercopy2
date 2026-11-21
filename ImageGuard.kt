@@ -43,21 +43,25 @@ import javax.net.ssl.HttpsURLConnection
 const val REQ_IMAGE_GUARD = 1041
 
 /**
- * The on-device NSFW model (OwenElliott/image-safety-classifier-xs, MIT):
- * a SwiftFormer-XS image classifier, 3 classes [NSFL, NSFW, SFW]. The model
- * file (~14 MB) is downloaded once, on first enable, and stored under
- * filesDir — it is never bundled in the APK, and no image ever leaves the
- * phone: every frame is classified on the device and then discarded.
+ * The on-device NSFW model (OwenElliott/image-safety-classifier-l, MIT):
+ * a SwiftFormer-L image classifier, 28.5M parameters, 3 classes [NSFL, NSFW,
+ * SFW] — the most powerful of the family (98.20% accuracy). The model file
+ * (~106 MB) is downloaded once, on first enable, and stored under filesDir
+ * — it is never bundled in the APK, and no image ever leaves the phone:
+ * every frame is classified on the device and then discarded.
  */
 object ImageGuardModel {
     const val MODEL_URL =
-        "https://huggingface.co/OwenElliott/image-safety-classifier-xs/resolve/main/image-safety-classifier-xs.onnx"
+        "https://huggingface.co/OwenElliott/image-safety-classifier-l/resolve/main/onnx/image-safety-classifier-l.onnx"
 
-    /** A complete download is ~14 MB; anything smaller is a failed download. */
-    const val MIN_BYTES = 10_000_000L
+    /** A complete download is ~106 MB; anything smaller is a failed download. */
+    const val MIN_BYTES = 50_000_000L
 
     fun dir(ctx: Context): File = File(ctx.filesDir, "imageguard")
-    fun file(ctx: Context): File = File(dir(ctx), "model.onnx")
+
+    /** The file name carries the model size, so an older smaller model left
+     * on the phone is never mistaken for this one. */
+    fun file(ctx: Context): File = File(dir(ctx), "model-l.onnx")
 
     fun ready(ctx: Context): Boolean = try {
         val f = file(ctx)
@@ -75,7 +79,13 @@ object ImageGuardModel {
         return try {
             val d = dir(ctx)
             if (!d.exists()) d.mkdirs()
-            val tmp = File(d, "model.onnx.tmp")
+            // drop the old small model if it is still on the phone
+            try {
+                val old = File(d, "model.onnx")
+                if (old.exists()) old.delete()
+            } catch (_: Exception) {
+            }
+            val tmp = File(d, "model-l.onnx.tmp")
             if (tmp.exists()) tmp.delete()
             val conn = URL(MODEL_URL).openConnection() as HttpsURLConnection
             conn.instanceFollowRedirects = true
@@ -121,7 +131,7 @@ object ImageGuardModel {
         } catch (e: Exception) {
             Log.e(TAG, "model download failed", e)
             try {
-                File(dir(ctx), "model.onnx.tmp").delete()
+                File(dir(ctx), "model-l.onnx.tmp").delete()
             } catch (_: Exception) {
             }
             false
@@ -146,7 +156,7 @@ private class NsfwModel private constructor(
             return try {
                 val env = OrtEnvironment.getEnvironment()
                 val opts = OrtSession.SessionOptions()
-                opts.setIntraOpNumThreads(2)
+                opts.setIntraOpNumThreads(4)
                 val session = env.createSession(file.absolutePath, opts)
                 try {
                     opts.close()
@@ -194,7 +204,7 @@ private class NsfwModel private constructor(
 
 /**
  * Image guard: while a lock runs, captures the screen with MediaProjection,
- * classifies a frame every ~1.5s with the on-device ONNX model, and when the
+ * classifies a frame every ~1s with the on-device ONNX model, and when the
  * NSFW score passes the sensitivity threshold covers the screen and sends
  * the user Home. Nothing is saved or sent anywhere — frames are classified
  * in memory and recycled at once.
@@ -216,7 +226,7 @@ class ImageGuardService : Service() {
         private const val NOTIF_REGRANT_ID = 12
         private const val NOTIF_MODEL_ERR_ID = 13
         private const val CHANNEL_ID = "powerlock_image"
-        private const val SCAN_INTERVAL_MS = 1500L
+        private const val SCAN_INTERVAL_MS = 1000L
         private const val IDLE_INTERVAL_MS = 3000L
         private const val COVER_HIDE_MS = 1500L
         private const val DETECT_COOLDOWN_MS = 5000L
