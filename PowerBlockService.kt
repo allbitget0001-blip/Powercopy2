@@ -33,8 +33,9 @@ import android.widget.LinearLayout
  * The protection state is cached from SharedPreferences, so events do not read storage.
  * Settings / uninstall pages that show "PowerLock" are sent Home when "protect app settings" is on.
  * App block (Protection section) also runs here while a session is active: fully
- * blocked apps jump straight to Home, and Reels-blocked apps get Back (then Home
- * on repeat) when a Reels / Shorts screen is detected.
+ * blocked apps are covered instantly by a protection screen (with a Home button),
+ * and Reels-blocked apps get Back (then Home on repeat) when a Reels / Shorts
+ * screen is detected.
  */
 class PowerBlockService : AccessibilityService() {
 
@@ -83,6 +84,14 @@ class PowerBlockService : AccessibilityService() {
     private var lastAppBlockAction = 0L
     private var lastReelsScan = 0L
     private var lastReelsBack = 0L
+
+    // Full-block protection screen: covers a blocked app the instant it opens.
+    private var blockOverlay: View? = null
+    private var blockOverlayTitle: TextView? = null
+    private var blockOverlayAttached = false
+    private var blockedPkg: String? = null
+    private var lastBlockPkg: String? = null
+    private var lastBlockAt = 0L
 
     private var lastKeepAliveCheck = 0L // throttles the revive check (once per 30s)
 
@@ -189,6 +198,16 @@ class PowerBlockService : AccessibilityService() {
         val pkg = e.packageName?.toString() ?: return
         try {
             maybeReviveKeepAlive() // the system re-binds this service, so it revives the keep-alive service
+            // the block screen follows the foreground app: hide it once protection ends,
+            // or once a real window change shows another app in front. Our own package
+            // is excluded: taps on the overlay itself must not dismiss it.
+            if (blockOverlayAttached && !protecting()) {
+                hideBlockOverlay()
+            } else if (blockOverlayAttached && e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+                !pkg.contains("systemui") && pkg != packageName && pkg != blockedPkg
+            ) {
+                hideBlockOverlay()
+            }
             if (pkg.contains("systemui")) {
                 // the power menu: even when the flag is not set yet, the location lock may apply
                 onSystemUi(e)
@@ -274,13 +293,103 @@ class PowerBlockService : AccessibilityService() {
         performGlobalAction(GLOBAL_ACTION_HOME)
     }
 
-    /** Full app block: the app opens and is sent straight back to Home. */
+    /**
+     * Full app block: a protection screen covers the app the instant it opens.
+     * No throttle on first sight of an app — the screen must appear before the
+     * user can see or touch anything. The burst of events that follows a single
+     * open is ignored while the screen is already up for that app.
+     */
     private fun onFullBlockedApp(e: AccessibilityEvent) {
+        val pkg = e.packageName?.toString() ?: return
         val now = SystemClock.uptimeMillis()
-        if (now - lastAppBlockAction < 300) return
-        lastAppBlockAction = now
+        if (pkg == lastBlockPkg && now - lastBlockAt < 1000 && blockOverlayAttached) return
+        lastBlockPkg = pkg
+        lastBlockAt = now
         Extra.logAttempt(this, "appblock")
-        performGlobalAction(GLOBAL_ACTION_HOME)
+        showBlockOverlay(pkg)
+    }
+
+    private fun appLabel(pkg: String): String {
+        return try {
+            val pm = packageManager
+            pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+        } catch (e: Exception) {
+            pkg
+        }
+    }
+
+    private fun ensureBlockOverlay(): View {
+        val existing = blockOverlay
+        if (existing != null) return existing
+        val root = LinearLayout(this)
+        root.orientation = LinearLayout.VERTICAL
+        root.gravity = Gravity.CENTER
+        root.setBackgroundColor(Color.argb(250, 8, 16, 12))
+        root.isClickable = true // touches must not reach the app underneath
+        root.setPadding(dp(32), dp(32), dp(32), dp(32))
+        root.addView(IconView(this, Ic.SHIELD, C.primary), lp(dp(84), dp(84)))
+        val title = tv("", 22f, C.text, 1)
+        title.gravity = Gravity.CENTER
+        root.addView(title, lp(WRAP, WRAP, t = dp(16)))
+        val sub = tv(L.t("This app is blocked while the lock runs", "লক চলাকালীন এই অ্যাপ ব্লক করা আছে"), 15f, C.muted)
+        sub.gravity = Gravity.CENTER
+        root.addView(sub, lp(WRAP, WRAP, t = dp(8)))
+        val btn = primaryBtn(L.t("Back to Home", "হোমে ফিরুন"))
+        btn.setOnClickListener {
+            hideBlockOverlay()
+            performGlobalAction(GLOBAL_ACTION_HOME)
+        }
+        root.addView(btn, lp(MATCH, dp(52), t = dp(28)))
+        blockOverlay = root
+        blockOverlayTitle = title
+        return root
+    }
+
+    private fun showBlockOverlay(pkg: String) {
+        hideOverlay() // never stack the power-menu shield under the block screen
+        blockedPkg = pkg
+        if (blockOverlayAttached) {
+            blockOverlayTitle?.text = appLabel(pkg)
+            return
+        }
+        try {
+            val v = ensureBlockOverlay()
+            blockOverlayTitle?.text = appLabel(pkg)
+            val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                        WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                        WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED,
+                PixelFormat.TRANSLUCENT
+            )
+            wm.addView(v, params)
+            blockOverlayAttached = true
+        } catch (ex: Exception) {
+            Log.e(TAG, "showBlockOverlay failed", ex)
+            blockOverlayAttached = false
+            // fall back to the old behaviour: leave the app at once
+            performGlobalAction(GLOBAL_ACTION_HOME)
+        }
+    }
+
+    private fun hideBlockOverlay() {
+        if (!blockOverlayAttached) {
+            blockedPkg = null
+            return
+        }
+        blockOverlayAttached = false
+        blockedPkg = null
+        try {
+            val v = blockOverlay ?: return
+            val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+            wm.removeViewImmediate(v)
+        } catch (ex: Exception) {
+            Log.e(TAG, "hideBlockOverlay failed", ex)
+        }
     }
 
     /**
@@ -460,6 +569,7 @@ class PowerBlockService : AccessibilityService() {
     private fun cleanup() {
         handler.removeCallbacksAndMessages(null)
         hideOverlay()
+        hideBlockOverlay()
         if (receiverOn) {
             receiverOn = false
             try {

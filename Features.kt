@@ -17,6 +17,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.Editable
+import android.text.TextWatcher
 import android.util.Log
 import android.view.Gravity
 import android.view.View
@@ -194,6 +196,23 @@ object Extra {
     fun setAppBlockReels(ctx: Context, apps: Set<String>) {
         Store.settings(ctx).edit().putString("ab_reels", apps.joinToString(",")).apply()
     }
+
+    /** Packages with a Reels / Shorts / Status feed — only these are offered for Reels block. */
+    val reelsPackages = setOf(
+        "com.instagram.android",      // Instagram Reels
+        "com.facebook.katana",        // Facebook Reels
+        "com.facebook.lite",          // Facebook Lite Reels
+        "com.google.android.youtube", // YouTube Shorts
+        "com.zhiliaoapp.musically",   // TikTok
+        "com.ss.android.ugc.trill",   // TikTok (Asia)
+        "com.snapchat.android",       // Snapchat Spotlight / Stories
+        "com.whatsapp",               // WhatsApp Status
+        "com.whatsapp.w4b",           // WhatsApp Business Status
+        "org.telegram.messenger",     // Telegram Stories
+        "com.twitter.android",        // X short videos
+        "in.mohalla.sharechat",       // ShareChat short videos
+        "com.versebrain.josh"         // Josh short videos
+    )
 
     // ---------- places ----------
 
@@ -798,7 +817,7 @@ fun MainActivity.protectionIntroCard(): View {
     c.addView(
         row(
             L.t("Block apps while the lock runs", "লক চলাকালীন অ্যাপ ব্লক"),
-            L.t("Choose apps below. Full block closes the app at once; Reels block only stops the Reels / Shorts feed.", "নিচে অ্যাপ বাছুন। সম্পূর্ণ ব্লক অ্যাপ সঙ্গে সঙ্গে বন্ধ করে দেয়; রিলস ব্লক শুধু রিলস / শর্টস ফিড আটকায়।"),
+            L.t("Choose apps below. Full block covers the app with a protection screen at once; Reels block only stops the Reels / Shorts feed.", "নিচে অ্যাপ বাছুন। সম্পূর্ণ ব্লক সঙ্গে সঙ্গে সুরক্ষা স্ক্রিন দেখায়; রিলস ব্লক শুধু রিলস / শর্টস ফিড আটকায়।"),
             sw
         ),
         lp(MATCH, WRAP, t = dp(6))
@@ -825,8 +844,8 @@ fun MainActivity.appBlockModeCard(mode: String): View {
     c.addView(section(if (isFull) L.t("Full app block", "সম্পূর্ণ অ্যাপ ব্লক") else L.t("Reels block", "রিলস ব্লক")))
     c.addView(
         tv(
-            if (isFull) L.t("Opening a selected app jumps straight back to Home.", "নির্বাচিত অ্যাপ খুললেই সঙ্গে সঙ্গে হোমে ফিরে যাবে।")
-            else L.t("The app stays usable, but its Reels / Shorts feed is closed. Works best on Instagram, Facebook, YouTube and TikTok.", "অ্যাপ ব্যবহার করা যাবে, কিন্তু এর রিলস / শর্টস ফিড বন্ধ হয়ে যাবে। Instagram, Facebook, YouTube ও TikTok-এ সবচেয়ে ভালো কাজ করে।"),
+            if (isFull) L.t("Opening a selected app instantly shows a protection screen — the app stays covered.", "নির্বাচিত অ্যাপ খুললেই সঙ্গে সঙ্গে সুরক্ষা স্ক্রিন আসবে — অ্যাপের ভেতরে ঢোকা যাবে না।")
+            else L.t("The app stays usable, but its Reels / Shorts feed is closed. Only apps with Reels, Shorts or Status are listed.", "অ্যাপ ব্যবহার করা যাবে, কিন্তু এর রিলস / শর্টস ফিড বন্ধ হয়ে যাবে। শুধু রিলস, শর্টস বা স্ট্যাটাস আছে এমন অ্যাপ তালিকায় আসবে।"),
             13f, C.muted
         ),
         lp(MATCH, WRAP, t = dp(6))
@@ -853,6 +872,7 @@ private fun MainActivity.appBlockPicker(mode: String, done: () -> Unit) {
     val intent = Intent(Intent.ACTION_MAIN)
     intent.addCategory(Intent.CATEGORY_LAUNCHER)
     val skip = listOf("dialer", "incallui", "emergency", "telecom", "contacts")
+    val isFull = mode == "full"
     val apps = ArrayList<Triple<String, String, Drawable>>()
     val seen = HashSet<String>()
     try {
@@ -860,6 +880,8 @@ private fun MainActivity.appBlockPicker(mode: String, done: () -> Unit) {
             val pkg = ri.activityInfo.packageName
             if (pkg == packageName || !seen.add(pkg)) continue
             if (skip.any { pkg.contains(it) }) continue
+            // Reels block is only offered for apps that actually have Reels / Shorts / Status
+            if (!isFull && pkg !in Extra.reelsPackages) continue
             apps.add(Triple(pkg, ri.loadLabel(pm).toString(), ri.loadIcon(pm)))
         }
     } catch (e: Exception) {
@@ -867,36 +889,64 @@ private fun MainActivity.appBlockPicker(mode: String, done: () -> Unit) {
     }
     apps.sortBy { it.second.lowercase() }
     if (apps.isEmpty()) {
-        toast(L.t("No apps found", "কোনো অ্যাপ পাওয়া যায়নি"))
+        toast(
+            if (isFull) L.t("No apps found", "কোনো অ্যাপ পাওয়া যায়নি")
+            else L.t("No app with Reels / Shorts / Status found", "রিলস / শর্টস / স্ট্যাটাস আছে এমন কোনো অ্যাপ পাওয়া যায়নি")
+        )
         return
     }
-    val isFull = mode == "full"
     val chosen = HashSet<String>(if (isFull) Extra.appBlockFull(this) else Extra.appBlockReels(this))
+    var query = ""
     val list = LinearLayout(this)
     list.orientation = LinearLayout.VERTICAL
-    list.setPadding(dp(20), dp(4), dp(20), dp(4))
-    for (info in apps) {
-        val r = LinearLayout(this)
-        r.gravity = Gravity.CENTER_VERTICAL
-        r.setPadding(0, dp(8), 0, dp(8))
-        val icon = ImageView(this)
-        icon.setImageDrawable(info.third)
-        r.addView(icon, lp(dp(40), dp(40), r = dp(14)))
-        r.addView(tv(info.second, 15f, C.text), lp(0, WRAP, weight = 1f))
-        val pkg = info.first
-        r.addView(toggle(chosen.contains(pkg)) { v ->
-            if (v) chosen.add(pkg) else chosen.remove(pkg)
-        })
-        list.addView(r)
+    fun renderList() {
+        list.removeAllViews()
+        val q = query.trim().lowercase()
+        var shown = 0
+        for (info in apps) {
+            if (q.isNotEmpty() && !info.second.lowercase().contains(q)) continue
+            shown++
+            val r = LinearLayout(this)
+            r.gravity = Gravity.CENTER_VERTICAL
+            r.setPadding(0, dp(8), 0, dp(8))
+            val icon = ImageView(this)
+            icon.setImageDrawable(info.third)
+            r.addView(icon, lp(dp(40), dp(40), r = dp(14)))
+            r.addView(tv(info.second, 15f, C.text), lp(0, WRAP, weight = 1f))
+            val pkg = info.first
+            r.addView(toggle(chosen.contains(pkg)) { v ->
+                if (v) chosen.add(pkg) else chosen.remove(pkg)
+            })
+            list.addView(r)
+        }
+        if (shown == 0) {
+            list.addView(tv(L.t("No matching apps", "মিলছে এমন কোনো অ্যাপ নেই"), 13f, C.muted), lp(MATCH, WRAP, t = dp(8)))
+        }
     }
+    renderList()
+    val search = edit(L.t("Search apps…", "অ্যাপ খুঁজুন…"), false)
+    search.gravity = Gravity.START or Gravity.CENTER_VERTICAL
+    search.addTextChangedListener(object : TextWatcher {
+        override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+        override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+        override fun afterTextChanged(s: Editable?) {
+            query = s?.toString() ?: ""
+            renderList()
+        }
+    })
+    val body = LinearLayout(this)
+    body.orientation = LinearLayout.VERTICAL
+    body.setPadding(dp(20), dp(12), dp(20), dp(4))
+    body.addView(search, lp(MATCH, WRAP, b = dp(8)))
     val sv = ScrollView(this)
     sv.addView(list)
+    body.addView(sv, lp(MATCH, dp(400)))
     dlg()
         .setTitle(
             if (isFull) L.t("Choose apps to block fully", "সম্পূর্ণ ব্লক করার অ্যাপ বাছুন")
             else L.t("Choose apps for Reels block", "রিলস ব্লকের অ্যাপ বাছুন")
         )
-        .setView(sv)
+        .setView(body)
         .setPositiveButton(L.t("Save", "সংরক্ষণ")) { _, _ ->
             // an app can only be in one list: full block wins over reels block
             if (isFull) {
@@ -910,6 +960,91 @@ private fun MainActivity.appBlockPicker(mode: String, done: () -> Unit) {
         }
         .setNegativeButton(L.t("Cancel", "বাতিল"), null)
         .show()
+}
+
+/** The live list of locked apps, with their mode and a remove button each. */
+fun MainActivity.lockedAppsCard(): View {
+    val c = card()
+    c.addView(section(L.t("Locked apps", "লক করা অ্যাপ")))
+    val locked = Store.isActive(this)
+    val pm = packageManager
+    var full = Extra.appBlockFull(this)
+    var reels = Extra.appBlockReels(this)
+    if (full.isEmpty() && reels.isEmpty()) {
+        c.addView(
+            tv(L.t("No apps blocked yet. Choose apps above.", "এখনো কোনো অ্যাপ ব্লক করা হয়নি। ওপরে অ্যাপ বাছুন।"), 13f, C.muted),
+            lp(MATCH, WRAP, t = dp(6))
+        )
+        return c
+    }
+    // drop apps that were uninstalled since they were blocked
+    val missing = (full + reels).filter { pkg ->
+        try {
+            pm.getApplicationInfo(pkg, 0)
+            false
+        } catch (e: Exception) {
+            true
+        }
+    }.toSet()
+    if (missing.isNotEmpty()) {
+        full -= missing
+        reels -= missing
+        Extra.setAppBlockFull(this, full)
+        Extra.setAppBlockReels(this, reels)
+    }
+    data class Row(val pkg: String, val label: String, val icon: Drawable, val isFull: Boolean)
+    val rows = ArrayList<Row>()
+    for (pkg in full) {
+        try {
+            val ai = pm.getApplicationInfo(pkg, 0)
+            rows.add(Row(pkg, pm.getApplicationLabel(ai).toString(), pm.getApplicationIcon(ai), true))
+        } catch (e: Exception) {
+        }
+    }
+    for (pkg in reels) {
+        try {
+            val ai = pm.getApplicationInfo(pkg, 0)
+            rows.add(Row(pkg, pm.getApplicationLabel(ai).toString(), pm.getApplicationIcon(ai), false))
+        } catch (e: Exception) {
+        }
+    }
+    rows.sortBy { it.label.lowercase() }
+    for (row in rows) {
+        val r = LinearLayout(this)
+        r.gravity = Gravity.CENTER_VERTICAL
+        r.setPadding(0, dp(8), 0, dp(8))
+        val icon = ImageView(this)
+        icon.setImageDrawable(row.icon)
+        r.addView(icon, lp(dp(36), dp(36), r = dp(12)))
+        val texts = LinearLayout(this)
+        texts.orientation = LinearLayout.VERTICAL
+        texts.addView(tv(row.label, 15f, C.text))
+        texts.addView(
+            tv(
+                if (row.isFull) L.t("Full block", "সম্পূর্ণ ব্লক") else L.t("Reels block", "রিলস ব্লক"),
+                12f, if (row.isFull) C.danger else C.mint
+            )
+        )
+        r.addView(texts, lp(0, WRAP, weight = 1f))
+        val remove = tv(L.t("Remove", "সরান"), 13f, C.warn)
+        remove.setPadding(dp(8), dp(8), dp(8), dp(8))
+        remove.pressFeedback()
+        remove.setOnClickListener {
+            if (Store.isActive(this)) {
+                toast(L.t("Locked while a session is active", "সেশন চলাকালীন বদলানো যাবে না"))
+            } else {
+                if (row.isFull) Extra.setAppBlockFull(this, Extra.appBlockFull(this) - row.pkg)
+                else Extra.setAppBlockReels(this, Extra.appBlockReels(this) - row.pkg)
+                go(4)
+            }
+        }
+        r.addView(remove)
+        c.addView(r, lp(MATCH, WRAP, t = dp(4)))
+    }
+    if (locked) {
+        c.addView(tv(L.t("Locked while a session is active.", "সেশন চলাকালীন বদলানো যাবে না।"), 12f, C.warn), lp(MATCH, WRAP, t = dp(8)))
+    }
+    return c
 }
 
 // =====================================================================

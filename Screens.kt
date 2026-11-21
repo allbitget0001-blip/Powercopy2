@@ -966,6 +966,7 @@ class ProtectionScreen(private val a: MainActivity) {
         col.addView(a.protectionIntroCard(), lp(MATCH, WRAP, b = a.dp(12)))
         col.addView(a.appBlockModeCard("full"), lp(MATCH, WRAP, b = a.dp(12)))
         col.addView(a.appBlockModeCard("reels"), lp(MATCH, WRAP, b = a.dp(12)))
+        col.addView(a.lockedAppsCard(), lp(MATCH, WRAP, b = a.dp(12)))
         return sv
     }
 }
