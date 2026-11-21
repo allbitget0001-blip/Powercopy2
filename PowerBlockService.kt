@@ -40,8 +40,9 @@ import android.widget.LinearLayout
  * blocked apps are covered instantly by a protection screen (with a Home button),
  * Reels-blocked apps get Back (repeated while the feed is still showing)
  * when a Reels / Shorts screen is detected, and apps with search block get
- * Back (with the typed query cleared) when their search opens, so the user
- * lands back in the app instead of Home.
+ * Back (with the typed query cleared) as soon as the user starts typing in
+ * search — the keyboard still appears, and searching inside a chat or
+ * channel is not blocked.
  * Home is never used for Reels: it sends YouTube Shorts into picture-in-picture
  * instead of closing it.
  */
@@ -464,10 +465,12 @@ class PowerBlockService : AccessibilityService() {
     }
 
     /**
-     * Search block: the app stays usable, but opening search in a selected
-     * app (Telegram, WhatsApp, or any other) is closed with Back — the user
-     * lands back in the app, never Home — and the typed query is cleared so
-     * the next search starts empty.
+     * Search block: the app stays usable and search opens normally (the
+     * keyboard appears), but as soon as the user starts typing, the query
+     * is cleared and Back closes search — the user lands back in the app,
+     * never Home, and the next search starts empty. Searching inside a
+     * chat or channel (Telegram, WhatsApp…) is NOT blocked: it shows a
+     * "1 of 5" match counter, and only the main search bar is blocked.
      */
     private fun onMsgSearchApp(e: AccessibilityEvent) {
         val now = SystemClock.uptimeMillis()
@@ -476,6 +479,10 @@ class PowerBlockService : AccessibilityService() {
             lastMsgScan = now
         }
         if (!looksLikeSearch(e)) return
+        // the keyboard must appear first: only act once the user types
+        if (!focusedSearchFieldHasText()) return
+        // in-chat / in-channel search shows a "1 of 5" match counter — allowed
+        if (isInChatSearch()) return
         if (now - lastMsgAction < 500) return
         lastMsgAction = now
         clearFocusedSearchField() // erase the query so the next search starts empty
@@ -483,8 +490,8 @@ class PowerBlockService : AccessibilityService() {
         performGlobalAction(GLOBAL_ACTION_BACK)
     }
 
-    /** Clears the focused search field (if any) via ACTION_SET_TEXT with "". */
-    private fun clearFocusedSearchField() {
+    /** Runs [block] with the focused search field (if any); the node is recycled after. */
+    private fun withFocusedSearchField(block: (AccessibilityNodeInfo) -> Unit) {
         try {
             val root = rootInActiveWindow ?: return
             try {
@@ -493,9 +500,7 @@ class PowerBlockService : AccessibilityService() {
                     val isEdit = (focused.className?.toString() ?: "").contains("EditText")
                     val hint = focused.hintText?.toString() ?: ""
                     if (!isEdit || !hint.lowercase().contains("search")) return
-                    val args = Bundle()
-                    args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
-                    focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+                    block(focused)
                 } finally {
                     try { focused.recycle() } catch (_: Exception) { }
                 }
@@ -503,7 +508,49 @@ class PowerBlockService : AccessibilityService() {
                 try { root.recycle() } catch (_: Exception) { }
             }
         } catch (ex: Exception) {
-            Log.e(TAG, "clear search field failed", ex)
+            Log.e(TAG, "focused search field failed", ex)
+        }
+    }
+
+    /** True if the focused search field already has typed text in it. */
+    private fun focusedSearchFieldHasText(): Boolean {
+        var hasText = false
+        withFocusedSearchField { hasText = !it.text.isNullOrEmpty() }
+        return hasText
+    }
+
+    /** Clears the focused search field (if any) via ACTION_SET_TEXT with "". */
+    private fun clearFocusedSearchField() {
+        withFocusedSearchField {
+            val args = Bundle()
+            args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
+            it.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        }
+    }
+
+    /** True if the current search is inside a chat/channel: it shows a "1 of 5" match counter. */
+    private fun isInChatSearch(): Boolean {
+        return try {
+            val root = rootInActiveWindow ?: return false
+            try {
+                val nodes = root.findAccessibilityNodeInfosByText(" of ")
+                try {
+                    val re = Regex("^\\d+ of \\d+$")
+                    for (n in nodes) {
+                        val t = n.text?.toString()?.trim() ?: ""
+                        if (re.matches(t)) return true
+                    }
+                    false
+                } finally {
+                    for (n in nodes) {
+                        try { n.recycle() } catch (_: Exception) { }
+                    }
+                }
+            } finally {
+                try { root.recycle() } catch (_: Exception) { }
+            }
+        } catch (ex: Exception) {
+            false
         }
     }
 
@@ -664,8 +711,8 @@ class PowerBlockService : AccessibilityService() {
      *   on the right edge (the feed shows them in a horizontal row instead),
      * - the viewer's count rail: bare count numbers (14K, 562, 58) stacked
      *   at the right edge below the icons (their text is what FB Lite exposes).
-     * All of the app's windows are scanned: story viewers can live in their
-     * own window, not the active one.
+     * All of the app's windows are scanned (topmost first, each with its own
+     * budget): story viewers can live in their own window, not the active one.
      */
     private fun reelsUiScan(pkg: String): Boolean {
         val screenH = resources.displayMetrics.heightPixels
@@ -686,12 +733,12 @@ class PowerBlockService : AccessibilityService() {
                     rootInActiveWindow?.let { roots.add(it) }
                 } catch (_: Exception) { }
             }
-            var budget = 500
-            for (r in roots) {
-                if (budget <= 0) break
+            // topmost window first: the viewer may sit in its own window above
+            // the feed, and each window gets its own budget so a big feed tree
+            // can no longer starve the viewer window
+            for (r in roots.asReversed()) {
                 val used = intArrayOf(0)
-                if (scanReelsTree(r, pkg, screenH, screenW, budget, used)) return true
-                budget -= used[0]
+                if (scanReelsTree(r, pkg, screenH, screenW, 500, used)) return true
             }
             return false
         } finally {
