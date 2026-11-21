@@ -71,7 +71,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "17"
+    const val BUILD_ID = "18"
 
     // ---------- presets ----------
 
@@ -1390,7 +1390,7 @@ private fun MainActivity.enableImageGuard() {
             .setCancelable(false)
             .show()
         Thread {
-            val ok = ImageGuardModel.download(this) { pct ->
+            val result = ImageGuardModel.download(this) { pct ->
                 runOnUiThread {
                     try {
                         prog.text = L.num(pct.toString()) + "%"
@@ -1403,8 +1403,9 @@ private fun MainActivity.enableImageGuard() {
                     d.dismiss()
                 } catch (_: Exception) {
                 }
-                if (!ok) {
-                    toast(L.t("Model download failed — check your internet and try again", "মডেল ডাউনলোড হয়নি — ইন্টারনেট দেখে আবার চেষ্টা করুন"))
+                if (!result.ok) {
+                    val why = if (result.reason.isNotEmpty()) " (" + result.reason + ")" else ""
+                    toast(L.t("Model download failed — check your internet and try again", "মডেল ডাউনলোড হয়নি — ইন্টারনেট দেখে আবার চেষ্টা করুন") + why)
                     go(4)
                     return@runOnUiThread
                 }

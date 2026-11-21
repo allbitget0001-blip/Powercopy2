@@ -35,7 +35,11 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
 import java.net.URL
+import java.net.UnknownHostException
 import java.nio.FloatBuffer
 import javax.net.ssl.HttpsURLConnection
 
@@ -50,6 +54,9 @@ const val REQ_IMAGE_GUARD = 1041
  * — it is never bundled in the APK, and no image ever leaves the phone:
  * every frame is classified on the device and then discarded.
  */
+/** Result of a model download: [ok], plus a short English [reason] on failure. */
+data class ModelDownloadResult(val ok: Boolean, val reason: String = "")
+
 object ImageGuardModel {
     const val MODEL_URL =
         "https://huggingface.co/OwenElliott/image-safety-classifier-l/resolve/main/onnx/image-safety-classifier-l.onnx"
@@ -74,8 +81,31 @@ object ImageGuardModel {
      * Downloads the model on the calling thread (call off the main thread).
      * [onProgress] gets 0..100. Downloads to a .tmp file and renames only
      * when complete, so a partial download can never look like a model.
+     * Tries twice: a dropped mobile connection is common on a ~106 MB
+     * download. A 4xx response is not retried — it means the URL is wrong
+     * (that is what broke the first build: the file was not at the URL).
+     * The result carries a short English reason on failure, so the user
+     * sees WHY it failed instead of only "try again".
      */
-    fun download(ctx: Context, onProgress: (Int) -> Unit): Boolean {
+    fun download(ctx: Context, onProgress: (Int) -> Unit): ModelDownloadResult {
+        var last: ModelDownloadResult = ModelDownloadResult(false, "error")
+        repeat(2) { attempt ->
+            if (attempt > 0) {
+                try {
+                    Thread.sleep(2000)
+                } catch (_: Exception) {
+                }
+                onProgress(0)
+            }
+            last = downloadOnce(ctx, onProgress)
+            if (last.ok) return last
+            if (last.reason.startsWith("HTTP 4")) return last
+        }
+        return last
+    }
+
+    /** One download attempt. */
+    private fun downloadOnce(ctx: Context, onProgress: (Int) -> Unit): ModelDownloadResult {
         return try {
             val d = dir(ctx)
             if (!d.exists()) d.mkdirs()
@@ -93,8 +123,9 @@ object ImageGuardModel {
             conn.readTimeout = 30_000
             conn.connect()
             if (conn.responseCode !in 200..299) {
+                val code = conn.responseCode
                 conn.disconnect()
-                return false
+                return ModelDownloadResult(false, "HTTP $code")
             }
             val total = conn.contentLengthLong
             var done = 0L
@@ -120,22 +151,30 @@ object ImageGuardModel {
             conn.disconnect()
             if (tmp.length() <= MIN_BYTES) {
                 tmp.delete()
-                return false
+                return ModelDownloadResult(false, "incomplete")
             }
             if (!tmp.renameTo(file(ctx))) {
                 tmp.delete()
-                return false
+                return ModelDownloadResult(false, "save failed")
             }
             Store.settings(ctx).edit().putBoolean("ig_model_err", false).apply()
-            true
+            ModelDownloadResult(true)
         } catch (e: Exception) {
             Log.e(TAG, "model download failed", e)
             try {
                 File(dir(ctx), "model-l.onnx.tmp").delete()
             } catch (_: Exception) {
             }
-            false
+            ModelDownloadResult(false, reasonFor(e))
         }
+    }
+
+    /** Short plain-English reason for a download exception. */
+    private fun reasonFor(e: Exception): String = when (e) {
+        is UnknownHostException, is ConnectException -> "no internet"
+        is SocketTimeoutException -> "timeout"
+        is IOException -> "network error"
+        else -> "error"
     }
 }
 
