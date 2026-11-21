@@ -790,7 +790,8 @@ class PowerBlockService : AccessibilityService() {
                     if (kind != null) {
                         val r = Rect()
                         n.getBoundsInScreen(r)
-                        if (r.left > screenW * 0.80 && r.top >= 0) {
+                        // centerX, not left: the icon may sit in a wider touch target
+                        if (r.centerX() > screenW * 0.80 && r.top >= 0) {
                             railKinds.add(kind)
                             railTops.add(r.top)
                             val top = railTops.maxOrNull() ?: 0
@@ -822,7 +823,9 @@ class PowerBlockService : AccessibilityService() {
                     if (countRe.matches(lt)) {
                         val r = Rect()
                         n.getBoundsInScreen(r)
-                        if (r.left > screenW * 0.80 && r.top > screenH * 0.15 && r.top >= 0) {
+                        // right edge, not left: the count TextView may be wide with
+                        // right-aligned text (its left edge would be far from the rail)
+                        if (r.right > screenW * 0.80 && r.top > screenH * 0.15 && r.top >= 0) {
                             railCounts.add(r.top)
                             val top = railCounts.maxOrNull() ?: 0
                             val bottom = railCounts.minOrNull() ?: 0

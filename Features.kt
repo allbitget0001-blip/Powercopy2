@@ -25,6 +25,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.animation.AccelerateDecelerateInterpolator
+import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -1049,6 +1050,29 @@ private fun MainActivity.showAppBlockPicker(
         val s = if (popped) 1.5f else 1f
         v.animate().scaleX(s).scaleY(s).setDuration(120).start()
     }
+    // big letter bubble in the middle while dragging the index (like Contacts)
+    val bubble = tv("", 30f, C.onPrimary)
+    bubble.gravity = Gravity.CENTER
+    bubble.background = rounded(C.primary, dp(32).toFloat())
+    bubble.visibility = View.GONE
+    bubble.alpha = 0f
+    fun showBubble(ch: Char) {
+        bubble.text = ch.toString()
+        if (bubble.visibility != View.VISIBLE) {
+            bubble.animate().cancel()
+            bubble.visibility = View.VISIBLE
+            bubble.alpha = 0f
+            bubble.scaleX = 0.6f
+            bubble.scaleY = 0.6f
+            bubble.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(150).start()
+        }
+    }
+    fun hideBubble() {
+        if (bubble.visibility != View.VISIBLE) return
+        bubble.animate().alpha(0f).scaleX(0.6f).scaleY(0.6f).setDuration(150).withEndAction {
+            bubble.visibility = View.GONE
+        }.start()
+    }
     lettersCol.setOnTouchListener { _, ev ->
         when (ev.action) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
@@ -1060,6 +1084,7 @@ private fun MainActivity.showAppBlockPicker(
                         setLetterPop(idx, true)
                         enlargedIdx = idx
                     }
+                    showBubble(letters[idx])
                     jumpToLetter(letters[idx])
                 }
                 true
@@ -1069,6 +1094,7 @@ private fun MainActivity.showAppBlockPicker(
                     setLetterPop(enlargedIdx, false)
                     enlargedIdx = -1
                 }
+                hideBubble()
                 true
             }
             else -> false
@@ -1092,7 +1118,13 @@ private fun MainActivity.showAppBlockPicker(
     contentRow.orientation = LinearLayout.HORIZONTAL
     contentRow.addView(sv, lp(0, MATCH, weight = 1f))
     contentRow.addView(lettersCol, lp(dp(22), MATCH, l = dp(4)))
-    body.addView(contentRow, lp(MATCH, dp(400)))
+    val contentFrame = FrameLayout(this)
+    contentFrame.addView(contentRow, FrameLayout.LayoutParams(MATCH, MATCH))
+    val bubbleSize = dp(64)
+    val bubbleParams = FrameLayout.LayoutParams(bubbleSize, bubbleSize)
+    bubbleParams.gravity = Gravity.CENTER
+    contentFrame.addView(bubble, bubbleParams)
+    body.addView(contentFrame, lp(MATCH, dp(400)))
     applyFilter()
     dlg()
         .setTitle(
