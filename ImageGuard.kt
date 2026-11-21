@@ -291,13 +291,14 @@ class ImageGuardService : Service() {
         private var projectionData: Intent? = null
 
         /**
-         * The live MediaProjection, held statically and reused across
-         * service restarts. This matters: the token in [projectionData]
-         * dies once the MediaProjection built from it is stopped, so a
-         * stopped service must NOT stop the projection — the next lock
-         * would find a dead token and the guard would silently never run.
-         * Only cleared when the user revokes it (onStop), turns the guard
-         * off ([releaseGrant]), or the process dies.
+         * The live MediaProjection, held statically so [releaseGrant] can
+         * stop it from the toggle-off path. It belongs to ONE service
+         * instance: on Android 14+ the token can only ever produce one
+         * MediaProjection, and that projection can only ever create ONE
+         * VirtualDisplay — so it is created once, kept for the whole life
+         * of the service, and stopped in onDestroy. A stopped projection
+         * is never reused (a second createVirtualDisplay on it throws
+         * "non-current MediaProjection"); recovery is a fresh user grant.
          */
         @Volatile
         private var mediaProjection: MediaProjection? = null
@@ -353,10 +354,16 @@ class ImageGuardService : Service() {
         }
 
         /**
-         * Starts the service iff the guard is on, a lock is protecting, the
-         * model is downloaded and the screen-capture grant exists; otherwise
-         * stops it. Cheap and idempotent — safe to call every second from
-         * the MainActivity ticker and from the accessibility service.
+         * Starts the service iff the guard is on, the model is downloaded
+         * and the screen-capture grant exists; otherwise stops it. The
+         * service stays running the whole time the guard is on — it must
+         * NOT stop between locks: on Android 14+ a MediaProjection can
+         * create a VirtualDisplay only ONCE, so a stopped-and-restarted
+         * service could never capture again with the same grant (the
+         * "non-current MediaProjection" failure). Only the SCANNING is
+         * gated on a lock (see tick); the capture session stays alive.
+         * Cheap and idempotent — safe to call every second from the
+         * MainActivity ticker and from the accessibility service.
          * Starting a foreground service from the background can throw; that
          * is caught here and retried on the next call, never a crash.
          */
@@ -364,9 +371,8 @@ class ImageGuardService : Service() {
         fun sync(ctx: Context) {
             try {
                 val on = Extra.imageGuardOn(ctx)
-                val protecting = Store.isActive(ctx) || Store.isLocProtecting(ctx)
                 val modelOk = ImageGuardModel.ready(ctx)
-                val want = on && protecting && modelOk && projectionData != null
+                val want = on && modelOk && projectionData != null
                 if (want && !isRunning) {
                     ctx.startForegroundService(
                         Intent(ctx, ImageGuardService::class.java).setAction(ACTION_START)
@@ -377,7 +383,7 @@ class ImageGuardService : Service() {
                 // the guard is wanted but the capture grant is gone (reboot /
                 // revoked): remind the user to allow it again, at most every
                 // 30 minutes
-                if (on && protecting && modelOk && projectionData == null) {
+                if (on && modelOk && projectionData == null) {
                     maybeNotifyRegrant(ctx)
                 }
             } catch (e: Exception) {
@@ -486,11 +492,16 @@ class ImageGuardService : Service() {
                     // cooling down after a detection: the cover itself must
                     // never be scanned
                 } else if (!protecting()) {
-                    releaseCapture()
+                    // no lock: do NOT scan — but do NOT release the capture
+                    // either. On Android 14+ a MediaProjection can create a
+                    // VirtualDisplay only once, so releasing it here would
+                    // make the next lock unable to capture at all (the
+                    // "non-current MediaProjection" failure). The capture
+                    // stays alive; only the scanning pauses.
                     nextDelay = IDLE_INTERVAL_MS
                     idleTicks++
                     // idle for ~30s: let sync() stop us if we are no longer
-                    // wanted (lock ended while the app was closed)
+                    // wanted (guard turned off while the app was closed)
                     if (idleTicks >= 10) {
                         idleTicks = 0
                         sync(this@ImageGuardService)
@@ -578,10 +589,12 @@ class ImageGuardService : Service() {
             handler.removeCallbacks(tick)
             handler.removeCallbacksAndMessages(null)
             releaseCapture()
-            // NOTE: the MediaProjection is deliberately NOT stopped here —
-            // stopping it kills the token, and the next lock would find a
-            // dead grant. The projection stays alive (no display attached,
-            // so nothing is captured) and is reused by the next start.
+            // The MediaProjection IS stopped here: on Android 14+ it can
+            // only ever create one VirtualDisplay, so a projection carried
+            // into a restarted service could never capture again anyway
+            // ("non-current MediaProjection"). Stopping it cleanly and
+            // forgetting the grant means the next enable asks the user for
+            // a fresh grant instead of silently never working.
             try {
                 if (callbackRegistered) {
                     mediaProjection?.unregisterCallback(projectionCallback)
@@ -589,6 +602,7 @@ class ImageGuardService : Service() {
             } catch (_: Exception) {
             }
             callbackRegistered = false
+            releaseGrant()
             hideCover()
             try {
                 model?.close()
@@ -633,21 +647,16 @@ class ImageGuardService : Service() {
         }
     }
 
+    /**
+     * Creates the live MediaProjection from the stored grant, once per
+     * service instance. On Android 14+ the token is single-use: it can
+     * only ever produce ONE MediaProjection, and that projection can only
+     * ever create ONE VirtualDisplay — so the projection is created here,
+     * kept for the whole life of the service, and stopped in onDestroy.
+     * A dead projection is never reused: recovery is a fresh user grant.
+     */
     private fun initProjection() {
-        // reuse the live projection from an earlier start: the token can
-        // only build one projection, so a second getMediaProjection call
-        // with the same token would fail
-        mediaProjection?.let { proj ->
-            if (!callbackRegistered) {
-                try {
-                    proj.registerCallback(projectionCallback, handler)
-                    callbackRegistered = true
-                } catch (_: Exception) {
-                }
-            }
-            dbg("projection reused")
-            return
-        }
+        if (mediaProjection != null) return // already created by this instance
         val data = projectionData ?: return
         try {
             val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -686,10 +695,21 @@ class ImageGuardService : Service() {
             )
             imageReader = reader
             virtualDisplay = vd
+            dbgSummary("[${stamp()}] স্ক্রিন দেখা শুরু হয়েছে")
+            dbg("capture started ${w}x$h")
         } catch (e: Exception) {
             Log.e(TAG, "startCapture failed", e)
             dbg("startCapture failed: ${e.message}")
             releaseCapture()
+            // the projection can no longer create a VirtualDisplay (on
+            // Android 14+ each projection gets exactly one): the session is
+            // dead and only a fresh user grant can fix it — stop cleanly
+            // instead of retrying forever, and ask the user to allow
+            // capture again
+            dbgSummary("[${stamp()}] স্ক্রিন দেখা শুরু হয়নি — আবার অনুমতি দিন")
+            releaseGrant()
+            notifyRegrantNow(this)
+            stopSelf()
         }
     }
 
