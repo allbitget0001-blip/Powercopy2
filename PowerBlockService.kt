@@ -640,7 +640,8 @@ class PowerBlockService : AccessibilityService() {
      *    that actually changes — checking only isSelected missed them),
      * 3) a bounded tree scan: icon-only tabs (label in contentDescription),
      *    the story/status reply field, the YouTube Shorts "Remix" button, and
-     *    a Reels/Shorts header at the top of the screen.
+     *    the viewer's action/count rail at the right edge (no header check:
+     *    the feed's Reels carousel has the same header).
      * A plain text search would false-positive (the "Reels" tab label is in
      * the tree even on the home feed, and the feed's Reels carousel carries
      * the same text), so selection/checked state — or a viewer-only
@@ -708,8 +709,9 @@ class PowerBlockService : AccessibilityService() {
      *   (Telegram stories with replies off have no reply field at all),
      * - the YouTube Shorts player: the "Remix" button exists only there
      *   (the bottom nav is hidden in the player, so the tab check can't see it),
-     * - a Reels/Shorts header at the top of the screen (the viewer title,
-     *   not the bottom tab — the text must be exactly the marker),
+     * - (no header check: the feed's Reels carousel carries the same "Reels"
+     *   header at the top when scrolled, and blocking on it would Back the
+     *   user out of the feed — the rail is the viewer-only fingerprint),
      * - viewer/player view IDs containing reel / short / story,
      * - the viewer's action rail: Like / Comment / Share stacked vertically
      *   on the right edge (the feed shows them in a horizontal row instead),
@@ -852,12 +854,10 @@ class PowerBlockService : AccessibilityService() {
                         try { p2?.recycle() } catch (_: Exception) { }
                         try { p1?.recycle() } catch (_: Exception) { }
                         if (found) return true
-                        // viewer header: exactly the marker text, at the top of the screen
-                        if (reelsMarkersLower.any { lt.trim() == it || lc.trim() == it }) {
-                            val r = Rect()
-                            n.getBoundsInScreen(r)
-                            if (r.top >= 0 && r.top < screenH * 0.20) return true
-                        }
+                        // NOTE: no header check here on purpose — the feed's Reels
+                        // carousel has the same "Reels" header at the top when
+                        // scrolled, and blocking on it would Back the user out of
+                        // the feed. The viewer is caught by its rail instead.
                     }
                     for (i in 0 until n.childCount) {
                         try {

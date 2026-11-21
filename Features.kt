@@ -1,6 +1,7 @@
 package com.example.powerlocks
 
 import android.Manifest
+import android.animation.ObjectAnimator
 import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.app.Notification
@@ -23,6 +24,7 @@ import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.animation.AccelerateDecelerateInterpolator
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -1020,16 +1022,32 @@ private fun MainActivity.showAppBlockPicker(
     }
     val sv = ScrollView(this)
     sv.addView(list)
+    // smooth animated scroll to a letter (a motion animation, not a jump):
+    // the previous animation is cancelled so a fast drag chases the finger
+    var scrollAnimator: ObjectAnimator? = null
     fun jumpToLetter(ch: Char) {
         // first app whose name starts with this letter (or the next letter that has apps)
         val target = ch.lowercaseChar()
         for ((row, label) in rows) {
             val first = label.firstOrNull() ?: continue
             if (first >= target) {
-                sv.smoothScrollTo(0, row.top)
+                scrollAnimator?.cancel()
+                scrollAnimator = ObjectAnimator.ofInt(sv, "scrollY", row.top).apply {
+                    duration = 350
+                    interpolator = AccelerateDecelerateInterpolator()
+                    start()
+                }
                 return
             }
         }
+    }
+    // the letter under the finger pops a bit bigger (animated) while touched
+    var enlargedIdx = -1
+    fun setLetterPop(idx: Int, popped: Boolean) {
+        val v = letterViews.getOrNull(idx) ?: return
+        v.setTextColor(if (popped) C.primary else C.muted)
+        val s = if (popped) 1.5f else 1f
+        v.animate().scaleX(s).scaleY(s).setDuration(120).start()
     }
     lettersCol.setOnTouchListener { _, ev ->
         when (ev.action) {
@@ -1037,15 +1055,20 @@ private fun MainActivity.showAppBlockPicker(
                 val h = lettersCol.height
                 if (h > 0) {
                     val idx = ((ev.y / h) * letters.size).toInt().coerceIn(0, letters.size - 1)
-                    jumpToLetter(letters[idx])
-                    letterViews.forEachIndexed { i, v ->
-                        v.setTextColor(if (i == idx) C.primary else C.muted)
+                    if (idx != enlargedIdx) {
+                        if (enlargedIdx >= 0) setLetterPop(enlargedIdx, false)
+                        setLetterPop(idx, true)
+                        enlargedIdx = idx
                     }
+                    jumpToLetter(letters[idx])
                 }
                 true
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                letterViews.forEach { it.setTextColor(C.muted) }
+                if (enlargedIdx >= 0) {
+                    setLetterPop(enlargedIdx, false)
+                    enlargedIdx = -1
+                }
                 true
             }
             else -> false
