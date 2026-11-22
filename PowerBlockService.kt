@@ -346,15 +346,16 @@ class PowerBlockService : AccessibilityService() {
         if (e == null) return
         val pkg = e.packageName?.toString() ?: return
         // publish the foreground app for the image guard (window changes
-        // only — content changes can come from background apps). Transient
-        // windows must NOT hijack it: when the keyboard opens, its window
-        // fires a state change, but when it closes the app underneath does
-        // NOT always fire one — so the guard would stay paused on the
-        // keyboard's package until the user switches apps (reported
-        // 2026-11-22: no detection inside an app, detection works after
-        // exiting and re-entering). System UI, the permission controller
-        // and the input method are overlays, not the app being viewed.
-        if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && !isTransientWindow(pkg)) foregroundPkg = pkg
+        // only — content changes can come from background apps). Only a
+        // real application window counts: transient windows (keyboard,
+        // navigation bar, System UI, dialogs) fire state changes too, but
+        // when they close the app underneath does NOT always fire one —
+        // so the guard would stay paused on the transient package until
+        // the user switches apps (reported 2026-11-22, and again after the
+        // package-name filter in build 43: "System navigation" is a
+        // separate OEM package, not systemui). The window TYPE is the
+        // reliable signal — it does not depend on OEM package names.
+        if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && isAppWindow(e)) foregroundPkg = pkg
         try {
             maybeReviveKeepAlive() // the system re-binds this service, so it revives the keep-alive service
             // diagnostic: the lockdown verdict, logged whenever it changes
@@ -443,6 +444,45 @@ class PowerBlockService : AccessibilityService() {
         if (pkg.contains("permissioncontroller")) return true
         val ime = currentImePackage()
         return ime != null && pkg == ime
+    }
+
+    /** True when the event's window is a real application window (not the
+     * keyboard, the navigation bar, System UI, or another overlay). The
+     * window type is the reliable signal — package names vary by OEM
+     * ("System navigation" is a separate package on this phone, not
+     * systemui). When the window cannot be resolved (already closed, or
+     * the window list is unavailable), falls back to the package filter. */
+    private fun isAppWindow(e: AccessibilityEvent): Boolean {
+        try {
+            val wins = windows
+            if (wins != null) {
+                try {
+                    for (w in wins) {
+                        if (w.id == e.windowId) {
+                            return when (w.type) {
+                                AccessibilityWindowInfo.TYPE_APPLICATION,
+                                AccessibilityWindowInfo.TYPE_APPLICATION_PANEL,
+                                AccessibilityWindowInfo.TYPE_APPLICATION_MEDIA,
+                                AccessibilityWindowInfo.TYPE_APPLICATION_SUB_PANEL,
+                                AccessibilityWindowInfo.TYPE_APPLICATION_ATTACHED_DIALOG -> true
+                                else -> false
+                            }
+                        }
+                    }
+                } finally {
+                    for (w in wins) {
+                        try {
+                            w.recycle()
+                        } catch (_: Exception) {
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
+        // window not resolved: fall back to the package filter
+        val pkg = e.packageName?.toString() ?: return false
+        return !isTransientWindow(pkg)
     }
 
     // ---------- detection ----------
