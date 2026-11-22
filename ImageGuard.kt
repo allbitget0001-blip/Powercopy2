@@ -18,6 +18,8 @@ import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
@@ -53,50 +55,104 @@ import javax.net.ssl.HttpsURLConnection
 const val REQ_IMAGE_GUARD = 1041
 
 /**
- * The on-device NSFW model (OwenElliott/image-safety-classifier-l, MIT):
- * a SwiftFormer-L image classifier, 28.5M parameters, 3 classes [NSFL, NSFW,
- * SFW] — the most powerful of the family (98.20% accuracy). The model file
- * (~106 MB) is downloaded once, on first enable, and stored under filesDir
- * — it is never bundled in the APK, and no image ever leaves the phone:
- * every frame is classified on the device and then discarded.
+ * The on-device NSFW models (OwenElliott/image-safety-classifier-*, MIT):
+ * SwiftFormer image classifiers, 3 classes [NSFL, NSFW, SFW], in four
+ * sizes — XS (3.5M, 97.76%), S (6.1M, 97.99%), M (12.1M, 98.06%), L
+ * (28.5M, 98.20%). The user picks one in the Image Guard card to compare
+ * which scores best on the same content; each file is downloaded once and
+ * stored under filesDir — models are never bundled in the APK, and no
+ * image ever leaves the phone: every frame is classified on the device
+ * and then discarded.
  */
 /** Result of a model download: [ok], plus a short English [reason] on failure. */
 data class ModelDownloadResult(val ok: Boolean, val reason: String = "")
 
 object ImageGuardModel {
-    const val MODEL_URL =
-        "https://huggingface.co/OwenElliott/image-safety-classifier-l/resolve/main/onnx/image-safety-classifier-l.onnx"
+    /** One model of the OwenElliott image-safety family. All four share the
+     * same ONNX use (224x224, 0-255, normalisation + softmax baked in, 3
+     * classes [NSFL, NSFW, SFW]) — only the size and accuracy differ.
+     * Byte sizes are the exact file sizes on Hugging Face, verified
+     * 2026-11-22; all four are IR version 10 (ORT 1.20.0 understands IR 10). */
+    data class Info(
+        val id: String,
+        val url: String,
+        val bytes: Long,
+        /** e.g. "~13 MB" — shown in the picker and the download dialog. */
+        val sizeLabel: String,
+        /** e.g. "97.76%" — the family's published accuracy. */
+        val accuracy: String
+    )
 
-    /** The exact size of the model file on Hugging Face, in bytes. A
-     * download is only complete when it matches this exactly — a shorter
-     * file is a silently truncated download, not a model. */
-    const val EXPECTED_BYTES = 111_121_598L
+    val MODELS = listOf(
+        Info(
+            "XS",
+            "https://huggingface.co/OwenElliott/image-safety-classifier-xs/resolve/main/onnx/image-safety-classifier-xs.onnx",
+            13_137_569L, "~13 MB", "97.76%"
+        ),
+        Info(
+            "S",
+            "https://huggingface.co/OwenElliott/image-safety-classifier-s/resolve/main/onnx/image-safety-classifier-s.onnx",
+            23_701_765L, "~24 MB", "97.99%"
+        ),
+        Info(
+            "M",
+            "https://huggingface.co/OwenElliott/image-safety-classifier-m/resolve/main/onnx/image-safety-classifier-m.onnx",
+            46_308_944L, "~46 MB", "98.06%"
+        ),
+        Info(
+            "L",
+            "https://huggingface.co/OwenElliott/image-safety-classifier-l/resolve/main/onnx/image-safety-classifier-l.onnx",
+            111_121_598L, "~106 MB", "98.20%"
+        )
+    )
+
+    /** Unknown ids fall back to L (the original, most accurate model). */
+    fun info(id: String): Info = MODELS.find { it.id == id } ?: MODELS.last()
 
     fun dir(ctx: Context): File = File(ctx.filesDir, "imageguard")
 
-    /** The file name carries the model size, so an older smaller model left
-     * on the phone is never mistaken for this one. */
-    fun file(ctx: Context): File = File(dir(ctx), "model-l.onnx")
+    /** The file name carries the model size, so models never overwrite each
+     * other and an older file is never mistaken for another model. */
+    fun file(ctx: Context, modelId: String): File =
+        File(dir(ctx), "model-" + modelId.lowercase() + ".onnx")
+
+    fun file(ctx: Context): File = file(ctx, Extra.igModel(ctx))
 
     /** True only when the file is present AND complete (exact size). */
-    fun ready(ctx: Context): Boolean = try {
-        val f = file(ctx)
-        f.exists() && f.length() == EXPECTED_BYTES
+    fun ready(ctx: Context, modelId: String): Boolean = try {
+        val f = file(ctx, modelId)
+        f.exists() && f.length() == info(modelId).bytes
     } catch (_: Exception) {
         false
+    }
+
+    /** True when the currently selected model is ready. */
+    fun ready(ctx: Context): Boolean = ready(ctx, Extra.igModel(ctx))
+
+    /** True when the active network is Wi-Fi. New model downloads are
+     * Wi-Fi-only: the user lost ~3 GB of mobile data to repeated model
+     * downloads before, so a new model must never download on mobile data. */
+    fun isWifi(ctx: Context): Boolean {
+        return try {
+            val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val net = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(net) ?: return false
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+        } catch (_: Exception) {
+            false
+        }
     }
 
     /**
      * Downloads the model on the calling thread (call off the main thread).
      * [onProgress] gets 0..100. Downloads to a .tmp file and renames only
      * when complete, so a partial download can never look like a model.
-     * Tries twice: a dropped mobile connection is common on a ~106 MB
-     * download. A 4xx response is not retried — it means the URL is wrong
-     * (that is what broke the first build: the file was not at the URL).
+     * Tries twice: a dropped mobile connection is common on a large
+     * download. A 4xx response is not retried — it means the URL is wrong.
      * The result carries a short English reason on failure, so the user
      * sees WHY it failed instead of only "try again".
      */
-    fun download(ctx: Context, onProgress: (Int) -> Unit): ModelDownloadResult {
+    fun download(ctx: Context, modelId: String, onProgress: (Int) -> Unit): ModelDownloadResult {
         var last: ModelDownloadResult = ModelDownloadResult(false, "error")
         repeat(2) { attempt ->
             if (attempt > 0) {
@@ -106,19 +162,24 @@ object ImageGuardModel {
                 }
                 onProgress(0)
             }
-            last = downloadOnce(ctx, onProgress)
+            last = downloadOnce(ctx, modelId, onProgress)
             if (last.ok) return last
             if (last.reason.startsWith("HTTP 4")) return last
         }
         return last
     }
 
+    /** Downloads the currently selected model. */
+    fun download(ctx: Context, onProgress: (Int) -> Unit): ModelDownloadResult =
+        download(ctx, Extra.igModel(ctx), onProgress)
+
     /** One download attempt. Resumable: a partial .tmp from an interrupted
      * download is continued with an HTTP Range request instead of starting
      * over, so a dropped connection does not waste mobile data. The
      * finished file must match the expected size exactly, or it is
      * reported incomplete (and retried, resuming again). */
-    private fun downloadOnce(ctx: Context, onProgress: (Int) -> Unit): ModelDownloadResult {
+    private fun downloadOnce(ctx: Context, modelId: String, onProgress: (Int) -> Unit): ModelDownloadResult {
+        val meta = info(modelId)
         return try {
             val d = dir(ctx)
             if (!d.exists()) d.mkdirs()
@@ -129,20 +190,21 @@ object ImageGuardModel {
             } catch (_: Exception) {
             }
             // a file that failed to load is corrupt, not short: delete it
-            // (and any partial download) so this attempt starts clean
+            // (and any partial download) so this attempt starts clean.
+            // Only this model's files — other models are never touched.
             if (Extra.igModelError(ctx)) {
                 try {
-                    file(ctx).delete()
+                    file(ctx, modelId).delete()
                 } catch (_: Exception) {
                 }
                 try {
-                    File(d, "model-l.onnx.tmp").delete()
+                    File(d, "model-" + modelId.lowercase() + ".onnx.tmp").delete()
                 } catch (_: Exception) {
                 }
             }
-            val tmp = File(d, "model-l.onnx.tmp")
+            val tmp = File(d, "model-" + modelId.lowercase() + ".onnx.tmp")
             val existing = if (tmp.exists()) tmp.length() else 0L
-            val conn = URL(MODEL_URL).openConnection() as HttpsURLConnection
+            val conn = URL(meta.url).openConnection() as HttpsURLConnection
             conn.instanceFollowRedirects = true
             conn.connectTimeout = 15_000
             conn.readTimeout = 30_000
@@ -161,7 +223,7 @@ object ImageGuardModel {
                 code == 206 -> totalFromContentRange(conn.getHeaderField("Content-Range"))
                     .takeIf { it > 0 } ?: (existing + conn.contentLengthLong)
                 conn.contentLengthLong > 0 -> conn.contentLengthLong
-                else -> EXPECTED_BYTES
+                else -> meta.bytes
             }
             var done = if (resume) existing else 0L
             if (total > 0) onProgress(((done * 100) / total).toInt().coerceIn(0, 100))
@@ -187,10 +249,10 @@ object ImageGuardModel {
             conn.disconnect()
             // the file must be complete, not just big: a silently
             // truncated download loads as a corrupt model otherwise
-            if (tmp.length() != EXPECTED_BYTES) {
+            if (tmp.length() != meta.bytes) {
                 return ModelDownloadResult(false, "incomplete")
             }
-            if (!tmp.renameTo(file(ctx))) {
+            if (!tmp.renameTo(file(ctx, modelId))) {
                 tmp.delete()
                 return ModelDownloadResult(false, "save failed")
             }
@@ -239,10 +301,10 @@ private class NsfwModel private constructor(
          * the diagnostic log so a load failure can be traced instead of
          * guessed.
          */
-        fun load(ctx: Context): Pair<NsfwModel?, String> {
-            val file = ImageGuardModel.file(ctx)
+        fun load(ctx: Context, modelId: String): Pair<NsfwModel?, String> {
+            val file = ImageGuardModel.file(ctx, modelId)
             if (!file.exists()) return null to "file missing"
-            if (file.length() != ImageGuardModel.EXPECTED_BYTES) {
+            if (file.length() != ImageGuardModel.info(modelId).bytes) {
                 return null to "wrong size: ${file.length()} bytes"
             }
             return try {
@@ -403,6 +465,13 @@ class ImageGuardService : Service() {
             synchronized(debugLog) { debugLog.clear() }
         }
 
+        /** Logs a model switch so the diagnostic log shows which model each
+         * score came from when the user compares models. */
+        fun noteModelSwitch(modelId: String) {
+            dbgSummary("[${stamp()}] মডেল বদলানো হয়েছে: $modelId")
+            dbg("model switched to $modelId")
+        }
+
         /**
          * Starts the service iff the guard is on, the model is downloaded
          * and the screen-capture grant exists; otherwise stops it. The
@@ -510,6 +579,11 @@ class ImageGuardService : Service() {
 
     @Volatile
     private var modelFailed = false
+
+    /** Which model the loaded session belongs to — when the user switches
+     * models, getModel() drops the old session and loads the new one. */
+    @Volatile
+    private var loadedModel: String? = null
 
     @Volatile
     private var destroyed = false
@@ -701,6 +775,7 @@ class ImageGuardService : Service() {
             } catch (_: Exception) {
             }
             model = null
+            loadedModel = null
             try {
                 inferThread?.quitSafely()
             } catch (_: Exception) {
@@ -938,8 +1013,9 @@ class ImageGuardService : Service() {
                 val s = String.format(Locale.US, "%.2f", score)
                 val t = String.format(Locale.US, "%.2f", threshold)
                 val app = PowerBlockService.foregroundPkg?.let { appLabel(it) } ?: "?"
-                dbgSummary("[${stamp()}] $app: স্কোর $s (সীমা $t) — " + if (hit) "ধরা পড়েছে ✓" else "ধরা পড়েনি ✗")
-                dbg("[$app] score=$s threshold=$t hit=$hit")
+                val mid = loadedModel ?: Extra.igModel(this)
+                dbgSummary("[${stamp()}] $mid • $app: স্কোর $s (সীমা $t) — " + if (hit) "ধরা পড়েছে ✓" else "ধরা পড়েনি ✗")
+                dbg("[$mid][$app] score=$s threshold=$t hit=$hit")
                 if (hit) handler.post { onDetected(score) }
             } else {
                 dbg("inference failed (null score)")
@@ -957,23 +1033,36 @@ class ImageGuardService : Service() {
 
     /** Lazy model load, on the inference thread. */
     private fun getModel(): NsfwModel? {
+        val want = Extra.igModel(this)
+        // the user switched models: drop the old session and load the new
+        // one (the old file stays on the phone — switching never deletes)
+        if (model != null && loadedModel != want) {
+            try {
+                model?.close()
+            } catch (_: Exception) {
+            }
+            model = null
+            modelFailed = false
+            loadedModel = null
+        }
         model?.let { return it }
         if (modelFailed) return null
         val t0 = SystemClock.uptimeMillis()
-        val (m, reason) = NsfwModel.load(this)
+        val (m, reason) = NsfwModel.load(this, want)
         if (m == null) {
             modelFailed = true
-            dbgSummary("[${stamp()}] মডেল লোড হয়নি: $reason")
-            dbg("model load failed: $reason")
+            dbgSummary("[${stamp()}] মডেল লোড হয়নি ($want): $reason")
+            dbg("model load failed ($want): $reason")
             Store.settings(this).edit().putBoolean("ig_model_err", true).apply()
             handler.post { notifyModelError() }
             return null
         }
         val ms = SystemClock.uptimeMillis() - t0
-        dbgSummary("[${stamp()}] মডেল লোড হয়েছে (${ms}ms)")
-        dbg("model loaded in ${ms}ms")
+        dbgSummary("[${stamp()}] মডেল লোড হয়েছে ($want, ${ms}ms)")
+        dbg("model loaded ($want) in ${ms}ms")
         Store.settings(this).edit().putBoolean("ig_model_err", false).apply()
         model = m
+        loadedModel = want
         return m
     }
 
@@ -1135,10 +1224,11 @@ class ImageGuardService : Service() {
             }
         } ?: "?"
         val scanning = fg != null && Extra.lockdownApps(this).contains(fg)
+        val mid = Extra.igModel(this)
         tv.visibility = if (showScore) View.VISIBLE else View.GONE
         if (showScore) {
             if (!scanning) {
-                tv.text = "$label —"
+                tv.text = "$label — • $mid"
                 tv.setTextColor(C.muted)
             } else {
                 val s = lastScore
@@ -1146,8 +1236,9 @@ class ImageGuardService : Service() {
                 val pct = if (s == null) "--" else "${(s * 100).toInt()}%"
                 val thrPct = "${(threshold * 100).toInt()}%"
                 // current score vs the threshold at which the screen blocks,
-                // e.g. "Chrome 4% / 50%" — the screen blocks at 50%
-                tv.text = "$label $pct / $thrPct"
+                // e.g. "Chrome 4% / 50% • L" — the screen blocks at 50%,
+                // and L is the model doing the scoring
+                tv.text = "$label $pct / $thrPct • $mid"
                 tv.setTextColor(if (s != null && s >= threshold * 0.5f) C.warn else C.primary)
             }
         }

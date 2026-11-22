@@ -71,7 +71,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "36"
+    const val BUILD_ID = "37"
 
     // ---------- presets ----------
 
@@ -270,6 +270,19 @@ object Extra {
 
     fun setPreviewOn(ctx: Context, on: Boolean) {
         Store.settings(ctx).edit().putBoolean("ig_live_preview", on).apply()
+    }
+
+    /** Image-guard model: XS, S, M or L (OwenElliott family). Default L
+     * (the original, most accurate). Unknown values fall back to L. */
+    fun igModel(ctx: Context): String {
+        val m = (Store.settings(ctx).getString("ig_model", "L") ?: "L").uppercase()
+        return if (m in setOf("XS", "S", "M", "L")) m else "L"
+    }
+
+    fun setIgModel(ctx: Context, model: String) {
+        val m = model.uppercase()
+        val v = if (m in setOf("XS", "S", "M", "L")) m else "L"
+        Store.settings(ctx).edit().putString("ig_model", v).apply()
     }
 
     /** Sensitivity: 0 = high (catches more), 1 = medium, 2 = low (fewer false alarms). */
@@ -1378,6 +1391,41 @@ fun MainActivity.imageGuardCard(): View {
         ),
         lp(MATCH, WRAP, t = dp(6))
     )
+    // model switcher: XS / S / M / L — compare which model scores best on
+    // the same content. Locked during a session: switching changes what
+    // the guard detects, so it is not allowed mid-lock.
+    val modelIds = listOf("XS", "S", "M", "L")
+    val modelIdx = modelIds.indexOf(Extra.igModel(this)).coerceAtLeast(0)
+    val modelSeg = SegmentedControl(
+        this,
+        modelIds,
+        modelIdx,
+        onPick = { i ->
+            val picked = modelIds[i]
+            if (locked) {
+                toast(L.t("The model cannot be changed during a session", "সেশন চলাকালীন মডেল বদলানো যাবে না"))
+                go(4)
+            } else if (picked == Extra.igModel(this)) {
+                // already selected (the control also ignores same-index taps)
+            } else if (ImageGuardModel.ready(this, picked)) {
+                Extra.setIgModel(this, picked)
+                ImageGuardService.noteModelSwitch(picked)
+                ImageGuardService.sync(this)
+                go(4)
+            } else {
+                downloadModel(picked)
+            }
+        },
+        onDone = { go(4) }
+    )
+    c.addView(modelSeg, lp(MATCH, WRAP, t = dp(10)))
+    c.addView(
+        tv(
+            L.t("Model XS/S/M/L — bigger is more accurate (XS 97.8%, S 98.0%, M 98.1%, L 98.2%). Downloaded models stay on the phone; a new one downloads on Wi-Fi only.", "মডেল XS/S/M/L — বড়টা বেশি নির্ভুল (XS ৯৭.৮%, S ৯৮.০%, M ৯৮.১%, L ৯৮.২%)। ডাউনলোড করা মডেল ফোনেই থাকবে; নতুন মডেল শুধু Wi-Fi-তে ডাউনলোড হবে।"),
+            12f, C.muted
+        ),
+        lp(MATCH, WRAP, t = dp(6))
+    )
     // live score badge: a small floating pill with the current app's latest
     // NSFW score, while a lock runs. Display only — it never changes what
     // the guard blocks, so it can be toggled any time.
@@ -1415,7 +1463,7 @@ fun MainActivity.imageGuardCard(): View {
     val needsGrant = on && ImageGuardModel.ready(this) && !ImageGuardService.hasProjection()
     val status = when {
         !on -> L.t("Off", "বন্ধ")
-        !ImageGuardModel.ready(this) -> L.t("Model not downloaded yet", "মডেল এখনো ডাউনলোড হয়নি")
+        !ImageGuardModel.ready(this) -> L.t("Model ${Extra.igModel(this)} not downloaded yet — tap here to download", "মডেল ${Extra.igModel(this)} এখনো ডাউনলোড হয়নি — ডাউনলোড করতে এখানে চাপুন")
         needsGrant -> L.t("Tap here to allow screen capture", "স্ক্রিন দেখার অনুমতি দিতে এখানে চাপুন")
         modelErr -> L.t("Model failed to load — turn it off and on again to re-download", "মডেল লোড হয়নি — আবার ডাউনলোড করতে বন্ধ করে চালু করুন")
         Store.isActive(this) || Store.isLocProtecting(this) -> L.t("Lock running — watching the screen", "লক চলছে — স্ক্রিন পর্যবেক্ষণ চলছে")
@@ -1426,6 +1474,10 @@ fun MainActivity.imageGuardCard(): View {
     // re-granting restores protection, so it is allowed even during a lock
     if (needsGrant) {
         statusTv.setOnClickListener { requestImageGuardPermission() }
+    } else if (on && !ImageGuardModel.ready(this)) {
+        // the selected model is missing (deleted, or its download failed):
+        // tapping re-downloads it (Wi-Fi only, like the switcher)
+        statusTv.setOnClickListener { downloadModel(Extra.igModel(this)) }
     }
     c.addView(statusTv, lp(MATCH, WRAP, t = dp(8)))
     // diagnostic log: what the guard actually did on the phone — open it
@@ -1480,7 +1532,7 @@ fun MainActivity.imageGuardCard(): View {
         c.addView(note, lp(MATCH, WRAP, t = dp(8)))
     }
     if (locked) {
-        c.addView(tv(L.t("While a session runs, the guard cannot be turned off and sensitivity can only be increased.", "সেশন চলাকালীন সুরক্ষা বন্ধ করা যাবে না, আর সংবেদনশীলতা শুধু বাড়ানো যাবে।"), 12f, C.warn), lp(MATCH, WRAP, t = dp(8)))
+        c.addView(tv(L.t("While a session runs, the guard cannot be turned off, sensitivity can only be increased, and the model cannot be changed.", "সেশন চলাকালীন সুরক্ষা বন্ধ করা যাবে না, সংবেদনশীলতা শুধু বাড়ানো যাবে, আর মডেল বদলানো যাবে না।"), 12f, C.warn), lp(MATCH, WRAP, t = dp(8)))
     }
     return c
 }
@@ -1568,6 +1620,60 @@ private fun MainActivity.enableImageGuard() {
     } else {
         requestImageGuardPermission()
     }
+}
+
+/** Downloads a model the user picked in the switcher (Wi-Fi only), then
+ * selects it. The current model keeps working until the new one is ready —
+ * the preference only changes after a successful download, so a failed
+ * download never leaves the guard without a model. */
+private fun MainActivity.downloadModel(modelId: String) {
+    val meta = ImageGuardModel.info(modelId)
+    if (!ImageGuardModel.isWifi(this)) {
+        toast(L.t("New models download on Wi-Fi only — connect to Wi-Fi and try again", "নতুন মডেল শুধু Wi-Fi-তে ডাউনলোড হয় — Wi-Fi-তে যুক্ত হয়ে আবার চেষ্টা করুন"))
+        go(4)
+        return
+    }
+    val prog = tv("0%", 18f, C.text, 1)
+    prog.gravity = Gravity.CENTER
+    val body = LinearLayout(this)
+    body.orientation = LinearLayout.VERTICAL
+    body.setPadding(dp(20), dp(12), dp(20), dp(4))
+    body.addView(
+        tv(L.t("Downloading model $modelId (${meta.sizeLabel}, once only)…", "মডেল $modelId ডাউনলোড হচ্ছে (${meta.sizeLabel}, শুধু একবার)…"), 14f, C.muted),
+        lp(MATCH, WRAP, b = dp(10))
+    )
+    body.addView(prog, lp(MATCH, WRAP))
+    val d = dlg()
+        .setTitle(L.t("Downloading model…", "মডেল ডাউনলোড হচ্ছে…"))
+        .setView(body)
+        .setCancelable(false)
+        .show()
+    Thread {
+        val result = ImageGuardModel.download(this, modelId) { pct ->
+            runOnUiThread {
+                try {
+                    prog.text = L.num(pct.toString()) + "%"
+                } catch (_: Exception) {
+                }
+            }
+        }
+        runOnUiThread {
+            try {
+                d.dismiss()
+            } catch (_: Exception) {
+            }
+            if (!result.ok) {
+                val why = if (result.reason.isNotEmpty()) " (" + result.reason + ")" else ""
+                toast(L.t("Model download failed — check your internet and try again", "মডেল ডাউনলোড হয়নি — ইন্টারনেট দেখে আবার চেষ্টা করুন") + why)
+                go(4)
+                return@runOnUiThread
+            }
+            Extra.setIgModel(this, modelId)
+            ImageGuardService.noteModelSwitch(modelId)
+            ImageGuardService.sync(this)
+            go(4)
+        }
+    }.start()
 }
 
 /**
