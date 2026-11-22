@@ -66,6 +66,12 @@ class PowerBlockService : AccessibilityService() {
         /** Plain-language summary of the same scans (2 lines per scan), shown
          * in the Diagnostic card so it reads simply. Capped at 60 lines. */
         val debugSummary = mutableListOf<String>()
+
+        /** Current foreground package, published on every window change.
+         * Read by ImageGuardService: the guard only scans while a
+         * lockdown-listed app is in front. */
+        @Volatile
+        var foregroundPkg: String? = null
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -322,6 +328,9 @@ class PowerBlockService : AccessibilityService() {
     override fun onAccessibilityEvent(e: AccessibilityEvent?) {
         if (e == null) return
         val pkg = e.packageName?.toString() ?: return
+        // publish the foreground app for the image guard (window changes
+        // only — content changes can come from background apps)
+        if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) foregroundPkg = pkg
         try {
             maybeReviveKeepAlive() // the system re-binds this service, so it revives the keep-alive service
             // diagnostic: the lockdown verdict, logged whenever it changes

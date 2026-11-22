@@ -572,7 +572,17 @@ class ImageGuardService : Service() {
                         nextDelay = IDLE_INTERVAL_MS
                     } else {
                         if (virtualDisplay == null) startCapture()
-                        scanFrame()
+                        // scoped scanning: only the apps on the lockdown
+                        // list are watched (the user's choice). The capture
+                        // stays alive either way — never release it, a
+                        // MediaProjection can create a VirtualDisplay only
+                        // once.
+                        if (shouldScan()) {
+                            lastSkipLine = null
+                            scanFrame()
+                        } else {
+                            logScanSkipped()
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -820,6 +830,38 @@ class ImageGuardService : Service() {
                 image.close()
             } catch (_: Exception) {
             }
+        }
+    }
+
+    private var lastSkipLine: String? = null
+
+    /** True when the foreground app is on the lockdown list — the only apps
+     * the guard watches (the user's choice). The foreground package comes
+     * from the accessibility service, which sees every window change; if
+     * it is unknown (service not running yet), don't scan. */
+    private fun shouldScan(): Boolean {
+        val fg = PowerBlockService.foregroundPkg ?: return false
+        return Extra.lockdownApps(this).contains(fg)
+    }
+
+    /** Diagnostic: log once when scanning pauses because the foreground app
+     * is not on the list (change-only, so the log isn't spammed every
+     * second). The score lines resume on their own when scanning restarts. */
+    private fun logScanSkipped() {
+        val fg = PowerBlockService.foregroundPkg
+        val line = if (fg == null) "স্ক্যান বন্ধ: সামনের অ্যাপ জানা নেই"
+        else "স্ক্যান বন্ধ: " + appLabel(fg) + " তালিকায় নেই"
+        if (line == lastSkipLine) return
+        lastSkipLine = line
+        dbgSummary("[${stamp()}] $line")
+    }
+
+    private fun appLabel(pkg: String): String {
+        return try {
+            val pm = packageManager
+            pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+        } catch (e: Exception) {
+            pkg
         }
     }
 

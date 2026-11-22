@@ -71,7 +71,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "32"
+    const val BUILD_ID = "33"
 
     // ---------- presets ----------
 
@@ -1305,8 +1305,8 @@ fun MainActivity.imageGuardCard(): View {
     c.addView(
         tv(
             L.t(
-                "While a lock runs, on-device AI watches the screen and covers nude photos or videos the moment they appear. Experimental — it can sometimes be wrong, and it uses more battery. No image ever leaves the phone. The powerful model downloads once (~106 MB — Wi-Fi recommended).",
-                "লক চলাকালীন ফোনের ভেতরেই AI স্ক্রিন দেখবে, আর নগ্ন ছবি বা ভিডিও আসলেই তা ঢেকে দেবে। পরীক্ষামূলক — মাঝে মাঝে ভুল হতে পারে, আর ব্যাটারি একটু বেশি খাবে। কোনো ছবি ফোনের বাইরে যাবে না। শক্তিশালী মডেল একবার ডাউনলোড হবে (~১০৬ MB — Wi-Fi দিয়ে করা ভালো)।"
+                "While a lock runs, on-device AI watches the screen inside your chosen lockdown apps and covers nude photos or videos the moment they appear. Experimental — it can sometimes be wrong, and it uses more battery. No image ever leaves the phone. The powerful model downloads once (~106 MB — Wi-Fi recommended).",
+                "লক চলাকালীন ফোনের ভেতরেই AI শুধু লকডাউন তালিকার অ্যাপগুলোর স্ক্রিন দেখবে, আর নগ্ন ছবি বা ভিডিও আসলেই তা ঢেকে দেবে। পরীক্ষামূলক — মাঝে মাঝে ভুল হতে পারে, আর ব্যাটারি একটু বেশি খাবে। কোনো ছবি ফোনের বাইরে যাবে না। শক্তিশালী মডেল একবার ডাউনলোড হবে (~১০৬ MB — Wi-Fi দিয়ে করা ভালো)।"
             ),
             13f, C.muted
         ),
@@ -1448,7 +1448,7 @@ fun MainActivity.lockdownAppsCard(): View {
     c.addView(section(L.t("Lockdown apps", "লকডাউন অ্যাপ")))
     c.addView(
         tv(
-            L.t("If screen-capture permission ends while a lock runs, only the apps you choose here are blocked until you allow it again. Other apps keep opening normally. Choose the apps where bad content could appear — browsers, gallery, social apps.", "লক চলাকালীন স্ক্রিন দেখার অনুমতি শেষ হয়ে গেলে শুধু এখানে বাছা অ্যাপগুলো ব্লক হবে, আবার অনুমতি না দেওয়া পর্যন্ত। বাকি অ্যাপগুলো স্বাভাবিকভাবে খুলবে। যেসব অ্যাপে খারাপ জিনিস আসতে পারে সেগুলো বাছুন — ব্রাউজার, গ্যালারি, সোশ্যাল অ্যাপ।"),
+            L.t("If screen-capture permission ends while a lock runs, only the apps you choose here are blocked until you allow it again — and the guard only looks for bad images inside these apps. Other apps keep opening normally and are never scanned, which also saves battery. Choose the apps where bad content could appear — browsers, gallery, social apps.", "লক চলাকালীন স্ক্রিন দেখার অনুমতি শেষ হয়ে গেলে শুধু এখানে বাছা অ্যাপগুলো ব্লক হবে, আবার অনুমতি না দেওয়া পর্যন্ত — আর গার্ড শুধু এই অ্যাপগুলোতেই খারাপ ছবি খুঁজবে। বাকি অ্যাপগুলো স্বাভাবিকভাবে খুলবে আর সেগুলোতে স্ক্যান হবে না, তাই ব্যাটারিও কম খাবে। যেসব অ্যাপে খারাপ জিনিস আসতে পারে সেগুলো বাছুন — ব্রাউজার, গ্যালারি, সোশ্যাল অ্যাপ।"),
             13f, C.muted
         ),
         lp(MATCH, WRAP, t = dp(6))
@@ -1466,7 +1466,7 @@ fun MainActivity.lockdownAppsCard(): View {
     pkgBtn.setOnClickListener { addPackageDialog("lockdown") { go(4) } }
     c.addView(pkgBtn, lp(MATCH, dp(48), t = dp(8)))
     if (count == 0) {
-        c.addView(tv(L.t("No apps chosen — if permission ends, nothing will be blocked.", "কোনো অ্যাপ বাছা হয়নি — অনুমতি শেষ হলে কিছুই ব্লক হবে না।"), 12f, C.warn), lp(MATCH, WRAP, t = dp(8)))
+        c.addView(tv(L.t("No apps chosen — if permission ends, nothing will be blocked, and the guard will scan nothing.", "কোনো অ্যাপ বাছা হয়নি — অনুমতি শেষ হলে কিছুই ব্লক হবে না, আর গার্ড কিছুই স্ক্যান করবে না।"), 12f, C.warn), lp(MATCH, WRAP, t = dp(8)))
     }
     if (locked) {
         c.addView(tv(L.t("While a session runs, apps can only be added, not removed.", "সেশন চলাকালীন শুধু অ্যাপ যোগ করা যাবে, সরানো যাবে না।"), 12f, C.warn), lp(MATCH, WRAP, t = dp(8)))
