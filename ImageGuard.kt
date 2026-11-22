@@ -775,6 +775,18 @@ class ImageGuardService : Service() {
     @Volatile
     private var modelFailed = false
 
+    /** Which model failed to load, if any — a failed load must not poison
+     * the NEXT model: getModel() retries when the user picks a different
+     * model than the one that failed, but never retries the same broken
+     * model every second. */
+    @Volatile
+    private var failedModel: String? = null
+
+    /** The failed model's file time at the failure — if the file is
+     * replaced since (re-downloaded), the new file gets a fresh try. */
+    @Volatile
+    private var failedFileTime: Long = 0L
+
     /** Which model the loaded session belongs to — when the user switches
      * models, getModel() drops the old session and loads the new one. */
     @Volatile
@@ -1254,22 +1266,38 @@ class ImageGuardService : Service() {
     private fun getModel(): NsfwModel? {
         val want = Extra.igModel(this)
         // the user switched models: drop the old session and load the new
-        // one (the old file stays on the phone — switching never deletes)
-        if (model != null && loadedModel != want) {
+        // one (the old file stays on the phone — switching never deletes).
+        // A failed load must NOT poison the next model: the failure flag
+        // is cleared when the wanted model differs from the one that
+        // failed — the old code only cleared it when a session was loaded,
+        // so one bad load killed every model until the service restarted.
+        if (loadedModel != want) {
             try {
                 model?.close()
             } catch (_: Exception) {
             }
             model = null
-            modelFailed = false
             loadedModel = null
+            if (failedModel != want) modelFailed = false
         }
         model?.let { return it }
+        // the same model failed before — but if its file was replaced
+        // since (re-downloaded), the new file gets a fresh try
+        if (modelFailed && failedModel == want) {
+            val f = ImageGuardModel.file(this, want)
+            if (f.exists() && f.lastModified() != failedFileTime) modelFailed = false
+        }
         if (modelFailed) return null
         val t0 = SystemClock.uptimeMillis()
         val (m, reason) = NsfwModel.load(this, want)
         if (m == null) {
             modelFailed = true
+            failedModel = want
+            failedFileTime = try {
+                ImageGuardModel.file(this, want).lastModified()
+            } catch (_: Exception) {
+                0L
+            }
             dbgSummary("[${stamp()}] মডেল লোড হয়নি ($want): $reason")
             dbg("model load failed ($want): $reason")
             Store.settings(this).edit().putBoolean("ig_model_err", true).apply()
@@ -1282,6 +1310,7 @@ class ImageGuardService : Service() {
         Store.settings(this).edit().putBoolean("ig_model_err", false).apply()
         model = m
         loadedModel = want
+        failedModel = null
         return m
     }
 
