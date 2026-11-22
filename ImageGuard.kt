@@ -9,6 +9,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.provider.Settings
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -30,6 +31,7 @@ import android.view.WindowManager
 import android.view.animation.AccelerateDecelerateInterpolator
 import android.view.animation.OvershootInterpolator
 import android.widget.LinearLayout
+import android.widget.TextView
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
@@ -517,6 +519,16 @@ class ImageGuardService : Service() {
     private var cover: View? = null
     private var coverIcon: IconView? = null
     private var coverAttached = false
+    // live score badge: a small floating pill with the foreground app's
+    // latest NSFW score (see updateScoreBadge)
+    private var scoreBadge: View? = null
+    private var scoreBadgeText: TextView? = null
+    private var scoreBadgeAttached = false
+    private var lastBadgePkg: String? = null
+    private var lastBadgeLabel: String? = null
+
+    @Volatile
+    private var lastScore: Float? = null
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -585,6 +597,9 @@ class ImageGuardService : Service() {
                         }
                     }
                 }
+                // live score badge (if the user turned it on): refresh every
+                // tick — it also hides itself when the lock ends
+                updateScoreBadge()
             } catch (e: Exception) {
                 Log.e(TAG, "image guard tick failed", e)
             }
@@ -673,6 +688,7 @@ class ImageGuardService : Service() {
             callbackRegistered = false
             releaseGrant()
             hideCover()
+            hideScoreBadge()
             try {
                 model?.close()
             } catch (_: Exception) {
@@ -903,11 +919,13 @@ class ImageGuardService : Service() {
             val score = m.nsfwScore(small)
             val threshold = Extra.igThreshold(this)
             if (score != null) {
+                lastScore = score
                 val hit = score >= threshold
                 val s = String.format(Locale.US, "%.2f", score)
                 val t = String.format(Locale.US, "%.2f", threshold)
-                dbgSummary("[${stamp()}] স্কোর $s (সীমা $t) — " + if (hit) "ধরা পড়েছে ✓" else "ধরা পড়েনি ✗")
-                dbg("score=$s threshold=$t hit=$hit")
+                val app = PowerBlockService.foregroundPkg?.let { appLabel(it) } ?: "?"
+                dbgSummary("[${stamp()}] $app: স্কোর $s (সীমা $t) — " + if (hit) "ধরা পড়েছে ✓" else "ধরা পড়েনি ✗")
+                dbg("[$app] score=$s threshold=$t hit=$hit")
                 if (hit) handler.post { onDetected(score) }
             } else {
                 dbg("inference failed (null score)")
@@ -1068,5 +1086,89 @@ class ImageGuardService : Service() {
         } catch (ex: Exception) {
             Log.e(TAG, "hideCover failed", ex)
         }
+    }
+
+    // ---------- live score badge ----------
+
+    /** Floating pill with the foreground app and its latest NSFW score,
+     * while a lock runs and the user turned the live score on. Refreshed
+     * every tick from the main thread; the score itself is written by the
+     * inference thread. Never takes touches or focus. */
+    private fun updateScoreBadge() {
+        val show = Extra.liveScoreOn(this) && protecting() && mediaProjection != null &&
+            Settings.canDrawOverlays(this)
+        if (!show) {
+            hideScoreBadge()
+            return
+        }
+        try {
+            ensureScoreBadge()
+        } catch (e: Exception) {
+            Log.e(TAG, "score badge failed (overlay permission?)", e)
+            return
+        }
+        val tv = scoreBadgeText ?: return
+        val fg = PowerBlockService.foregroundPkg
+        val label = fg?.let {
+            if (it == lastBadgePkg) lastBadgeLabel ?: it else {
+                val l = appLabel(it)
+                lastBadgePkg = it
+                lastBadgeLabel = l
+                l
+            }
+        } ?: "?"
+        val scanning = fg != null && Extra.lockdownApps(this).contains(fg)
+        if (!scanning) {
+            tv.text = "$label —"
+            tv.setTextColor(C.muted)
+        } else {
+            val s = lastScore
+            val pct = if (s == null) "--" else "${(s * 100).toInt()}%"
+            tv.text = "$label $pct"
+            val threshold = Extra.igThreshold(this)
+            tv.setTextColor(if (s != null && s >= threshold * 0.5f) C.warn else C.primary)
+        }
+    }
+
+    private fun ensureScoreBadge() {
+        if (scoreBadgeAttached) return
+        val root = LinearLayout(this)
+        root.orientation = LinearLayout.HORIZONTAL
+        root.gravity = Gravity.CENTER_VERTICAL
+        root.setPadding(dp(12), dp(6), dp(12), dp(6))
+        root.background = rounded(Color.argb(200, 8, 16, 12), dp(16).toFloat())
+        val text = tv("", 13f, C.primary, 1)
+        root.addView(text)
+        scoreBadgeText = text
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        )
+        params.gravity = Gravity.TOP or Gravity.END
+        params.x = dp(12)
+        params.y = dp(48)
+        wm.addView(root, params)
+        scoreBadge = root
+        scoreBadgeAttached = true
+    }
+
+    private fun hideScoreBadge() {
+        if (!scoreBadgeAttached) return
+        scoreBadgeAttached = false
+        try {
+            val v = scoreBadge ?: return
+            val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+            wm.removeViewImmediate(v)
+        } catch (ex: Exception) {
+            Log.e(TAG, "hideScoreBadge failed", ex)
+        }
+        scoreBadge = null
+        scoreBadgeText = null
     }
 }

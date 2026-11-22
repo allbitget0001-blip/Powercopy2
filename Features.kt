@@ -71,7 +71,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "33"
+    const val BUILD_ID = "34"
 
     // ---------- presets ----------
 
@@ -252,6 +252,15 @@ object Extra {
 
     fun setLockdownApps(ctx: Context, apps: Set<String>) {
         Store.settings(ctx).edit().putString("ig_lockdown", apps.joinToString(",")).apply()
+    }
+
+    /** Live score badge: while a lock runs, a small floating pill shows the
+     * foreground app and its latest NSFW score in percent. Off by default. */
+    fun liveScoreOn(ctx: Context): Boolean =
+        Store.settings(ctx).getBoolean("ig_live_score", false)
+
+    fun setLiveScoreOn(ctx: Context, on: Boolean) {
+        Store.settings(ctx).edit().putBoolean("ig_live_score", on).apply()
     }
 
     /** Sensitivity: 0 = high (catches more), 1 = medium, 2 = low (fewer false alarms). */
@@ -1357,6 +1366,20 @@ fun MainActivity.imageGuardCard(): View {
         tv(
             L.t("High catches more, but may cover harmless photos too.", "বেশি সংবেদনশীল হলে বেশি ধরবে, তবে সাধারণ ছবিও ভুল করে ঢাকতে পারে।"),
             12f, C.muted
+        ),
+        lp(MATCH, WRAP, t = dp(6))
+    )
+    // live score badge: a small floating pill with the current app's latest
+    // NSFW score, while a lock runs. Display only — it never changes what
+    // the guard blocks, so it can be toggled any time.
+    val liveSw = toggle(Extra.liveScoreOn(this)) { v ->
+        Extra.setLiveScoreOn(this, v)
+    }
+    c.addView(
+        row(
+            L.t("Show live score during a lock", "লক চলাকালীন লাইভ স্কোর দেখান"),
+            L.t("A small floating badge shows the current app and its latest bad-image score in percent.", "ছোট ভাসমান ব্যাজে এখনকার অ্যাপ আর তার সর্বশেষ খারাপ ছবির স্কোর শতাংশে দেখাবে।"),
+            liveSw
         ),
         lp(MATCH, WRAP, t = dp(6))
     )
