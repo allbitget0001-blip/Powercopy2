@@ -16,6 +16,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.Settings
 import android.telecom.TelecomManager
 import android.util.Log
 import android.view.Gravity
@@ -69,7 +70,10 @@ class PowerBlockService : AccessibilityService() {
 
         /** Current foreground package, published on every window change.
          * Read by ImageGuardService: the guard only scans while a
-         * lockdown-listed app is in front. */
+         * lockdown-listed app is in front. Transient overlays (keyboard,
+         * System UI, permission dialogs) never replace it — they can open
+         * without the app underneath firing a return event, which used to
+         * pause scanning until the user switched apps. */
         @Volatile
         var foregroundPkg: String? = null
     }
@@ -236,6 +240,19 @@ class PowerBlockService : AccessibilityService() {
             registerScreenOn()
             Store.kickService(this)
             Scheduler.onAlarm(this)
+            // seed the foreground app: after a service restart the guard's
+            // foreground package is null and nothing is scanned until the
+            // user switches apps — the active window's root names it now
+            try {
+                val root = rootInActiveWindow
+                if (root != null) {
+                    val p = root.packageName?.toString()
+                    if (!p.isNullOrEmpty() && !isTransientWindow(p)) foregroundPkg = p
+                    root.recycle()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "seed foreground failed", e)
+            }
         } catch (e: Exception) {
             Log.e(TAG, "onServiceConnected failed", e)
         }
@@ -329,8 +346,15 @@ class PowerBlockService : AccessibilityService() {
         if (e == null) return
         val pkg = e.packageName?.toString() ?: return
         // publish the foreground app for the image guard (window changes
-        // only — content changes can come from background apps)
-        if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) foregroundPkg = pkg
+        // only — content changes can come from background apps). Transient
+        // windows must NOT hijack it: when the keyboard opens, its window
+        // fires a state change, but when it closes the app underneath does
+        // NOT always fire one — so the guard would stay paused on the
+        // keyboard's package until the user switches apps (reported
+        // 2026-11-22: no detection inside an app, detection works after
+        // exiting and re-entering). System UI, the permission controller
+        // and the input method are overlays, not the app being viewed.
+        if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && !isTransientWindow(pkg)) foregroundPkg = pkg
         try {
             maybeReviveKeepAlive() // the system re-binds this service, so it revives the keep-alive service
             // diagnostic: the lockdown verdict, logged whenever it changes
@@ -388,6 +412,37 @@ class PowerBlockService : AccessibilityService() {
         } catch (ex: Exception) {
             Log.e(TAG, "onAccessibilityEvent failed", ex)
         }
+    }
+
+    // the input method (keyboard) package, cached for a minute — the
+    // keyboard rarely changes, and reading Settings on every window event
+    // would be wasteful
+    private var imePkg: String? = null
+    private var imePkgCheckedAt = 0L
+
+    /** The package of the current input method (keyboard), or null. */
+    private fun currentImePackage(): String? {
+        val now = SystemClock.uptimeMillis()
+        if (imePkg == null || now - imePkgCheckedAt > 60_000) {
+            imePkgCheckedAt = now
+            imePkg = try {
+                Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD)
+                    ?.substringBefore('/')
+            } catch (_: Exception) {
+                null
+            }
+        }
+        return imePkg
+    }
+
+    /** True for packages that only ever appear as overlays on top of the
+     * app being viewed — they must never replace foregroundPkg (see the
+     * publish site in onAccessibilityEvent). */
+    private fun isTransientWindow(pkg: String): Boolean {
+        if (pkg.contains("systemui")) return true
+        if (pkg.contains("permissioncontroller")) return true
+        val ime = currentImePackage()
+        return ime != null && pkg == ime
     }
 
     // ---------- detection ----------
