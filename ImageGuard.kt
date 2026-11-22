@@ -467,7 +467,12 @@ class ImageGuardService : Service() {
                 val b = Notification.Builder(ctx, CHANNEL_ID)
                     .setSmallIcon(android.R.drawable.ic_lock_lock)
                     .setContentTitle(L.t("Image guard needs permission again", "ছবি সুরক্ষার জন্য আবার অনুমতি দিন"))
-                    .setContentText(L.t("Screen-capture permission ended — open PowerLock to allow it again", "স্ক্রিন দেখার অনুমতি শেষ হয়ে গেছে — আবার দিতে PowerLock খুলুন"))
+                    .setContentText(
+                        if (Store.isActive(ctx) || Store.isLocProtecting(ctx))
+                            L.t("Screen-capture permission ended — no app opens until you allow it again", "স্ক্রিন দেখার অনুমতি শেষ হয়ে গেছে — আবার না দিলে লক চলাকালীন কোনো অ্যাপ খুলবে না")
+                        else
+                            L.t("Screen-capture permission ended — open PowerLock to allow it again", "স্ক্রিন দেখার অনুমতি শেষ হয়ে গেছে — আবার দিতে PowerLock খুলুন")
+                    )
                     .setContentIntent(pi)
                     .setAutoCancel(true)
                 (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
