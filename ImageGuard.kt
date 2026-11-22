@@ -78,7 +78,11 @@ object ImageGuardModel {
         /** 0-1 floats, normalisation baked in as Sub/Div (MobileNetV4). */
         UNIT_01,
         /** Letterboxed (padded square) 0-1 floats (NudeNet). */
-        LETTERBOX_01
+        LETTERBOX_01,
+        /** BGR order, 0-255, dataset mean [104, 117, 123] subtracted
+         * (Yahoo OpenNSFW, Caffe ResNet style). Always goes with an NHWC
+         * tensor — see [Info.nhwc]. */
+        BGR_MEAN
     }
 
     /** How the model's output becomes one 0-1 bad score. */
@@ -114,6 +118,10 @@ object ImageGuardModel {
         /** True when the model takes [C, H, W] with no batch dim
          * (MobileNetV4's export quirk: its first dim is the channel). */
         val noBatch: Boolean,
+        /** True when the model takes an NHWC tensor [1, H, W, 3] instead
+         * of NCHW (Yahoo OpenNSFW, a tf2onnx conversion). The pixels are
+         * then filled per-pixel (HWC order) instead of per-channel. */
+        val nhwc: Boolean,
         val preprocess: Preprocess,
         val scoreKind: ScoreKind
     )
@@ -123,37 +131,43 @@ object ImageGuardModel {
             "XS",
             "https://huggingface.co/OwenElliott/image-safety-classifier-xs/resolve/main/onnx/image-safety-classifier-xs.onnx",
             13_137_569L, "~13 MB", "97.76%",
-            224, "image", false, Preprocess.RAW_255, ScoreKind.CLASS_INDEX
+            224, "image", false, false, Preprocess.RAW_255, ScoreKind.CLASS_INDEX
         ),
         Info(
             "S",
             "https://huggingface.co/OwenElliott/image-safety-classifier-s/resolve/main/onnx/image-safety-classifier-s.onnx",
             23_701_765L, "~24 MB", "97.99%",
-            224, "image", false, Preprocess.RAW_255, ScoreKind.CLASS_INDEX
+            224, "image", false, false, Preprocess.RAW_255, ScoreKind.CLASS_INDEX
         ),
         Info(
             "M",
             "https://huggingface.co/OwenElliott/image-safety-classifier-m/resolve/main/onnx/image-safety-classifier-m.onnx",
             46_308_944L, "~46 MB", "98.06%",
-            224, "image", false, Preprocess.RAW_255, ScoreKind.CLASS_INDEX
+            224, "image", false, false, Preprocess.RAW_255, ScoreKind.CLASS_INDEX
         ),
         Info(
             "L",
             "https://huggingface.co/OwenElliott/image-safety-classifier-l/resolve/main/onnx/image-safety-classifier-l.onnx",
             111_121_598L, "~106 MB", "98.20%",
-            224, "image", false, Preprocess.RAW_255, ScoreKind.CLASS_INDEX
+            224, "image", false, false, Preprocess.RAW_255, ScoreKind.CLASS_INDEX
         ),
         Info(
             "NUDE",
             "https://raw.githubusercontent.com/notAI-tech/NudeNet/v3/nudenet/320n.onnx",
             12_150_158L, "~12 MB", "—",
-            320, "images", false, Preprocess.LETTERBOX_01, ScoreKind.DETECTION
+            320, "images", false, false, Preprocess.LETTERBOX_01, ScoreKind.DETECTION
         ),
         Info(
             "MOB",
             "https://huggingface.co/taufiqdp/mobilenetv4_conv_small.e2400_r224_in1k_nsfw_classifier/resolve/main/mobilenetv4_conv_small.e2400_r224_in1k_nsfw_classifier.onnx",
             9_974_311L, "~10 MB", "—",
-            224, "input", true, Preprocess.UNIT_01, ScoreKind.SUM_CLASSES
+            224, "input", true, false, Preprocess.UNIT_01, ScoreKind.SUM_CLASSES
+        ),
+        Info(
+            "YAHOO",
+            "https://huggingface.co/bluefoxcreation/open-nsfw/resolve/main/open-nsfw.onnx",
+            23_590_724L, "~24 MB", "—",
+            224, "input:0", false, true, Preprocess.BGR_MEAN, ScoreKind.CLASS_INDEX
         )
     )
 
@@ -349,6 +363,12 @@ object ImageGuardModel {
  * - NudeNet 320n: input "images" [1, 3, 320, 320], letterboxed 0-1;
  *   output [1, 22, N] detections — the score is the highest confidence
  *   among detections of an unsafe (exposed) body part.
+ * - Yahoo OpenNSFW: input "input:0" [1, 224, 224, 3] NHWC, BGR order,
+ *   0-255 minus the dataset mean [104, 117, 123] (Caffe ResNet style);
+ *   output float[1][2] probabilities [SFW, NSFW] — index 1 is the NSFW
+ *   score. The frame is resized straight to 224 (no centre crop): the
+ *   official flow crops the middle, but the guard must see the whole
+ *   screen.
  */
 private class NsfwModel private constructor(
     private val env: OrtEnvironment,
@@ -423,6 +443,15 @@ private class NsfwModel private constructor(
                 for (p in pixels) buf.put(((p shr 8) and 0xFF).toFloat())
                 for (p in pixels) buf.put((p and 0xFF).toFloat())
             }
+            ImageGuardModel.Preprocess.BGR_MEAN -> {
+                // NHWC order: per pixel B, G, R, 0-255 minus the dataset
+                // mean [104, 117, 123] (Yahoo OpenNSFW, Caffe ResNet style)
+                for (p in pixels) {
+                    buf.put((p and 0xFF).toFloat() - 104f)
+                    buf.put(((p shr 8) and 0xFF).toFloat() - 117f)
+                    buf.put(((p shr 16) and 0xFF).toFloat() - 123f)
+                }
+            }
             else -> {
                 // CHW, 0-1 floats (MobileNet: normalisation baked in as
                 // Sub/Div; NudeNet: 1/255 scaling, like its Python library)
@@ -433,8 +462,11 @@ private class NsfwModel private constructor(
         }
         buf.rewind()
         return try {
-            val shape = if (meta.noBatch) longArrayOf(3, size.toLong(), size.toLong())
-            else longArrayOf(1, 3, size.toLong(), size.toLong())
+            val shape = when {
+                meta.nhwc -> longArrayOf(1, size.toLong(), size.toLong(), 3)
+                meta.noBatch -> longArrayOf(3, size.toLong(), size.toLong())
+                else -> longArrayOf(1, 3, size.toLong(), size.toLong())
+            }
             OnnxTensor.createTensor(env, buf, shape).use { input ->
                 session.run(mapOf(meta.inputName to input)).use { result ->
                     when (meta.scoreKind) {
