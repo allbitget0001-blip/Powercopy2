@@ -71,7 +71,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "37"
+    const val BUILD_ID = "38"
 
     // ---------- presets ----------
 
@@ -272,16 +272,17 @@ object Extra {
         Store.settings(ctx).edit().putBoolean("ig_live_preview", on).apply()
     }
 
-    /** Image-guard model: XS, S, M or L (OwenElliott family). Default L
+    /** Image-guard model: XS, S, M or L (OwenElliott family), NUDE
+     * (NudeNet 320n detector) or MOB (MobileNetV4 classifier). Default L
      * (the original, most accurate). Unknown values fall back to L. */
     fun igModel(ctx: Context): String {
         val m = (Store.settings(ctx).getString("ig_model", "L") ?: "L").uppercase()
-        return if (m in setOf("XS", "S", "M", "L")) m else "L"
+        return if (m in setOf("XS", "S", "M", "L", "NUDE", "MOB")) m else "L"
     }
 
     fun setIgModel(ctx: Context, model: String) {
         val m = model.uppercase()
-        val v = if (m in setOf("XS", "S", "M", "L")) m else "L"
+        val v = if (m in setOf("XS", "S", "M", "L", "NUDE", "MOB")) m else "L"
         Store.settings(ctx).edit().putString("ig_model", v).apply()
     }
 
@@ -1391,10 +1392,10 @@ fun MainActivity.imageGuardCard(): View {
         ),
         lp(MATCH, WRAP, t = dp(6))
     )
-    // model switcher: XS / S / M / L — compare which model scores best on
-    // the same content. Locked during a session: switching changes what
-    // the guard detects, so it is not allowed mid-lock.
-    val modelIds = listOf("XS", "S", "M", "L")
+    // model switcher: XS / S / M / L / NUDE / MOB — compare which model
+    // scores best on the same content. Locked during a session: switching
+    // changes what the guard detects, so it is not allowed mid-lock.
+    val modelIds = listOf("XS", "S", "M", "L", "NUDE", "MOB")
     val modelIdx = modelIds.indexOf(Extra.igModel(this)).coerceAtLeast(0)
     val modelSeg = SegmentedControl(
         this,
@@ -1421,7 +1422,7 @@ fun MainActivity.imageGuardCard(): View {
     c.addView(modelSeg, lp(MATCH, WRAP, t = dp(10)))
     c.addView(
         tv(
-            L.t("Model XS/S/M/L — bigger is more accurate (XS 97.8%, S 98.0%, M 98.1%, L 98.2%). Downloaded models stay on the phone; a new one downloads on Wi-Fi only.", "মডেল XS/S/M/L — বড়টা বেশি নির্ভুল (XS ৯৭.৮%, S ৯৮.০%, M ৯৮.১%, L ৯৮.২%)। ডাউনলোড করা মডেল ফোনেই থাকবে; নতুন মডেল শুধু Wi-Fi-তে ডাউনলোড হবে।"),
+            L.t("Model XS/S/M/L — OwenElliott, bigger is more accurate (XS 97.8%, S 98.0%, M 98.1%, L 98.2%). NUDE = NudeNet detector (finds exposed body parts), MOB = MobileNetV4 classifier. Downloaded models stay on the phone; a new one downloads on Wi-Fi only.", "মডেল XS/S/M/L — OwenElliott, বড়টা বেশি নির্ভুল (XS ৯৭.৮%, S ৯৮.০%, M ৯৮.১%, L ৯৮.২%)। NUDE = NudeNet ডিটেক্টর (খোলা শরীরের অংশ খুঁজে পায়), MOB = MobileNetV4 ক্লাসিফায়ার। ডাউনলোড করা মডেল ফোনেই থাকবে; নতুন মডেল শুধু Wi-Fi-তে ডাউনলোড হবে।"),
             12f, C.muted
         ),
         lp(MATCH, WRAP, t = dp(6))

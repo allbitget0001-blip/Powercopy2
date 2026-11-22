@@ -11,6 +11,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.provider.Settings
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
@@ -58,51 +59,101 @@ const val REQ_IMAGE_GUARD = 1041
  * The on-device NSFW models (OwenElliott/image-safety-classifier-*, MIT):
  * SwiftFormer image classifiers, 3 classes [NSFL, NSFW, SFW], in four
  * sizes — XS (3.5M, 97.76%), S (6.1M, 97.99%), M (12.1M, 98.06%), L
- * (28.5M, 98.20%). The user picks one in the Image Guard card to compare
- * which scores best on the same content; each file is downloaded once and
- * stored under filesDir — models are never bundled in the APK, and no
- * image ever leaves the phone: every frame is classified on the device
- * and then discarded.
+ * (28.5M, 98.20%). Plus two different models for comparison: NudeNet
+ * 320n (a detector that finds exposed body parts) and a MobileNetV4 NSFW
+ * classifier (5 classes). The user picks one in the Image Guard card to
+ * compare which scores best on the same content; each file is downloaded
+ * once and stored under filesDir — models are never bundled in the APK,
+ * and no image ever leaves the phone: every frame is classified on the
+ * device and then discarded.
  */
 /** Result of a model download: [ok], plus a short English [reason] on failure. */
 data class ModelDownloadResult(val ok: Boolean, val reason: String = "")
 
 object ImageGuardModel {
-    /** One model of the OwenElliott image-safety family. All four share the
-     * same ONNX use (224x224, 0-255, normalisation + softmax baked in, 3
-     * classes [NSFL, NSFW, SFW]) — only the size and accuracy differ.
-     * Byte sizes are the exact file sizes on Hugging Face, verified
-     * 2026-11-22; all four are IR version 10 (ORT 1.20.0 understands IR 10). */
+    /** How the frame's pixels are fed to the model. */
+    enum class Preprocess {
+        /** 0-255 floats, normalisation baked into the graph (OwenElliott). */
+        RAW_255,
+        /** 0-1 floats, normalisation baked in as Sub/Div (MobileNetV4). */
+        UNIT_01,
+        /** Letterboxed (padded square) 0-1 floats (NudeNet). */
+        LETTERBOX_01
+    }
+
+    /** How the model's output becomes one 0-1 bad score. */
+    enum class ScoreKind {
+        /** Classifier: the NSFW class probability (OwenElliott index 1). */
+        CLASS_INDEX,
+        /** Classifier: softmax, then sum the unsafe classes (MobileNetV4:
+         * hentai + porn + sexy). */
+        SUM_CLASSES,
+        /** Detector: the highest unsafe-part confidence (NudeNet). */
+        DETECTION
+    }
+
+    /** One model of the switcher. All OwenElliott sizes share the same ONNX
+     * use (224x224, 0-255, normalisation + softmax baked in, 3 classes
+     * [NSFL, NSFW, SFW]); NudeNet and MobileNetV4 differ — input size,
+     * tensor name, preprocessing and score mapping are per-model here, so
+     * the scoring code never hard-codes one model's shape. Byte sizes are
+     * the exact file sizes, verified 2026-11-22; all files are IR 10 or
+     * older (ORT 1.20.0 understands IR 10). */
     data class Info(
         val id: String,
         val url: String,
         val bytes: Long,
         /** e.g. "~13 MB" — shown in the picker and the download dialog. */
         val sizeLabel: String,
-        /** e.g. "97.76%" — the family's published accuracy. */
-        val accuracy: String
+        /** e.g. "97.76%" — the published accuracy ("—" when unknown). */
+        val accuracy: String,
+        /** Input edge in pixels (224 or 320). */
+        val inputSize: Int,
+        /** ONNX input tensor name. */
+        val inputName: String,
+        /** True when the model takes [C, H, W] with no batch dim
+         * (MobileNetV4's export quirk: its first dim is the channel). */
+        val noBatch: Boolean,
+        val preprocess: Preprocess,
+        val scoreKind: ScoreKind
     )
 
     val MODELS = listOf(
         Info(
             "XS",
             "https://huggingface.co/OwenElliott/image-safety-classifier-xs/resolve/main/onnx/image-safety-classifier-xs.onnx",
-            13_137_569L, "~13 MB", "97.76%"
+            13_137_569L, "~13 MB", "97.76%",
+            224, "image", false, Preprocess.RAW_255, ScoreKind.CLASS_INDEX
         ),
         Info(
             "S",
             "https://huggingface.co/OwenElliott/image-safety-classifier-s/resolve/main/onnx/image-safety-classifier-s.onnx",
-            23_701_765L, "~24 MB", "97.99%"
+            23_701_765L, "~24 MB", "97.99%",
+            224, "image", false, Preprocess.RAW_255, ScoreKind.CLASS_INDEX
         ),
         Info(
             "M",
             "https://huggingface.co/OwenElliott/image-safety-classifier-m/resolve/main/onnx/image-safety-classifier-m.onnx",
-            46_308_944L, "~46 MB", "98.06%"
+            46_308_944L, "~46 MB", "98.06%",
+            224, "image", false, Preprocess.RAW_255, ScoreKind.CLASS_INDEX
         ),
         Info(
             "L",
             "https://huggingface.co/OwenElliott/image-safety-classifier-l/resolve/main/onnx/image-safety-classifier-l.onnx",
-            111_121_598L, "~106 MB", "98.20%"
+            111_121_598L, "~106 MB", "98.20%",
+            224, "image", false, Preprocess.RAW_255, ScoreKind.CLASS_INDEX
+        ),
+        Info(
+            "NUDE",
+            "https://raw.githubusercontent.com/notAI-tech/NudeNet/v3/nudenet/320n.onnx",
+            12_150_158L, "~12 MB", "—",
+            320, "images", false, Preprocess.LETTERBOX_01, ScoreKind.DETECTION
+        ),
+        Info(
+            "MOB",
+            "https://huggingface.co/taufiqdp/mobilenetv4_conv_small.e2400_r224_in1k_nsfw_classifier/resolve/main/mobilenetv4_conv_small.e2400_r224_in1k_nsfw_classifier.onnx",
+            9_974_311L, "~10 MB", "—",
+            224, "input", true, Preprocess.UNIT_01, ScoreKind.SUM_CLASSES
         )
     )
 
@@ -284,16 +335,47 @@ object ImageGuardModel {
 }
 
 /**
- * ONNX Runtime wrapper for the image-safety model. Input tensor "image",
- * shape [1, 3, 224, 224], float32, RGB pixels in 0-255 (normalisation and
- * softmax are baked into the graph). Output is float[1][3] probabilities
- * in class order [NSFL, NSFW, SFW] — index 1 is the NSFW score.
+ * ONNX Runtime wrapper for one image-safety model. The per-model details
+ * (input size, tensor name, preprocessing, score mapping) come from
+ * [ImageGuardModel.Info], so the same wrapper serves classifiers and the
+ * NudeNet detector:
+ * - OwenElliott: input "image" [1, 3, 224, 224], 0-255 (normalisation and
+ *   softmax baked in); output float[1][3] in class order [NSFL, NSFW, SFW]
+ *   — index 1 is the NSFW score.
+ * - MobileNetV4: input "input" [3, 224, 224] with NO batch dim (an export
+ *   quirk — the first dim is the channel), 0-1 (normalisation baked in as
+ *   Sub/Div); output 5 logits [drawings, hentai, neutral, porn, sexy] —
+ *   softmax, then hentai + porn + sexy is the bad score.
+ * - NudeNet 320n: input "images" [1, 3, 320, 320], letterboxed 0-1;
+ *   output [1, 22, N] detections — the score is the highest confidence
+ *   among detections of an unsafe (exposed) body part.
  */
 private class NsfwModel private constructor(
     private val env: OrtEnvironment,
-    private val session: OrtSession
+    private val session: OrtSession,
+    private val meta: ImageGuardModel.Info
 ) {
+    /** Result of one scoring: the NSFW probability (0..1), plus an
+     * optional detail for the log (NudeNet: the top detected class). */
+    data class Scored(val score: Float, val detail: String? = null)
+
     companion object {
+        /** NudeNet 320n's 18 detection classes, in output order. */
+        private val NUDENET_LABELS = arrayOf(
+            "FEMALE_GENITALIA_COVERED", "FACE_FEMALE", "BUTTOCKS_EXPOSED",
+            "FEMALE_BREAST_EXPOSED", "FEMALE_GENITALIA_EXPOSED",
+            "MALE_BREAST_EXPOSED", "ANUS_EXPOSED", "FEET_EXPOSED",
+            "BELLY_COVERED", "FEET_COVERED", "ARMPITS_COVERED",
+            "ARMPITS_EXPOSED", "FACE_MALE", "BELLY_EXPOSED",
+            "MALE_GENITALIA_EXPOSED", "ANUS_COVERED",
+            "FEMALE_BREAST_COVERED", "BUTTOCKS_COVERED"
+        )
+
+        /** NudeNet classes that count as unsafe for the score: exposed
+         * buttocks, breast, genitalia and anus. A bare male chest, feet,
+         * belly or armpits do not count — those appear in ordinary photos. */
+        private val UNSAFE_NUDENET_CLASSES = intArrayOf(2, 3, 4, 6, 14)
+
         /**
          * Loads the model. Returns the model plus an empty reason on
          * success, or null plus a short reason on failure: "file missing",
@@ -302,9 +384,10 @@ private class NsfwModel private constructor(
          * guessed.
          */
         fun load(ctx: Context, modelId: String): Pair<NsfwModel?, String> {
+            val meta = ImageGuardModel.info(modelId)
             val file = ImageGuardModel.file(ctx, modelId)
             if (!file.exists()) return null to "file missing"
-            if (file.length() != ImageGuardModel.info(modelId).bytes) {
+            if (file.length() != meta.bytes) {
                 return null to "wrong size: ${file.length()} bytes"
             }
             return try {
@@ -316,7 +399,7 @@ private class NsfwModel private constructor(
                     opts.close()
                 } catch (_: Exception) {
                 }
-                NsfwModel(env, session) to ""
+                NsfwModel(env, session, meta) to ""
             } catch (e: Exception) {
                 Log.e(TAG, "NsfwModel load failed", e)
                 null to "ORT error: ${e.message ?: e.javaClass.simpleName}"
@@ -324,28 +407,108 @@ private class NsfwModel private constructor(
         }
     }
 
-    /** NSFW probability (0..1), or null if inference failed. [bmp224] must be 224x224. */
-    fun nsfwScore(bmp224: Bitmap): Float? {
-        val pixels = IntArray(224 * 224)
-        bmp224.getPixels(pixels, 0, 224, 0, 0, 224, 224)
-        // CHW order: all reds, then greens, then blues, as 0-255 floats
-        val buf = FloatBuffer.allocate(3 * 224 * 224)
-        for (p in pixels) buf.put(((p shr 16) and 0xFF).toFloat())
-        for (p in pixels) buf.put(((p shr 8) and 0xFF).toFloat())
-        for (p in pixels) buf.put((p and 0xFF).toFloat())
+    /** NSFW probability (0..1), or null if inference failed. [bmp] must be
+     * the model's input size (see [ImageGuardModel.Info.inputSize]),
+     * prepared by the caller (letterboxed for NudeNet). */
+    fun nsfwScore(bmp: Bitmap): Scored? {
+        val size = meta.inputSize
+        val pixels = IntArray(size * size)
+        bmp.getPixels(pixels, 0, size, 0, 0, size, size)
+        val buf = FloatBuffer.allocate(3 * size * size)
+        when (meta.preprocess) {
+            ImageGuardModel.Preprocess.RAW_255 -> {
+                // CHW order: all reds, then greens, then blues, as 0-255
+                // floats (normalisation is baked into the graph)
+                for (p in pixels) buf.put(((p shr 16) and 0xFF).toFloat())
+                for (p in pixels) buf.put(((p shr 8) and 0xFF).toFloat())
+                for (p in pixels) buf.put((p and 0xFF).toFloat())
+            }
+            else -> {
+                // CHW, 0-1 floats (MobileNet: normalisation baked in as
+                // Sub/Div; NudeNet: 1/255 scaling, like its Python library)
+                for (p in pixels) buf.put(((p shr 16) and 0xFF) / 255f)
+                for (p in pixels) buf.put(((p shr 8) and 0xFF) / 255f)
+                for (p in pixels) buf.put((p and 0xFF) / 255f)
+            }
+        }
         buf.rewind()
         return try {
-            OnnxTensor.createTensor(env, buf, longArrayOf(1, 3, 224, 224)).use { input ->
-                session.run(mapOf("image" to input)).use { result ->
-                    val out = result[0].value as? Array<*>
-                    val row = out?.get(0) as? FloatArray
-                    row?.getOrNull(1)
+            val shape = if (meta.noBatch) longArrayOf(3, size.toLong(), size.toLong())
+            else longArrayOf(1, 3, size.toLong(), size.toLong())
+            OnnxTensor.createTensor(env, buf, shape).use { input ->
+                session.run(mapOf(meta.inputName to input)).use { result ->
+                    when (meta.scoreKind) {
+                        ImageGuardModel.ScoreKind.CLASS_INDEX -> {
+                            val out = result[0].value as? Array<*>
+                            val row = out?.get(0) as? FloatArray
+                            row?.getOrNull(1)?.let { Scored(it) }
+                        }
+                        ImageGuardModel.ScoreKind.SUM_CLASSES -> {
+                            // 5 logits [drawings, hentai, neutral, porn,
+                            // sexy]: softmax, then sum the unsafe classes
+                            val out = result[0].value as? Array<*>
+                            val row = out?.get(0) as? FloatArray
+                            row?.let { Scored(softmaxSum(it, intArrayOf(1, 3, 4))) }
+                        }
+                        ImageGuardModel.ScoreKind.DETECTION -> {
+                            scoreDetections(result[0].value)
+                        }
+                    }
                 }
             }
         } catch (e: Exception) {
             Log.e(TAG, "NsfwModel inference failed", e)
             null
         }
+    }
+
+    /** Softmax over [logits], summed over [indices]. */
+    private fun softmaxSum(logits: FloatArray, indices: IntArray): Float {
+        var max = logits[0]
+        for (v in logits) if (v > max) max = v
+        var sum = 0f
+        val exps = FloatArray(logits.size)
+        for (i in logits.indices) {
+            exps[i] = kotlin.math.exp((logits[i] - max).toDouble()).toFloat()
+            sum += exps[i]
+        }
+        if (sum <= 0f) return 0f
+        var out = 0f
+        for (i in indices) {
+            if (i in exps.indices) out += exps[i] / sum
+        }
+        return out
+    }
+
+    /** NudeNet output is [1, 22, N]: 4 box rows + 18 class rows, N
+     * candidate boxes. The score is the highest confidence among
+     * detections of an unsafe (exposed) body part — NMS is skipped: it
+     * only removes overlapping duplicates, and the maximum survives it.
+     * Rows below 0.2 are ignored, exactly like the Python library. */
+    private fun scoreDetections(value: Any?): Scored? {
+        val out = value as? Array<*> ?: return null
+        val batch = out.getOrNull(0) as? Array<*> ?: return null
+        if (batch.size < 22) return null
+        val n = (batch.getOrNull(0) as? FloatArray)?.size ?: return null
+        var best = 0f
+        var bestClass: String? = null
+        for (i in 0 until n) {
+            var maxScore = 0f
+            var maxClass = -1
+            for (c in UNSAFE_NUDENET_CLASSES) {
+                val row = batch[4 + c] as? FloatArray ?: continue
+                val s = row.getOrNull(i) ?: 0f
+                if (s > maxScore) {
+                    maxScore = s
+                    maxClass = c
+                }
+            }
+            if (maxScore >= 0.2f && maxScore > best) {
+                best = maxScore
+                bestClass = NUDENET_LABELS.getOrNull(maxClass)
+            }
+        }
+        return Scored(best, bestClass)
     }
 
     fun close() {
@@ -965,8 +1128,9 @@ class ImageGuardService : Service() {
 
     private fun scanFrame() {
         val bmp = frameBitmap() ?: return
+        val meta = ImageGuardModel.info(Extra.igModel(this))
         val small = try {
-            Bitmap.createScaledBitmap(bmp, 224, 224, true)
+            prepareFrame(bmp, meta)
         } catch (e: Exception) {
             null
         }
@@ -1001,21 +1165,44 @@ class ImageGuardService : Service() {
         h.post { runInference(small) }
     }
 
+    /** Prepares the exact bitmap the selected model checks: resized to its
+     * input size, letterboxed (padded square) for NudeNet — the same
+     * preprocessing its Python library uses (pad the long side with black,
+     * top-left, then scale). The returned bitmap is also what the live
+     * preview shows. */
+    private fun prepareFrame(bmp: Bitmap, meta: ImageGuardModel.Info): Bitmap {
+        val size = meta.inputSize
+        if (meta.preprocess != ImageGuardModel.Preprocess.LETTERBOX_01) {
+            return Bitmap.createScaledBitmap(bmp, size, size, true)
+        }
+        val m = maxOf(bmp.width, bmp.height)
+        val sq = Bitmap.createBitmap(m, m, Bitmap.Config.ARGB_8888)
+        Canvas(sq).drawBitmap(bmp, 0f, 0f, null)
+        val out = Bitmap.createScaledBitmap(sq, size, size, true)
+        try {
+            sq.recycle()
+        } catch (_: Exception) {
+        }
+        return out
+    }
+
     /** Runs on the inference thread. */
     private fun runInference(small: Bitmap) {
         try {
             val m = getModel() ?: return
-            val score = m.nsfwScore(small)
+            val scored = m.nsfwScore(small)
             val threshold = Extra.igThreshold(this)
-            if (score != null) {
+            if (scored != null) {
+                val score = scored.score
                 lastScore = score
                 val hit = score >= threshold
                 val s = String.format(Locale.US, "%.2f", score)
                 val t = String.format(Locale.US, "%.2f", threshold)
                 val app = PowerBlockService.foregroundPkg?.let { appLabel(it) } ?: "?"
                 val mid = loadedModel ?: Extra.igModel(this)
-                dbgSummary("[${stamp()}] $mid • $app: স্কোর $s (সীমা $t) — " + if (hit) "ধরা পড়েছে ✓" else "ধরা পড়েনি ✗")
-                dbg("[$mid][$app] score=$s threshold=$t hit=$hit")
+                val detail = scored.detail?.let { " ($it)" } ?: ""
+                dbgSummary("[${stamp()}] $mid • $app: স্কোর $s (সীমা $t) — " + if (hit) "ধরা পড়েছে ✓" else "ধরা পড়েনি ✗" + detail)
+                dbg("[$mid][$app] score=$s threshold=$t hit=$hit" + detail)
                 if (hit) handler.post { onDetected(score) }
             } else {
                 dbg("inference failed (null score)")
