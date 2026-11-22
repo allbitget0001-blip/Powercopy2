@@ -30,6 +30,7 @@ import android.view.View
 import android.view.WindowManager
 import android.view.animation.AccelerateDecelerateInterpolator
 import android.view.animation.OvershootInterpolator
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import ai.onnxruntime.OnnxTensor
@@ -523,9 +524,14 @@ class ImageGuardService : Service() {
     // latest NSFW score (see updateScoreBadge)
     private var scoreBadge: View? = null
     private var scoreBadgeText: TextView? = null
+    private var scoreBadgeImage: ImageView? = null
     private var scoreBadgeAttached = false
     private var lastBadgePkg: String? = null
     private var lastBadgeLabel: String? = null
+    // the latest frame the model classified (a copy of the 224x224 input),
+    // shown in the live preview; shownFrame is the copy currently displayed
+    private var lastFrame: Bitmap? = null
+    private var shownFrame: Bitmap? = null
 
     @Volatile
     private var lastScore: Float? = null
@@ -689,6 +695,7 @@ class ImageGuardService : Service() {
             releaseGrant()
             hideCover()
             hideScoreBadge()
+            recycleFrames()
             try {
                 model?.close()
             } catch (_: Exception) {
@@ -908,6 +915,13 @@ class ImageGuardService : Service() {
             }
             return
         }
+        // keep a copy for the live preview: this is exactly what the model
+        // is about to check (small itself is recycled after inference)
+        try {
+            lastFrame = Bitmap.createBitmap(small)
+        } catch (e: Exception) {
+            // out of memory: keep the previous preview frame
+        }
         inferBusy = true
         h.post { runInference(small) }
     }
@@ -1095,7 +1109,9 @@ class ImageGuardService : Service() {
      * every tick from the main thread; the score itself is written by the
      * inference thread. Never takes touches or focus. */
     private fun updateScoreBadge() {
-        val show = Extra.liveScoreOn(this) && protecting() && mediaProjection != null &&
+        val showScore = Extra.liveScoreOn(this)
+        val showPreview = Extra.previewOn(this)
+        val show = (showScore || showPreview) && protecting() && mediaProjection != null &&
             Settings.canDrawOverlays(this)
         if (!show) {
             hideScoreBadge()
@@ -1108,6 +1124,7 @@ class ImageGuardService : Service() {
             return
         }
         val tv = scoreBadgeText ?: return
+        val iv = scoreBadgeImage
         val fg = PowerBlockService.foregroundPkg
         val label = fg?.let {
             if (it == lastBadgePkg) lastBadgeLabel ?: it else {
@@ -1118,31 +1135,54 @@ class ImageGuardService : Service() {
             }
         } ?: "?"
         val scanning = fg != null && Extra.lockdownApps(this).contains(fg)
-        if (!scanning) {
-            tv.text = "$label —"
-            tv.setTextColor(C.muted)
-        } else {
-            val s = lastScore
-            val threshold = Extra.igThreshold(this)
-            val pct = if (s == null) "--" else "${(s * 100).toInt()}%"
-            val thrPct = "${(threshold * 100).toInt()}%"
-            // current score vs the threshold at which the screen blocks,
-            // e.g. "Chrome 4% / 50%" — the screen blocks at 50%
-            tv.text = "$label $pct / $thrPct"
-            tv.setTextColor(if (s != null && s >= threshold * 0.5f) C.warn else C.primary)
+        tv.visibility = if (showScore) View.VISIBLE else View.GONE
+        if (showScore) {
+            if (!scanning) {
+                tv.text = "$label —"
+                tv.setTextColor(C.muted)
+            } else {
+                val s = lastScore
+                val threshold = Extra.igThreshold(this)
+                val pct = if (s == null) "--" else "${(s * 100).toInt()}%"
+                val thrPct = "${(threshold * 100).toInt()}%"
+                // current score vs the threshold at which the screen blocks,
+                // e.g. "Chrome 4% / 50%" — the screen blocks at 50%
+                tv.text = "$label $pct / $thrPct"
+                tv.setTextColor(if (s != null && s >= threshold * 0.5f) C.warn else C.primary)
+            }
+        }
+        // live preview: the exact 224x224 frame the model just checked
+        if (iv != null) {
+            val frame = if (showPreview && scanning) lastFrame else null
+            iv.visibility = if (frame != null) View.VISIBLE else View.GONE
+            if (frame != null && frame !== shownFrame) {
+                iv.setImageBitmap(frame)
+                // recycle the old displayed copy only AFTER the view has
+                // switched to the new one — never recycle a shown bitmap
+                try {
+                    shownFrame?.recycle()
+                } catch (_: Exception) {
+                }
+                shownFrame = frame
+            }
         }
     }
 
     private fun ensureScoreBadge() {
         if (scoreBadgeAttached) return
         val root = LinearLayout(this)
-        root.orientation = LinearLayout.HORIZONTAL
-        root.gravity = Gravity.CENTER_VERTICAL
+        root.orientation = LinearLayout.VERTICAL
+        root.gravity = Gravity.CENTER_HORIZONTAL
         root.setPadding(dp(12), dp(6), dp(12), dp(6))
         root.background = rounded(Color.argb(200, 8, 16, 12), dp(16).toFloat())
         val text = tv("", 13f, C.primary, 1)
         root.addView(text)
         scoreBadgeText = text
+        val img = ImageView(this)
+        img.scaleType = ImageView.ScaleType.FIT_XY
+        img.visibility = View.GONE
+        root.addView(img, lp(dp(120), dp(120), t = dp(6)))
+        scoreBadgeImage = img
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -1165,13 +1205,33 @@ class ImageGuardService : Service() {
         if (!scoreBadgeAttached) return
         scoreBadgeAttached = false
         try {
-            val v = scoreBadge ?: return
-            val wm = getSystemService(WINDOW_SERVICE) as WindowManager
-            wm.removeViewImmediate(v)
+            val v = scoreBadge
+            if (v != null) {
+                val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+                wm.removeViewImmediate(v)
+            }
         } catch (ex: Exception) {
             Log.e(TAG, "hideScoreBadge failed", ex)
         }
         scoreBadge = null
         scoreBadgeText = null
+        scoreBadgeImage = null
+        recycleFrames()
+    }
+
+    /** Frees the preview bitmaps. Only call when the badge view is detached
+     * (or never attached) — never recycle a bitmap an attached view shows. */
+    private fun recycleFrames() {
+        try {
+            shownFrame?.recycle()
+        } catch (_: Exception) {
+        }
+        try {
+            // lastFrame may be a newer copy than the shown one
+            if (lastFrame !== shownFrame) lastFrame?.recycle()
+        } catch (_: Exception) {
+        }
+        shownFrame = null
+        lastFrame = null
     }
 }

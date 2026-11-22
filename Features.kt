@@ -71,7 +71,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "35"
+    const val BUILD_ID = "36"
 
     // ---------- presets ----------
 
@@ -261,6 +261,15 @@ object Extra {
 
     fun setLiveScoreOn(ctx: Context, on: Boolean) {
         Store.settings(ctx).edit().putBoolean("ig_live_score", on).apply()
+    }
+
+    /** Live preview: while a lock runs, a small floating preview shows the
+     * exact frame the model is checking. Off by default. */
+    fun previewOn(ctx: Context): Boolean =
+        Store.settings(ctx).getBoolean("ig_live_preview", false)
+
+    fun setPreviewOn(ctx: Context, on: Boolean) {
+        Store.settings(ctx).edit().putBoolean("ig_live_preview", on).apply()
     }
 
     /** Sensitivity: 0 = high (catches more), 1 = medium, 2 = low (fewer false alarms). */
@@ -1380,6 +1389,19 @@ fun MainActivity.imageGuardCard(): View {
             L.t("Show live score during a lock", "লক চলাকালীন লাইভ স্কোর দেখান"),
             L.t("A small floating badge shows the current app and its latest bad-image score in percent.", "ছোট ভাসমান ব্যাজে এখনকার অ্যাপ আর তার সর্বশেষ খারাপ ছবির স্কোর শতাংশে দেখাবে।"),
             liveSw
+        ),
+        lp(MATCH, WRAP, t = dp(6))
+    )
+    // live preview: the exact frame the model is checking, as a small
+    // floating thumbnail — display only, toggleable any time.
+    val prevSw = toggle(Extra.previewOn(this)) { v ->
+        Extra.setPreviewOn(this, v)
+    }
+    c.addView(
+        row(
+            L.t("Show what the model sees", "মডেল যা দেখছে তা দেখান"),
+            L.t("A small floating preview shows the exact frame the model is checking during a lock.", "লক চলাকালীন মডেল যে ছবিটা পরীক্ষা করছে তার ছোট প্রিভিউ ভাসবে।"),
+            prevSw
         ),
         lp(MATCH, WRAP, t = dp(6))
     )
