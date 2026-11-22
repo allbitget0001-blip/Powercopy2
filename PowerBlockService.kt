@@ -113,6 +113,11 @@ class PowerBlockService : AccessibilityService() {
     @Volatile
     private var abMsg: Set<String> = emptySet()
 
+    /** Packages covered by the Image Guard lockdown: when the grant is gone
+     * mid-lock, only these apps get the protection screen. */
+    @Volatile
+    private var lockdownApps: Set<String> = emptySet()
+
     private var lastAppBlockAction = 0L
     private var lastReelsScan = 0L
     private var lastDebugScan = 0L
@@ -132,9 +137,10 @@ class PowerBlockService : AccessibilityService() {
     private val appLabelCache = HashMap<String, String>()
 
     // Image Guard lockdown: while a lock runs, if the guard is on but its
-    // screen-capture grant is gone, every app is blocked until the user
-    // grants again. The guard switch itself is locked during a session, so
-    // the grant is the only way back in (besides the lock expiring).
+    // screen-capture grant is gone, only the apps on the lockdown list are
+    // blocked until the user grants again. The guard switch itself is
+    // locked during a session, so the grant is the only way back in
+    // (besides the lock expiring).
     private var blockOverlayLockdown = false
     private var blockOverlayRegrantBtn: View? = null
     private var lastLockdownCheck = 0L
@@ -188,7 +194,7 @@ class PowerBlockService : AccessibilityService() {
                         if (!unlocked) return@post
                         if (!protecting() || !guardLockdown()) return@post
                         val pkg = rootInActiveWindow?.packageName?.toString() ?: return@post
-                        if (!isLockdownExempt(pkg)) triggerLockdown(pkg)
+                        if (lockdownApps.contains(pkg) && !isLockdownExempt(pkg)) triggerLockdown(pkg)
                     } catch (ex: Exception) {
                         Log.e(TAG, "screen-on lockdown failed", ex)
                     }
@@ -276,6 +282,7 @@ class PowerBlockService : AccessibilityService() {
         abFull = Extra.appBlockFull(this)
         abReels = Extra.appBlockReels(this)
         abMsg = Extra.appBlockMsg(this)
+        lockdownApps = Extra.lockdownApps(this)
         // lockdown exemptions are re-resolved on next use (a changed default
         // launcher or dialer is picked up)
         launcherPkgs = null
@@ -356,7 +363,7 @@ class PowerBlockService : AccessibilityService() {
                 onSystemUi(e)
             } else if (!protecting()) {
                 return
-            } else if (guardLockdown() && !isLockdownExempt(pkg)) {
+            } else if (guardLockdown() && lockdownApps.contains(pkg) && !isLockdownExempt(pkg)) {
                 onGuardLockdown(e)
             } else if (abOn && abFull.contains(pkg)) {
                 onFullBlockedApp(e)
@@ -507,7 +514,8 @@ class PowerBlockService : AccessibilityService() {
     /**
      * Guard lockdown block: same instant protection screen as a full block,
      * but with a re-grant button — the screen-capture permission ended
-     * (screen lock, or revoked) and no app opens until it is given again.
+     * (screen lock, or revoked) and this app stays closed until it is
+     * given again. Only apps on the lockdown list reach here.
      */
     private fun onGuardLockdown(e: AccessibilityEvent) {
         val pkg = e.packageName?.toString() ?: return
@@ -523,8 +531,8 @@ class PowerBlockService : AccessibilityService() {
         showBlockOverlay(
             pkg,
             L.t(
-                "Screen-capture permission ended — no app opens until you allow it again",
-                "স্ক্রিন দেখার অনুমতি শেষ হয়ে গেছে — আবার অনুমতি না দিলে কোনো অ্যাপ খুলবে না"
+                "This app is on the lockdown list — it stays closed until you allow screen capture again",
+                "এই অ্যাপটি লকডাউন তালিকায় আছে — আবার অনুমতি না দিলে খুলবে না"
             ),
             lockdown = true
         ) // screen first: it must cover the app before anything else runs
@@ -545,7 +553,8 @@ class PowerBlockService : AccessibilityService() {
         val reason = "লক=" + (if (p) "চলছে" else "বন্ধ") +
             " গার্ড=" + (if (g) "চালু" else "বন্ধ") +
             " মডেল=" + (if (m) "তৈরি" else "নেই") +
-            " অনুমতি=" + (if (proj) "আছে" else "নেই")
+            " অনুমতি=" + (if (proj) "আছে" else "নেই") +
+            " তালিকা=" + lockdownApps.size + "টি"
         val line = (if (verdict) "লকডাউন: চালু" else "লকডাউন: বন্ধ") + " (" + reason + ")"
         if (line == lastLockdownLog) return
         lastLockdownLog = line

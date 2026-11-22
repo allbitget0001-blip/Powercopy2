@@ -469,7 +469,7 @@ class ImageGuardService : Service() {
                     .setContentTitle(L.t("Image guard needs permission again", "ছবি সুরক্ষার জন্য আবার অনুমতি দিন"))
                     .setContentText(
                         if (Store.isActive(ctx) || Store.isLocProtecting(ctx))
-                            L.t("Screen-capture permission ended — no app opens until you allow it again", "স্ক্রিন দেখার অনুমতি শেষ হয়ে গেছে — আবার না দিলে লক চলাকালীন কোনো অ্যাপ খুলবে না")
+                            L.t("Screen-capture permission ended — your lockdown apps stay closed until you allow it again", "স্ক্রিন দেখার অনুমতি শেষ হয়ে গেছে — আবার না দিলে লকডাউন তালিকার অ্যাপগুলো খুলবে না")
                         else
                             L.t("Screen-capture permission ended — open PowerLock to allow it again", "স্ক্রিন দেখার অনুমতি শেষ হয়ে গেছে — আবার দিতে PowerLock খুলুন")
                     )

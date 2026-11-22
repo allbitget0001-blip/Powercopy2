@@ -71,7 +71,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "30"
+    const val BUILD_ID = "31"
 
     // ---------- presets ----------
 
@@ -240,6 +240,18 @@ object Extra {
 
     fun setImageGuardOn(ctx: Context, on: Boolean) {
         Store.settings(ctx).edit().putBoolean("ig_on", on).apply()
+    }
+
+    /** Packages covered by the Image Guard lockdown: when the screen-capture
+     * grant ends mid-lock, only these apps get the protection screen until
+     * permission is given again — every other app opens normally. */
+    fun lockdownApps(ctx: Context): Set<String> {
+        val s = Store.settings(ctx).getString("ig_lockdown", "") ?: ""
+        return s.split(",").filter { it.isNotEmpty() }.toSet()
+    }
+
+    fun setLockdownApps(ctx: Context, apps: Set<String>) {
+        Store.settings(ctx).edit().putString("ig_lockdown", apps.joinToString(",")).apply()
     }
 
     /** Sensitivity: 0 = high (catches more), 1 = medium, 2 = low (fewer false alarms). */
@@ -950,7 +962,7 @@ fun MainActivity.appBlockModeCard(mode: String): View {
 }
 
 /** Add a package name by typing it — the app need not be installed yet, it is
- * blocked as soon as it is installed. [mode] is "full", "reels" or "msg". */
+ * blocked as soon as it is installed. [mode] is "full", "reels", "msg" or "lockdown". */
 private fun MainActivity.addPackageDialog(mode: String, done: () -> Unit) {
     val input = edit(L.t("Package name, e.g. com.facebook.katana", "প্যাকেজ নাম, যেমন com.facebook.katana"), false)
     val body = LinearLayout(this)
@@ -975,13 +987,14 @@ private fun MainActivity.addPackageDialog(mode: String, done: () -> Unit) {
                 return@setPositiveButton
             }
             // an app can only be in one list: full block wins over reels block;
-            // the search list is independent
+            // the search list and the lockdown list are independent
             when (mode) {
                 "full" -> {
                     Extra.setAppBlockFull(this, Extra.appBlockFull(this) + pkg)
                     Extra.setAppBlockReels(this, Extra.appBlockReels(this) - pkg)
                 }
                 "msg" -> Extra.setAppBlockMsg(this, Extra.appBlockMsg(this) + pkg)
+                "lockdown" -> Extra.setLockdownApps(this, Extra.lockdownApps(this) + pkg)
                 else -> {
                     Extra.setAppBlockReels(this, Extra.appBlockReels(this) + pkg)
                     Extra.setAppBlockFull(this, Extra.appBlockFull(this) - pkg)
@@ -1064,6 +1077,7 @@ private fun MainActivity.showAppBlockPicker(
         when (mode) {
             "full" -> Extra.appBlockFull(this)
             "msg" -> Extra.appBlockMsg(this)
+            "lockdown" -> Extra.lockdownApps(this)
             else -> Extra.appBlockReels(this)
         }
     )
@@ -1241,13 +1255,15 @@ private fun MainActivity.showAppBlockPicker(
             when (mode) {
                 "full" -> L.t("Choose apps to block fully", "সম্পূর্ণ ব্লক করার অ্যাপ বাছুন")
                 "msg" -> L.t("Choose apps for search block", "সার্চ ব্লকের অ্যাপ বাছুন")
+                "lockdown" -> L.t("Choose apps for lockdown", "লকডাউন অ্যাপ বাছুন")
                 else -> L.t("Choose apps for Reels block", "রিলস ব্লকের অ্যাপ বাছুন")
             }
         )
         .setView(body)
         .setPositiveButton(L.t("Save", "সংরক্ষণ")) { _, _ ->
             // an app can only be in one list: full block wins over reels block;
-            // the search list is independent (an app can block both its feed and its search).
+            // the search list is independent (an app can block both its feed and its search),
+            // and so is the lockdown list (an app can be locked down as well as blocked).
             // manually added package names (not installed, so not in the picker)
             // are kept — saving must not wipe them
             val manual = Extra.manualPackages(this)
@@ -1260,6 +1276,10 @@ private fun MainActivity.showAppBlockPicker(
                 "msg" -> {
                     val keep = Extra.appBlockMsg(this).filter { it in manual }
                     Extra.setAppBlockMsg(this, chosen + keep)
+                }
+                "lockdown" -> {
+                    val keep = Extra.lockdownApps(this).filter { it in manual }
+                    Extra.setLockdownApps(this, chosen + keep)
                 }
                 else -> {
                     val keep = Extra.appBlockReels(this).filter { it in manual }
@@ -1420,6 +1440,40 @@ fun MainActivity.imageGuardCard(): View {
     return c
 }
 
+/** Lockdown app list: when the guard's screen-capture grant ends mid-lock
+ * (screen lock, or revoked), only these apps are covered by the protection
+ * screen until permission is given again — every other app opens normally. */
+fun MainActivity.lockdownAppsCard(): View {
+    val c = card()
+    c.addView(section(L.t("Lockdown apps", "লকডাউন অ্যাপ")))
+    c.addView(
+        tv(
+            L.t("If screen-capture permission ends while a lock runs, only the apps you choose here are blocked until you allow it again. Other apps keep opening normally. Choose the apps where bad content could appear — browsers, gallery, social apps.", "লক চলাকালীন স্ক্রিন দেখার অনুমতি শেষ হয়ে গেলে শুধু এখানে বাছা অ্যাপগুলো ব্লক হবে, আবার অনুমতি না দেওয়া পর্যন্ত। বাকি অ্যাপগুলো স্বাভাবিকভাবে খুলবে। যেসব অ্যাপে খারাপ জিনিস আসতে পারে সেগুলো বাছুন — ব্রাউজার, গ্যালারি, সোশ্যাল অ্যাপ।"),
+            13f, C.muted
+        ),
+        lp(MATCH, WRAP, t = dp(6))
+    )
+    val count = Extra.lockdownApps(this).size
+    val locked = Store.isActive(this)
+    val pick = outlineBtn(L.t("Choose apps ($count selected)", "অ্যাপ বাছুন ($count টি নির্বাচিত)"), C.primary)
+    pick.setOnClickListener {
+        // adding only strengthens the lock, so it stays allowed during a
+        // session — the picker just won't let an already-chosen app be unchecked
+        appBlockPicker("lockdown", Store.isActive(this)) { go(4) }
+    }
+    c.addView(pick, lp(MATCH, dp(48), t = dp(10)))
+    val pkgBtn = outlineBtn(L.t("Add by package name", "প্যাকেজ নাম দিয়ে অ্যাড করুন"), C.primary)
+    pkgBtn.setOnClickListener { addPackageDialog("lockdown") { go(4) } }
+    c.addView(pkgBtn, lp(MATCH, dp(48), t = dp(8)))
+    if (count == 0) {
+        c.addView(tv(L.t("No apps chosen — if permission ends, nothing will be blocked.", "কোনো অ্যাপ বাছা হয়নি — অনুমতি শেষ হলে কিছুই ব্লক হবে না।"), 12f, C.warn), lp(MATCH, WRAP, t = dp(8)))
+    }
+    if (locked) {
+        c.addView(tv(L.t("While a session runs, apps can only be added, not removed.", "সেশন চলাকালীন শুধু অ্যাপ যোগ করা যাবে, সরানো যাবে না।"), 12f, C.warn), lp(MATCH, WRAP, t = dp(8)))
+    }
+    return c
+}
+
 /** Enable flow: download the model first (once), then ask for screen-capture
  * permission. ig_on is only written when the permission is granted (see
  * MainActivity.onActivityResult) — a failed setup leaves the guard off. */
@@ -1553,6 +1607,7 @@ fun MainActivity.lockedAppsCard(mode: String): View {
             when (mode) {
                 "full" -> L.t("Fully blocked apps", "সম্পূর্ণ ব্লক করা অ্যাপ")
                 "msg" -> L.t("Search blocked apps", "সার্চ ব্লক করা অ্যাপ")
+                "lockdown" -> L.t("Lockdown apps", "লকডাউন অ্যাপ")
                 else -> L.t("Reels blocked apps", "রিলস ব্লক করা অ্যাপ")
             }
         )
@@ -1562,6 +1617,7 @@ fun MainActivity.lockedAppsCard(mode: String): View {
     var pkgs = when (mode) {
         "full" -> Extra.appBlockFull(this)
         "msg" -> Extra.appBlockMsg(this)
+        "lockdown" -> Extra.lockdownApps(this)
         else -> Extra.appBlockReels(this)
     }
     if (pkgs.isEmpty()) {
@@ -1587,6 +1643,7 @@ fun MainActivity.lockedAppsCard(mode: String): View {
         when (mode) {
             "full" -> Extra.setAppBlockFull(this, pkgs)
             "msg" -> Extra.setAppBlockMsg(this, pkgs)
+            "lockdown" -> Extra.setLockdownApps(this, pkgs)
             else -> Extra.setAppBlockReels(this, pkgs)
         }
     }
@@ -1630,6 +1687,7 @@ fun MainActivity.lockedAppsCard(mode: String): View {
                 when (mode) {
                     "full" -> Extra.setAppBlockFull(this, Extra.appBlockFull(this) - row.pkg)
                     "msg" -> Extra.setAppBlockMsg(this, Extra.appBlockMsg(this) - row.pkg)
+                    "lockdown" -> Extra.setLockdownApps(this, Extra.lockdownApps(this) - row.pkg)
                     else -> Extra.setAppBlockReels(this, Extra.appBlockReels(this) - row.pkg)
                 }
                 Extra.setManualPackages(this, Extra.manualPackages(this) - row.pkg)
