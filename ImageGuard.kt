@@ -14,6 +14,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
@@ -51,6 +52,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import javax.net.ssl.HttpsURLConnection
+import kotlin.math.roundToInt
 
 /** Request code for the screen-capture permission activity. */
 const val REQ_IMAGE_GUARD = 1041
@@ -810,7 +812,10 @@ class ImageGuardService : Service() {
     private var lastBadgePkg: String? = null
     private var lastBadgeLabel: String? = null
     // the latest frame the model classified (a copy of the 224x224 input),
-    // shown in the live preview; shownFrame is the copy currently displayed
+    // shown in the live preview; shownFrame is the copy currently displayed.
+    // Written on the inference thread (runInference sets it to the
+    // highest-scoring tile), read on the main thread (updateScoreBadge).
+    @Volatile
     private var lastFrame: Bitmap? = null
     private var shownFrame: Bitmap? = null
 
@@ -1170,43 +1175,81 @@ class ImageGuardService : Service() {
         }
     }
 
+    /** Splits a frame into overlapping square tiles along its long side, so
+     * a small explicit region fills a tile instead of being diluted by the
+     * whole screen: a small image downscaled to 224x224 scores low on
+     * every model (the 19:27 log: L scored 0.13-0.39 on Albums content
+     * that should have scored far higher). A near-square frame yields one
+     * tile — the whole frame. */
+    private fun tileRects(w: Int, h: Int): List<Rect> {
+        val short = minOf(w, h)
+        val long = maxOf(w, h)
+        val portrait = h >= w
+        val count = ((long.toFloat() / short * 2).roundToInt() - 1).coerceAtLeast(1)
+        if (count == 1) return listOf(Rect(0, 0, w, h))
+        val span = long - short
+        val rects = ArrayList<Rect>(count)
+        for (i in 0 until count) {
+            val off = (span * i) / (count - 1)
+            rects.add(if (portrait) Rect(0, off, w, off + short) else Rect(off, 0, off + short, h))
+        }
+        return rects
+    }
+
     private fun scanFrame() {
         val bmp = frameBitmap() ?: return
         val meta = ImageGuardModel.info(Extra.igModel(this))
-        val small = try {
-            prepareFrame(bmp, meta)
-        } catch (e: Exception) {
-            null
-        }
+        // tile the frame (see tileRects): each tile is scored on its own
+        // and the highest score wins, so a small explicit region is no
+        // longer diluted by the rest of the screen
+        val smalls = ArrayList<Bitmap>()
         try {
-            bmp.recycle()
-        } catch (_: Exception) {
-        }
-        if (small == null) return
-        if (inferBusy) {
+            for (r in tileRects(bmp.width, bmp.height)) {
+                val tile = try {
+                    Bitmap.createBitmap(bmp, r.left, r.top, r.width(), r.height())
+                } catch (e: Exception) {
+                    continue
+                }
+                val small = try {
+                    prepareFrame(tile, meta)
+                } catch (e: Exception) {
+                    null
+                } finally {
+                    try {
+                        tile.recycle()
+                    } catch (_: Exception) {
+                    }
+                }
+                if (small != null) smalls.add(small)
+            }
+        } finally {
             try {
-                small.recycle()
+                bmp.recycle()
             } catch (_: Exception) {
+            }
+        }
+        if (smalls.isEmpty()) return
+        if (inferBusy) {
+            for (s in smalls) {
+                try {
+                    s.recycle()
+                } catch (_: Exception) {
+                }
             }
             return
         }
         val h = inferHandler
         if (h == null) {
-            try {
-                small.recycle()
-            } catch (_: Exception) {
+            for (s in smalls) {
+                try {
+                    s.recycle()
+                } catch (_: Exception) {
+                }
             }
             return
         }
-        // keep a copy for the live preview: this is exactly what the model
-        // is about to check (small itself is recycled after inference)
-        try {
-            lastFrame = Bitmap.createBitmap(small)
-        } catch (e: Exception) {
-            // out of memory: keep the previous preview frame
-        }
         inferBusy = true
-        h.post { runInference(small) }
+        h.post { runInference(smalls) }
     }
 
     /** Prepares the exact bitmap the selected model checks: resized to its
@@ -1230,23 +1273,40 @@ class ImageGuardService : Service() {
         return out
     }
 
-    /** Runs on the inference thread. */
-    private fun runInference(small: Bitmap) {
+    /** Runs on the inference thread. Scores every tile; the highest score
+     * wins. The preview shows the tile that scored highest — the region
+     * the model found most suspicious. */
+    private fun runInference(smalls: List<Bitmap>) {
+        var bestTile: Bitmap? = null
         try {
             val m = getModel() ?: return
-            val scored = m.nsfwScore(small)
             val threshold = Extra.igThreshold(this)
-            if (scored != null) {
-                val score = scored.score
+            var best: NsfwModel.Scored? = null
+            var bestIdx = -1
+            for ((i, small) in smalls.withIndex()) {
+                val scored = m.nsfwScore(small) ?: continue
+                if (best == null || scored.score > best.score) {
+                    best = scored
+                    bestIdx = i
+                }
+            }
+            if (best != null) {
+                val score = best.score
                 lastScore = score
                 val hit = score >= threshold
                 val s = String.format(Locale.US, "%.2f", score)
                 val t = String.format(Locale.US, "%.2f", threshold)
                 val app = PowerBlockService.foregroundPkg?.let { appLabel(it) } ?: "?"
                 val mid = loadedModel ?: Extra.igModel(this)
-                val detail = scored.detail?.let { " ($it)" } ?: ""
-                dbgSummary("[${stamp()}] $mid • $app: স্কোর $s (সীমা $t) — " + if (hit) "ধরা পড়েছে ✓" else "ধরা পড়েনি ✗" + detail)
-                dbg("[$mid][$app] score=$s threshold=$t hit=$hit" + detail)
+                val detail = best.detail?.let { " ($it)" } ?: ""
+                val tileInfo = if (smalls.size > 1) " [টাইল ${bestIdx + 1}/${smalls.size}]" else ""
+                dbgSummary("[${stamp()}] $mid • $app: স্কোর $s (সীমা $t) — " + if (hit) "ধরা পড়েছে ✓" else "ধরা পড়েনি ✗" + detail + tileInfo)
+                dbg("[$mid][$app] score=$s threshold=$t hit=$hit tile=${bestIdx + 1}/${smalls.size}" + detail)
+                // the preview shows the highest-scoring tile (not recycled
+                // below — it becomes lastFrame; the badge recycles the old
+                // displayed copy when it switches to this one)
+                bestTile = smalls[bestIdx]
+                lastFrame = bestTile
                 if (hit) handler.post { onDetected(score) }
             } else {
                 dbg("inference failed (null score)")
@@ -1254,9 +1314,13 @@ class ImageGuardService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "inference failed", e)
         } finally {
-            try {
-                small.recycle()
-            } catch (_: Exception) {
+            for (small in smalls) {
+                if (small !== bestTile) {
+                    try {
+                        small.recycle()
+                    } catch (_: Exception) {
+                    }
+                }
             }
             inferBusy = false
         }
@@ -1490,7 +1554,9 @@ class ImageGuardService : Service() {
                 tv.setTextColor(if (s != null && s >= threshold * 0.5f) C.warn else C.primary)
             }
         }
-        // live preview: the exact 224x224 frame the model just checked
+        // live preview: the highest-scoring tile — the region the model
+        // found most suspicious (with tiling, the model checks tiles, not
+        // the whole frame at once)
         if (iv != null) {
             val frame = if (showPreview && scanning) lastFrame else null
             iv.visibility = if (frame != null) View.VISIBLE else View.GONE
