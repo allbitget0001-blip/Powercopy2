@@ -62,5 +62,5 @@ android {
 
 dependencies {
     implementation("androidx.work:work-runtime:2.9.0")
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.3")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.1")
 }
