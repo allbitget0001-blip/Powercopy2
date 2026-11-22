@@ -33,6 +33,7 @@ class MainActivity : Activity() {
     private val navIcons = ArrayList<IconView>()
     private var tab = 0
     private var lastNavTab = -1
+    private var pendingRegrant = false
     private var home: HomeScreen? = null
 
     /** Selected quick-timer duration in minutes (persisted). */
@@ -82,6 +83,9 @@ class MainActivity : Activity() {
         navHolder.addView(buildNav())
         Scheduler.onAlarm(this)
         go(tab, false)
+        // re-grant notification deep-link: the screen lock ended the
+        // capture — the permission dialog opens in onResume, once
+        pendingRegrant = intent.getBooleanExtra("ig_regrant", false)
         Store.kickService(this) // restart the foreground service if it was swiped away
         Watchdog.enqueue(this) // safety net: restart the service every 15 min if it dies
         PlaceWatcher.checkNow(this) // already at a saved place? lock right away
@@ -97,6 +101,14 @@ class MainActivity : Activity() {
         handler.post(ticker)
         ImageGuardService.sync(this)
         if (tab == 3) go(3, false) // refresh permission status after returning from system settings
+        // notification deep-link (screen lock ended the capture): open the
+        // permission dialog at once — one-shot, so returning from the
+        // system dialog or a rotation does not re-trigger it
+        if (pendingRegrant) {
+            pendingRegrant = false
+            intent.removeExtra("ig_regrant")
+            handleRegrantDeepLink()
+        }
     }
 
     override fun onPause() {

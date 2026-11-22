@@ -454,8 +454,15 @@ class ImageGuardService : Service() {
             try {
                 ensureChannel(ctx)
                 L.load(ctx)
+                // deep-link: tapping the notification jumps straight to the
+                // permission dialog (Protection tab), so recovery after a
+                // screen lock is one tap plus the system dialog. Distinct
+                // request code so it never collides with the model-error
+                // notification's plain MainActivity PendingIntent.
                 val pi = PendingIntent.getActivity(
-                    ctx, 0, Intent(ctx, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
+                    ctx, NOTIF_REGRANT_ID,
+                    Intent(ctx, MainActivity::class.java).putExtra("ig_regrant", true),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
                 )
                 val b = Notification.Builder(ctx, CHANNEL_ID)
                     .setSmallIcon(android.R.drawable.ic_lock_lock)

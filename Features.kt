@@ -71,7 +71,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "26"
+    const val BUILD_ID = "27"
 
     // ---------- presets ----------
 
@@ -1469,6 +1469,22 @@ private fun MainActivity.enableImageGuard() {
     } else {
         requestImageGuardPermission()
     }
+}
+
+/**
+ * Notification deep-link: the user tapped "allow screen capture again"
+ * after the projection ended (e.g. the screen locked — Android stops
+ * every share on lock and the token is single-use, so a fresh grant is
+ * the only recovery). Jump to the Protection tab and open the permission
+ * dialog at once, so recovery is one tap plus the system dialog instead
+ * of hunting through the app.
+ */
+fun MainActivity.handleRegrantDeepLink() {
+    if (!Extra.imageGuardOn(this)) return
+    if (ImageGuardService.hasProjection()) return
+    if (!ImageGuardModel.ready(this)) return
+    go(4, false)
+    requestImageGuardPermission()
 }
 
 @Suppress("DEPRECATION")
