@@ -1123,9 +1123,12 @@ class ImageGuardService : Service() {
             tv.setTextColor(C.muted)
         } else {
             val s = lastScore
-            val pct = if (s == null) "--" else "${(s * 100).toInt()}%"
-            tv.text = "$label $pct"
             val threshold = Extra.igThreshold(this)
+            val pct = if (s == null) "--" else "${(s * 100).toInt()}%"
+            val thrPct = "${(threshold * 100).toInt()}%"
+            // current score vs the threshold at which the screen blocks,
+            // e.g. "Chrome 4% / 50%" — the screen blocks at 50%
+            tv.text = "$label $pct / $thrPct"
             tv.setTextColor(if (s != null && s >= threshold * 0.5f) C.warn else C.primary)
         }
     }
