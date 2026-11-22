@@ -142,6 +142,8 @@ class PowerBlockService : AccessibilityService() {
     private var launcherPkgs: Set<String>? = null
     private var dialerPkg: String? = null
     private var dialerPkgLoaded = false
+    private var lastLockdownLog: String? = null
+    private var screenOnReceiverOn = false
 
     // Tab labels that mean a Reels / Shorts / Status feed is showing when selected.
     private val reelsTabMarkers = listOf(
@@ -168,6 +170,35 @@ class PowerBlockService : AccessibilityService() {
     private var lastWinScan = 0L
     private var receiverOn = false
 
+    // Screen-on / unlock: the grant dies when the screen locks, and the app
+    // that was already in front gets NO window event when the screen comes
+    // back on — without this, that app would stay usable with no lockdown.
+    // SCREEN_ON only re-evaluates and logs (the keyguard may still be up);
+    // USER_PRESENT (unlocked) also covers the current foreground app.
+    private val screenOnReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context?, i: Intent?) {
+            try {
+                // the grant state changed while the screen was off: never
+                // trust the 1s cache here
+                lastLockdownCheck = 0
+                val unlocked = i?.action == Intent.ACTION_USER_PRESENT
+                handler.post {
+                    try {
+                        logLockdownVerdict()
+                        if (!unlocked) return@post
+                        if (!protecting() || !guardLockdown()) return@post
+                        val pkg = rootInActiveWindow?.packageName?.toString() ?: return@post
+                        if (!isLockdownExempt(pkg)) triggerLockdown(pkg)
+                    } catch (ex: Exception) {
+                        Log.e(TAG, "screen-on lockdown failed", ex)
+                    }
+                }
+            } catch (ex: Exception) {
+                Log.e(TAG, "screen-on receiver failed", ex)
+            }
+        }
+    }
+
     // The system announces "globalactions" the instant the power button is long-pressed,
     // before the menu is even drawn - the earliest possible trigger.
     private val closeDialogsReceiver = object : BroadcastReceiver() {
@@ -190,10 +221,26 @@ class PowerBlockService : AccessibilityService() {
             ensureOverlay() // pre-build the shield so it can appear instantly
             ensureBlockOverlay() // pre-build the block screen too: it must appear instantly
             registerCloseDialogs()
+            registerScreenOn()
             Store.kickService(this)
             Scheduler.onAlarm(this)
         } catch (e: Exception) {
             Log.e(TAG, "onServiceConnected failed", e)
+        }
+    }
+
+    private fun registerScreenOn() {
+        try {
+            val f = IntentFilter(Intent.ACTION_SCREEN_ON)
+            f.addAction(Intent.ACTION_USER_PRESENT)
+            if (Build.VERSION.SDK_INT >= 33) {
+                registerReceiver(screenOnReceiver, f, Context.RECEIVER_EXPORTED)
+            } else {
+                registerReceiver(screenOnReceiver, f)
+            }
+            screenOnReceiverOn = true
+        } catch (ex: Exception) {
+            Log.e(TAG, "register screen-on failed", ex)
         }
     }
 
@@ -270,6 +317,8 @@ class PowerBlockService : AccessibilityService() {
         val pkg = e.packageName?.toString() ?: return
         try {
             maybeReviveKeepAlive() // the system re-binds this service, so it revives the keep-alive service
+            // diagnostic: the lockdown verdict, logged whenever it changes
+            if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) logLockdownVerdict()
             // the block screen follows the foreground app: hide it once protection ends,
             // or once a real window change shows another app in front. Our own package
             // is excluded: taps on the overlay itself must not dismiss it.
@@ -417,8 +466,11 @@ class PowerBlockService : AccessibilityService() {
 
     /** Apps the lockdown never covers: PowerLock itself (the way back in),
      * the launcher (the home screen stays usable), and the default dialer
-     * (emergency calls must always work). */
+     * (emergency calls must always work). System UI too: the screen-on path
+     * runs while the keyguard may still be up, and the overlay must never
+     * cover it. */
     private fun isLockdownExempt(pkg: String): Boolean {
+        if (pkg.contains("systemui")) return true
         if (pkg == packageName) return true
         if (launcherPkgs == null) {
             launcherPkgs = try {
@@ -449,10 +501,15 @@ class PowerBlockService : AccessibilityService() {
      */
     private fun onGuardLockdown(e: AccessibilityEvent) {
         val pkg = e.packageName?.toString() ?: return
+        triggerLockdown(pkg)
+    }
+
+    private fun triggerLockdown(pkg: String) {
         val now = SystemClock.uptimeMillis()
         if (pkg == lastBlockPkg && now - lastBlockAt < 1000 && blockOverlayAttached) return
         lastBlockPkg = pkg
         lastBlockAt = now
+        debugLockdown("লকডাউন: ${appLabel(pkg)} ব্লক করা হয়েছে")
         showBlockOverlay(
             pkg,
             L.t(
@@ -462,6 +519,35 @@ class PowerBlockService : AccessibilityService() {
             lockdown = true
         ) // screen first: it must cover the app before anything else runs
         Extra.logAttempt(this, "appblock")
+    }
+
+    /** Diagnostic: log the lockdown verdict whenever it changes, so the
+     * Diagnostic card names the exact reason the lockdown is or is not
+     * active (lock running? guard on? model ready? grant alive?). Reads
+     * fresh truth every time — never the 1s cache — because this log is
+     * what a missed block is diagnosed from. */
+    private fun logLockdownVerdict() {
+        val p = protecting()
+        val g = Extra.imageGuardOn(this)
+        val m = ImageGuardModel.ready(this)
+        val proj = ImageGuardService.hasProjection()
+        val verdict = p && g && m && !proj
+        val reason = "লক=" + (if (p) "চলছে" else "বন্ধ") +
+            " গার্ড=" + (if (g) "চালু" else "বন্ধ") +
+            " মডেল=" + (if (m) "তৈরি" else "নেই") +
+            " অনুমতি=" + (if (proj) "আছে" else "নেই")
+        val line = (if (verdict) "লকডাউন: চালু" else "লকডাউন: বন্ধ") + " (" + reason + ")"
+        if (line == lastLockdownLog) return
+        lastLockdownLog = line
+        debugLockdown(line)
+    }
+
+    private fun debugLockdown(line: String) {
+        val time = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
+        debugSummary.add("[$time] $line")
+        while (debugSummary.size > 60) debugSummary.removeAt(0)
+        debugLog.add("[$time] lockdown: $line")
+        while (debugLog.size > 120) debugLog.removeAt(0)
     }
 
     private fun appLabel(pkg: String): String {
@@ -1300,6 +1386,14 @@ class PowerBlockService : AccessibilityService() {
                 unregisterReceiver(closeDialogsReceiver)
             } catch (ex: Exception) {
                 Log.e(TAG, "unregister close-dialogs failed", ex)
+            }
+        }
+        if (screenOnReceiverOn) {
+            screenOnReceiverOn = false
+            try {
+                unregisterReceiver(screenOnReceiver)
+            } catch (ex: Exception) {
+                Log.e(TAG, "unregister screen-on failed", ex)
             }
         }
         try {
