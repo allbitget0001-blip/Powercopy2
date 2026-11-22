@@ -71,7 +71,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "25"
+    const val BUILD_ID = "26"
 
     // ---------- presets ----------
 
@@ -1342,12 +1342,17 @@ fun MainActivity.imageGuardCard(): View {
     )
     // status line
     val modelErr = Extra.igModelError(this)
-    val needsGrant = on && !modelErr && ImageGuardModel.ready(this) && !ImageGuardService.hasProjection()
+    // the error flag is stale history (it survives app updates); the file
+    // check and the grant check are current truth, so they come first —
+    // otherwise a stale flag hides the re-grant prompt and the guard can
+    // never start again after an update (dead end: no grant, no service,
+    // no log, and the only offered way out re-downloads a good model)
+    val needsGrant = on && ImageGuardModel.ready(this) && !ImageGuardService.hasProjection()
     val status = when {
         !on -> L.t("Off", "বন্ধ")
-        modelErr -> L.t("Model failed to load — turn it off and on again to re-download", "মডেল লোড হয়নি — আবার ডাউনলোড করতে বন্ধ করে চালু করুন")
         !ImageGuardModel.ready(this) -> L.t("Model not downloaded yet", "মডেল এখনো ডাউনলোড হয়নি")
         needsGrant -> L.t("Tap here to allow screen capture", "স্ক্রিন দেখার অনুমতি দিতে এখানে চাপুন")
+        modelErr -> L.t("Model failed to load — turn it off and on again to re-download", "মডেল লোড হয়নি — আবার ডাউনলোড করতে বন্ধ করে চালু করুন")
         Store.isActive(this) || Store.isLocProtecting(this) -> L.t("Lock running — watching the screen", "লক চলছে — স্ক্রিন পর্যবেক্ষণ চলছে")
         else -> L.t("On — active while a lock runs", "চালু আছে — লক চললে সক্রিয় হবে")
     }
@@ -1419,7 +1424,10 @@ fun MainActivity.imageGuardCard(): View {
  * permission. ig_on is only written when the permission is granted (see
  * MainActivity.onActivityResult) — a failed setup leaves the guard off. */
 private fun MainActivity.enableImageGuard() {
-    if (!ImageGuardModel.ready(this) || Extra.igModelError(this)) {
+    // only download when the file is genuinely missing or incomplete — a
+    // stale load-error flag must never delete a good model and spend
+    // another 106 MB; a complete file gets its load retried by the service
+    if (!ImageGuardModel.ready(this)) {
         val prog = tv("0%", 18f, C.text, 1)
         prog.gravity = Gravity.CENTER
         val body = LinearLayout(this)
