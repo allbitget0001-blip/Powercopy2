@@ -323,22 +323,32 @@ class PowerBlockService : AccessibilityService() {
             // or once a real window change shows another app in front. Our own package
             // is excluded: taps on the overlay itself must not dismiss it.
             if (blockOverlayAttached && !protecting()) {
+                if (blockOverlayLockdown) debugLockdown("লকডাউন স্ক্রিন লুকানো হয়েছে: লক শেষ")
                 hideBlockOverlay()
             } else if (blockOverlayAttached && blockOverlayLockdown && !guardLockdown()) {
                 // the grant came back (re-granted from the overlay or the
                 // notification): lift the lockdown screen at once, even for
                 // the same app — the branch below only hides on a switch to
                 // another app
+                debugLockdown("লকডাউন স্ক্রিন লুকানো হয়েছে: অনুমতি ফিরে এসেছে")
                 hideBlockOverlay()
             } else if (blockOverlayAttached && blockOverlayLockdown && pkg == packageName &&
-                e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+                e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+                e.className?.toString()?.contains("MainActivity") == true
             ) {
-                // our own app came forward (notification tap, or the
-                // re-grant button): the overlay must not cover PowerLock
+                // our MAIN ACTIVITY came forward (notification tap): the
+                // overlay must not cover PowerLock. The class check matters:
+                // the overlay window itself fires window-state-changed
+                // events for our package, and hiding on those made the
+                // lockdown screen flicker — every show triggered its own
+                // hide, so the fade-in kept restarting and the screen only
+                // ever showed as a faint ghost.
+                debugLockdown("লকডাউন স্ক্রিন লুকানো হয়েছে: PowerLock খোলা হয়েছে")
                 hideBlockOverlay()
             } else if (blockOverlayAttached && e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
                 !pkg.contains("systemui") && pkg != packageName && pkg != blockedPkg
             ) {
+                if (blockOverlayLockdown) debugLockdown("লকডাউন স্ক্রিন লুকানো হয়েছে: অন্য অ্যাপ খোলা হয়েছে")
                 hideBlockOverlay()
             }
             if (pkg.contains("systemui")) {
