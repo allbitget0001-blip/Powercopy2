@@ -71,7 +71,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "39"
+    const val BUILD_ID = "40"
 
     // ---------- presets ----------
 
@@ -1424,7 +1424,7 @@ fun MainActivity.imageGuardCard(): View {
     c.addView(modelSeg, lp(MATCH, WRAP, t = dp(10)))
     c.addView(
         tv(
-            L.t("Model XS/S/M/L — OwenElliott, bigger is more accurate (XS 97.8%, S 98.0%, M 98.1%, L 98.2%). NUDE = NudeNet detector (finds exposed body parts), MOB = MobileNetV4 classifier, YAHOO = Yahoo OpenNSFW. Downloaded models stay on the phone; a new one downloads on Wi-Fi only.", "মডেল XS/S/M/L — OwenElliott, বড়টা বেশি নির্ভুল (XS ৯৭.৮%, S ৯৮.০%, M ৯৮.১%, L ৯৮.২%)। NUDE = NudeNet ডিটেক্টর (খোলা শরীরের অংশ খুঁজে পায়), MOB = MobileNetV4 ক্লাসিফায়ার, YAHOO = Yahoo OpenNSFW। ডাউনলোড করা মডেল ফোনেই থাকবে; নতুন মডেল শুধু Wi-Fi-তে ডাউনলোড হবে।"),
+            L.t("Model XS/S/M/L — OwenElliott, bigger is more accurate (XS 97.8%, S 98.0%, M 98.1%, L 98.2%). NUDE = NudeNet detector (finds exposed body parts), MOB = MobileNetV4 classifier, YAHOO = Yahoo OpenNSFW. Downloaded models stay on the phone; a new one downloads on Wi-Fi, or on mobile data if you confirm.", "মডেল XS/S/M/L — OwenElliott, বড়টা বেশি নির্ভুল (XS ৯৭.৮%, S ৯৮.০%, M ৯৮.১%, L ৯৮.২%)। NUDE = NudeNet ডিটেক্টর (খোলা শরীরের অংশ খুঁজে পায়), MOB = MobileNetV4 ক্লাসিফায়ার, YAHOO = Yahoo OpenNSFW। ডাউনলোড করা মডেল ফোনেই থাকবে; নতুন মডেল Wi-Fi-তে ডাউনলোড হয়, মোবাইল ডেটায় চাইলে অনুমতি চাইবে।"),
             12f, C.muted
         ),
         lp(MATCH, WRAP, t = dp(6))
@@ -1479,7 +1479,7 @@ fun MainActivity.imageGuardCard(): View {
         statusTv.setOnClickListener { requestImageGuardPermission() }
     } else if (on && !ImageGuardModel.ready(this)) {
         // the selected model is missing (deleted, or its download failed):
-        // tapping re-downloads it (Wi-Fi only, like the switcher)
+        // tapping re-downloads it (asks before using mobile data, like the switcher)
         statusTv.setOnClickListener { downloadModel(Extra.igModel(this)) }
     }
     c.addView(statusTv, lp(MATCH, WRAP, t = dp(8)))
@@ -1625,17 +1625,30 @@ private fun MainActivity.enableImageGuard() {
     }
 }
 
-/** Downloads a model the user picked in the switcher (Wi-Fi only), then
- * selects it. The current model keeps working until the new one is ready —
- * the preference only changes after a successful download, so a failed
- * download never leaves the guard without a model. */
+/** Downloads a model the user picked in the switcher, then selects it. The
+ * current model keeps working until the new one is ready — the preference
+ * only changes after a successful download, so a failed download never
+ * leaves the guard without a model. On Wi-Fi the download starts at once;
+ * on mobile data it asks first (showing the size) — the download is
+ * resumable, so a dropped connection costs nothing extra. */
 private fun MainActivity.downloadModel(modelId: String) {
     val meta = ImageGuardModel.info(modelId)
     if (!ImageGuardModel.isWifi(this)) {
-        toast(L.t("New models download on Wi-Fi only — connect to Wi-Fi and try again", "নতুন মডেল শুধু Wi-Fi-তে ডাউনলোড হয় — Wi-Fi-তে যুক্ত হয়ে আবার চেষ্টা করুন"))
-        go(4)
+        dlg()
+            .setTitle(L.t("No Wi-Fi", "Wi-Fi নেই"))
+            .setMessage(L.t("Model $modelId (${meta.sizeLabel}) will download on mobile data, once only. If the download drops, it resumes where it stopped instead of starting over. Download it?", "মডেল $modelId (${meta.sizeLabel}) মোবাইল ডেটা দিয়ে ডাউনলোড হবে, শুধু একবার। ডাউনলোড আটকে গেলে আবার শুরু থেকে হবে না — যেখানে থেমেছে সেখান থেকে চলবে। ডাউনলোড করবে?"))
+            .setPositiveButton(L.t("Download", "ডাউনলোড করো")) { _, _ -> startModelDownload(modelId, meta) }
+            .setNegativeButton(L.t("Cancel", "বাতিল")) { _, _ -> go(4) }
+            .setOnCancelListener { go(4) }
+            .show()
         return
     }
+    startModelDownload(modelId, meta)
+}
+
+/** The actual download: progress dialog + background thread. Called from
+ * downloadModel() after the Wi-Fi check / confirmation. */
+private fun MainActivity.startModelDownload(modelId: String, meta: ImageGuardModel.Info) {
     val prog = tv("0%", 18f, C.text, 1)
     prog.gravity = Gravity.CENTER
     val body = LinearLayout(this)
