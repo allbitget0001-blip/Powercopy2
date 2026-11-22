@@ -450,8 +450,14 @@ class PowerBlockService : AccessibilityService() {
      * keyboard, the navigation bar, System UI, or another overlay). The
      * window type is the reliable signal — package names vary by OEM
      * ("System navigation" is a separate package on this phone, not
-     * systemui). When the window cannot be resolved (already closed, or
-     * the window list is unavailable), falls back to the package filter. */
+     * systemui). Only TYPE_APPLICATION counts: an app's own dialogs and
+     * panels are part of that app anyway, and the main window fires the
+     * event when the app opens. (AccessibilityWindowInfo has no
+     * TYPE_APPLICATION_PANEL / _MEDIA / _SUB_PANEL / _ATTACHED_DIALOG
+     * constants — those belong to LayoutParams; build 44's first attempt
+     * failed to compile on them.) When the window cannot be resolved
+     * (already closed, or the window list is unavailable), falls back to
+     * the package filter. */
     private fun isAppWindow(e: AccessibilityEvent): Boolean {
         try {
             val wins = windows
@@ -459,14 +465,7 @@ class PowerBlockService : AccessibilityService() {
                 try {
                     for (w in wins) {
                         if (w.id == e.windowId) {
-                            return when (w.type) {
-                                AccessibilityWindowInfo.TYPE_APPLICATION,
-                                AccessibilityWindowInfo.TYPE_APPLICATION_PANEL,
-                                AccessibilityWindowInfo.TYPE_APPLICATION_MEDIA,
-                                AccessibilityWindowInfo.TYPE_APPLICATION_SUB_PANEL,
-                                AccessibilityWindowInfo.TYPE_APPLICATION_ATTACHED_DIALOG -> true
-                                else -> false
-                            }
+                            return w.type == AccessibilityWindowInfo.TYPE_APPLICATION
                         }
                     }
                 } finally {
