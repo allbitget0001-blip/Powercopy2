@@ -16,8 +16,6 @@ import android.graphics.drawable.GradientDrawable
 import android.location.Location
 import android.net.Uri
 import android.os.Build
-import android.os.PowerManager
-import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
@@ -43,14 +41,6 @@ class HomeScreen(private val a: MainActivity) {
     private lateinit var lastSummaryText: TextView
     private var summaryShown = false
     private var lastSummarySig = ""
-    private lateinit var screenTimeText: TextView
-    private var cachedUsageSec = -1L
-    private var cachedUsageAt = 0L
-    private var cachedUsageDay = ""
-    private lateinit var profileRow: LinearLayout
-    private lateinit var profileNameText: TextView
-    private lateinit var profileSubText: TextView
-    private var profileSig = ""
     private val detoxDots = ArrayList<TextView>()
     private lateinit var detoxLabel: TextView
     private lateinit var detoxBtn: TextView
@@ -232,9 +222,6 @@ class HomeScreen(private val a: MainActivity) {
         col.addView(previewText, lp(MATCH, WRAP, t = a.dp(12)))
         lastSummaryText = a.tv("", 13f, C.mint)
         col.addView(lastSummaryText, lp(MATCH, WRAP, t = a.dp(6)))
-        // live screen time today: stored totals + the app open right now
-        screenTimeText = a.tv("", 13f, C.muted)
-        col.addView(screenTimeText, lp(MATCH, WRAP, t = a.dp(4)))
 
         // ---- unlock condition: time only, location only, or either one ----
         col.addView(a.heading(L.t("When does the lock open?", "লক খুলবে কখন?")), lp(MATCH, WRAP, t = a.dp(26), b = a.dp(4)))
@@ -271,25 +258,6 @@ class HomeScreen(private val a: MainActivity) {
         destRow.pressFeedback()
         col.addView(destRow, lp(MATCH, WRAP, t = a.dp(10)))
 
-        // ---- lock profile: extra apps blocked for this session ----
-        profileRow = LinearLayout(a)
-        profileRow.orientation = LinearLayout.HORIZONTAL
-        profileRow.gravity = Gravity.CENTER_VERTICAL
-        profileRow.background = rounded(C.card2, a.dp(18).toFloat())
-        profileRow.setPadding(a.dp(16), a.dp(14), a.dp(16), a.dp(14))
-        profileRow.addView(IconView(a, Ic.SHIELD, C.primary), lp(a.dp(26), a.dp(26), r = a.dp(12)))
-        val profCol = LinearLayout(a)
-        profCol.orientation = LinearLayout.VERTICAL
-        profileNameText = a.tv("", 16f, C.text, 1)
-        profCol.addView(profileNameText)
-        profileSubText = a.tv("", 12f, C.primary)
-        profCol.addView(profileSubText)
-        profileRow.addView(profCol, lp(0, WRAP, weight = 1f))
-        profileRow.addView(a.tv("›", 22f, C.muted, 1))
-        profileRow.setOnClickListener { pickProfile() }
-        profileRow.pressFeedback()
-        col.addView(profileRow, lp(MATCH, WRAP, t = a.dp(10)))
-
         // ---- presets ----
         col.addView(a.presetsCard { refreshChips(true); tick() })
 
@@ -320,7 +288,6 @@ class HomeScreen(private val a: MainActivity) {
 
         refreshChips()
         refreshModeChips()
-        refreshProfileRow()
         tick()
         return sv
     }
@@ -689,99 +656,14 @@ class HomeScreen(private val a: MainActivity) {
             lastPom = pom.active
             refreshChips()
             refreshModeChips()
-            refreshProfileRow()
         }
         updateWarnings()
         updateLastSummary()
-        updateScreenTime()
         updateDetox()
         updatePomodoro()
         updateHabits()
         maybeShowSummary()
         maybeShowBadge()
-    }
-
-    /** Live screen time today: the stored day total (re-read at most every 10 s)
-     * plus the app open right now. Screen-off time never counts. */
-    private fun updateScreenTime() {
-        val now = System.currentTimeMillis()
-        val day = Store.dayKey(0)
-        if (cachedUsageSec < 0 || cachedUsageDay != day || now - cachedUsageAt > 10_000) {
-            cachedUsageSec = Extra.usageDayTotal(a, day)
-            cachedUsageDay = day
-            cachedUsageAt = now
-        }
-        var total = cachedUsageSec
-        val (livePkg, liveSince, liveDay) = Extra.liveSlice(a)
-        if (livePkg != null && liveDay == day) {
-            val pm = a.getSystemService(Context.POWER_SERVICE) as PowerManager
-            if (pm.isInteractive) {
-                total += ((SystemClock.uptimeMillis() - liveSince) / 1000).coerceAtLeast(0L)
-            }
-        }
-        screenTimeText.text = L.t("Screen time today: ", "আজকের স্ক্রিন টাইম: ") + fmtDur(total * 1000L)
-    }
-
-    // ---------- lock profile (extra apps for this session) ----------
-
-    /** The profile chosen for the next lock (-1 = none). A deleted profile reads as none. */
-    private fun selectedProfileId(): Long {
-        val id = Store.settings(a).getLong("lock_profile", -1L)
-        if (id <= 0) return -1L
-        return if (Extra.lockProfiles(a).any { it.id == id }) id else -1L
-    }
-
-    private fun refreshProfileRow() {
-        val active = Store.isActive(a)
-        val pom = Pomodoro.state(a).active
-        val sessionName = Store.sessionProfileName(a)
-        val chosen = if (selectedProfileId() > 0) Extra.lockProfiles(a).find { it.id == selectedProfileId() } else null
-        val sig = "$active:$pom:$sessionName:${chosen?.id ?: -1}:${Extra.lockProfiles(a).size}"
-        if (sig == profileSig) return
-        profileSig = sig
-        profileRow.alpha = if (active || pom) 0.4f else 1f
-        when {
-            active && sessionName != null -> {
-                profileNameText.text = L.t("Profile: ", "প্রোফাইল: ") + sessionName
-                profileSubText.text = L.t("This session", "এই সেশনে")
-            }
-            chosen != null -> {
-                profileNameText.text = L.t("Profile: ", "প্রোফাইল: ") + chosen.name
-                profileSubText.text = L.num(chosen.pkgs.size.toString()) + " " + L.t("extra apps · tap to change", "টি অতিরিক্ত অ্যাপ · বদলাতে চাপুন")
-            }
-            Extra.lockProfiles(a).isEmpty() -> {
-                profileNameText.text = L.t("Profile: none", "প্রোফাইল: কোনোটা নয়")
-                profileSubText.text = L.t("Create one in the Protection tab", "সুরক্ষা ট্যাবে প্রোফাইল বানান")
-            }
-            else -> {
-                profileNameText.text = L.t("Profile: none", "প্রোফাইল: কোনোটা নয়")
-                profileSubText.text = L.t("Tap to choose", "বাছতে চাপুন")
-            }
-        }
-    }
-
-    private fun pickProfile() {
-        if (Store.isActive(a)) return
-        if (Pomodoro.state(a).active) return
-        val profiles = Extra.lockProfiles(a)
-        if (profiles.isEmpty()) {
-            a.toast(L.t("Create a profile in the Protection tab first", "আগে সুরক্ষা ট্যাবে একটা প্রোফাইল বানান"))
-            a.go(4)
-            return
-        }
-        val items = ArrayList<String>()
-        items.add(L.t("No profile", "কোনো প্রোফাইল নয়"))
-        for (p in profiles) items.add(p.name + "  ·  " + L.num(p.pkgs.size.toString()) + " " + L.t("apps", "টি অ্যাপ"))
-        a.dlg()
-            .setTitle(L.t("Lock profile", "লক প্রোফাইল"))
-            .setItems(items.toTypedArray()) { _, which ->
-                val id = if (which == 0) -1L else profiles[which - 1].id
-                Store.settings(a).edit().putLong("lock_profile", id).apply()
-                profileSig = ""
-                refreshProfileRow()
-                tick()
-            }
-            .show()
     }
 
     /** One line under the duration preview: what the last completed lock achieved. */
@@ -820,8 +702,7 @@ class HomeScreen(private val a: MainActivity) {
         a.dlg()
             .setTitle(L.t("Session completed!", "সেশন সম্পন্ন!"))
             .setMessage(
-                L.t("Focus time: ", "ফোকাস সময়: ") + fmtDur(s.durMs) + "\n" + blocksTxt +
-                    "\n\n" + Quotes.random()
+                L.t("Focus time: ", "ফোকাস সময়: ") + fmtDur(s.durMs) + "\n" + blocksTxt
             )
             .setPositiveButton(L.t("Great!", "ভালো হয়েছে!"), null)
             .show()
@@ -1178,14 +1059,6 @@ class HomeScreen(private val a: MainActivity) {
         val ends = fmtClock(System.currentTimeMillis() + ms)
         val d = fmtDur(ms)
         val strictOn = Store.settings(a).getBoolean("strict", false)
-        val profileId = selectedProfileId()
-        val prof = if (profileId > 0) Extra.lockProfiles(a).find { it.id == profileId } else null
-        val profTxt = if (prof != null) {
-            L.t(
-                "\n\nProfile: ${prof.name} — ${prof.pkgs.size} extra apps will be blocked.",
-                "\n\nপ্রোফাইল: ${prof.name} — আরও ${L.num(prof.pkgs.size.toString())}টি অ্যাপ ব্লক হবে।"
-            )
-        } else ""
         val extra = if (strictOn) {
             L.t(
                 "\n\nStrict mode is ON: you will NOT be able to stop early.",
@@ -1203,10 +1076,10 @@ class HomeScreen(private val a: MainActivity) {
                 L.t(
                     "The power menu will be blocked for $d, until $ends.",
                     "$d ধরে পাওয়ার মেনু ব্লক থাকবে, $ends পর্যন্ত।"
-                ) + profTxt + extra
+                ) + extra
             )
             .setPositiveButton(L.t("Start", "শুরু করুন")) { _, _ ->
-                Store.startSession(a, ms, "manual", null, UNLOCK_TIME, profileId)
+                Store.startSession(a, ms, "manual")
                 a.toast(L.t("Protection started", "প্রটেকশন শুরু হয়েছে"))
                 tick()
             }
@@ -1239,21 +1112,13 @@ class HomeScreen(private val a: MainActivity) {
         }
         val there = if (alreadyThere) L.t("\n\nYou are already at ${dest.name} — the lock will open right away.", "\n\nতুমি ইতিমধ্যে ${dest.name}-এ আছো — লক শুরু করলেই খুলে যাবে।") else ""
         val bgWarn = if (!Perm.backgroundLocationOn(a)) L.t("\n\n\"Allow all the time\" is off: arrival may not be detected with the screen off.", "\n\n\"সবসময় অনুমতি\" বন্ধ: স্ক্রিন বন্ধ থাকলে পৌঁছানো ধরা নাও পড়তে পারে।") else ""
-        val profileId = selectedProfileId()
-        val prof = if (profileId > 0) Extra.lockProfiles(a).find { it.id == profileId } else null
-        val profTxt = if (prof != null) {
-            L.t(
-                "\n\nProfile: ${prof.name} — ${prof.pkgs.size} extra apps will be blocked.",
-                "\n\nপ্রোফাইল: ${prof.name} — আরও ${prof.pkgs.size}টি অ্যাপ ব্লক হবে।"
-            )
-        } else ""
         a.dlg()
             .setTitle(L.t("Start protection?", "প্রটেকশন শুরু করবেন?"))
-            .setMessage(L.num(body + extra + there + bgWarn + profTxt))
+            .setMessage(L.num(body + extra + there + bgWarn))
             .setPositiveButton(L.t("Start", "শুরু করুন")) { _, _ ->
                 // location-only: the 15-day cap is only a safety valve, arrival ends it
                 val dur = if (mode == UNLOCK_LOC) MAX_MIN * 60_000L else ms
-                Store.startSession(a, dur, "manual", dest, mode, profileId)
+                Store.startSession(a, dur, "manual", dest, mode)
                 PlaceWatcher.sync(a) // start watching for the arrival right away
                 PlaceWatcher.checkUnlockNow(a)
                 a.toast(L.t("Protection started", "প্রটেকশন শুরু হয়েছে"))
@@ -1771,9 +1636,6 @@ class StatsScreen(private val a: MainActivity) {
         }
         col.addView(usageCard, lp(MATCH, WRAP, b = a.dp(14)))
 
-        // temptation counter: blocked/limited apps the user tried to open
-        col.addView(a.attemptsCard(), lp(MATCH, WRAP, b = a.dp(14)))
-
         // history
         val hist = a.card()
         hist.addView(a.section(L.t("Session history", "সেশন ইতিহাস")))
@@ -2018,35 +1880,6 @@ class SettingsScreen(private val a: MainActivity) {
         tr.addView(t0, lp(0, WRAP, r = a.dp(8), t = a.dp(10), weight = 1f))
         tr.addView(t1, lp(0, WRAP, t = a.dp(10), weight = 1f))
         theme.addView(tr)
-        // accent colour: 5 swatches — the chosen one colours the ring, chips and buttons
-        val acLabel = a.tv(L.t("Accent colour", "অ্যাকসেন্ট রঙ"), 13f, C.muted, 1)
-        theme.addView(acLabel, lp(MATCH, WRAP, t = a.dp(16)))
-        val acRow = LinearLayout(a)
-        acRow.gravity = Gravity.CENTER_VERTICAL
-        val swatches = ArrayList<View>()
-        fun styleSwatches() {
-            val sel = Store.settings(a).getInt("accent", 0)
-            for ((i, sw) in swatches.withIndex()) {
-                val col = Color.parseColor(C.ACCENTS[i][0])
-                sw.background = if (i == sel) rounded(col, a.dp(20).toFloat(), C.text, a.dp(2))
-                else rounded(col, a.dp(20).toFloat())
-            }
-        }
-        fun pickAccent(i: Int) {
-            if (Store.settings(a).getInt("accent", 0) == i) return
-            Store.settings(a).edit().putInt("accent", i).apply()
-            styleSwatches()
-            acRow.postDelayed({ a.crossfade { C.load(a) } }, 240)
-        }
-        for (i in C.ACCENTS.indices) {
-            val sw = View(a)
-            sw.setOnClickListener { pickAccent(i) }
-            sw.pressFeedback()
-            swatches.add(sw)
-            acRow.addView(sw, lp(a.dp(40), a.dp(40), r = if (i < C.ACCENTS.size - 1) a.dp(12) else 0, t = a.dp(10)))
-        }
-        styleSwatches()
-        theme.addView(acRow)
         col.addView(theme, lp(MATCH, WRAP, b = a.dp(12)))
 
         // strict protection
@@ -2209,7 +2042,6 @@ class ProtectionScreen(private val a: MainActivity) {
         col.addView(a.lockedAppsCard("msg"), lp(MATCH, WRAP, b = a.dp(12)))
         col.addView(a.dailyLimitsCard(), lp(MATCH, WRAP, b = a.dp(12)))
         col.addView(a.appGroupsCard(), lp(MATCH, WRAP, b = a.dp(12)))
-        col.addView(a.profilesCard(), lp(MATCH, WRAP, b = a.dp(12)))
         col.addView(a.diagnosticCard(), lp(MATCH, WRAP, b = a.dp(12)))
         return sv
     }

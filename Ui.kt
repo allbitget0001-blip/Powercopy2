@@ -47,23 +47,14 @@ object C {
     var chipFill = Color.parseColor("#12271D")
     var border = Color.parseColor("#1F4A38")
     var selFill = Color.parseColor("#17694B")
-    var primary = Color.parseColor("#1FCB85")
-    var mint = Color.parseColor("#A8F0D1")
+    val primary = Color.parseColor("#1FCB85")
+    val mint = Color.parseColor("#A8F0D1")
     val text = Color.parseColor("#F2FBF6")
     val textSoft = Color.parseColor("#D5E8DE")
     val muted = Color.parseColor("#8FA89B")
     val danger = Color.parseColor("#FF6B6B")
     val warn = Color.parseColor("#FFB84D")
-    var onPrimary = Color.parseColor("#062B1D")
-
-    /** Accent presets (Settings): primary, mint, onPrimary, selFill, border. */
-    val ACCENTS = listOf(
-        arrayOf("#1FCB85", "#A8F0D1", "#062B1D", "#17694B", "#1F4A38"), // green
-        arrayOf("#3AA7FF", "#BFE6FF", "#06283B", "#14557D", "#1E4A6B"), // blue
-        arrayOf("#B07CFF", "#E3D4FF", "#2A1450", "#5B3A8C", "#4A3570"), // purple
-        arrayOf("#FF9F43", "#FFE3C2", "#3B2205", "#7D4E15", "#6B4A26"), // orange
-        arrayOf("#FF5C8A", "#FFD0DD", "#3B0A1E", "#7D2447", "#6B2A40") // rose
-    )
+    val onPrimary = Color.parseColor("#062B1D")
 
     fun load(ctx: Context) {
         val amoled = Store.settings(ctx).getInt("theme", 0) == 1
@@ -72,19 +63,16 @@ object C {
             card = Color.parseColor("#09100C")
             card2 = Color.parseColor("#111C16")
             chipFill = Color.parseColor("#0A120E")
+            border = Color.parseColor("#143025")
+            selFill = Color.parseColor("#0F4A35")
         } else {
             bg = Color.parseColor("#0A1510")
             card = Color.parseColor("#10261B")
             card2 = Color.parseColor("#183626")
             chipFill = Color.parseColor("#12271D")
+            border = Color.parseColor("#1F4A38")
+            selFill = Color.parseColor("#17694B")
         }
-        // the chosen accent overrides primary / mint and the derived tints
-        val ac = ACCENTS[Store.settings(ctx).getInt("accent", 0).coerceIn(0, ACCENTS.size - 1)]
-        primary = Color.parseColor(ac[0])
-        mint = Color.parseColor(ac[1])
-        onPrimary = Color.parseColor(ac[2])
-        selFill = Color.parseColor(ac[3])
-        border = Color.parseColor(ac[4])
     }
 }
 

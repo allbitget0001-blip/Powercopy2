@@ -280,7 +280,6 @@ object Store {
         addSession(ctx, Session(p.getLong("start", end), end, p.getLong("total", 0), true, src))
         val e = p.edit().putBoolean("active", false).putLong("lastDone", end)
         clearUnlock(e)
-        e.remove("s_profile_apps").remove("s_profile_name")
         e.apply()
         Dnd.restore(ctx) // lock over: notifications come back
         FocusSound.stop() // lock over: the focus sound stops
@@ -320,7 +319,6 @@ object Store {
         addSession(ctx, Session(start, now, now - start, true, src))
         val e = p.edit().putBoolean("active", false).putLong("lastDone", now).putLong("end", now)
         clearUnlock(e)
-        e.remove("s_profile_apps").remove("s_profile_name")
         e.apply()
         Dnd.restore(ctx) // lock over: notifications come back
         FocusSound.stop() // lock over: the focus sound stops
@@ -340,11 +338,9 @@ object Store {
     /**
      * Starts a session. [unlock] + [mode] make it a location session: "loc" ends only on
      * arrival (durationMs is then just the 15-day safety cap), "either" ends on arrival
-     * or when the time runs out, whichever comes first. [profileId] snapshots that
-     * profile's apps into the session — they are blocked for this session on top of
-     * the global full-block list, and later profile edits do not affect it.
+     * or when the time runs out, whichever comes first.
      */
-    fun startSession(ctx: Context, durationMs: Long, src: String, unlock: UnlockTarget?, mode: String, profileId: Long = -1L): Boolean {
+    fun startSession(ctx: Context, durationMs: Long, src: String, unlock: UnlockTarget?, mode: String): Boolean {
         if (isActive(ctx)) return false
         val now = System.currentTimeMillis()
         val st = settings(ctx)
@@ -357,13 +353,6 @@ object Store {
             .putLong("total", durationMs)
             .putString("src", src)
             .putLong("lastDone", 0)
-        val prof = if (profileId > 0) Extra.lockProfiles(ctx).find { it.id == profileId } else null
-        if (prof != null && prof.pkgs.isNotEmpty()) {
-            e.putString("s_profile_apps", prof.pkgs.joinToString(","))
-            e.putString("s_profile_name", prof.name)
-        } else {
-            e.remove("s_profile_apps").remove("s_profile_name")
-        }
         if (unlock != null && mode != UNLOCK_TIME) {
             e.putString("u_mode", mode)
                 .putLong("u_lat", unlock.lat.toRawBits())
@@ -383,10 +372,6 @@ object Store {
 
     /** True while a running session was started in strict mode (no early stop). */
     fun isStrict(ctx: Context): Boolean = isActive(ctx) && lock(ctx).getBoolean("s_strict", false)
-
-    /** The profile name of the running session, or null when none was chosen. */
-    fun sessionProfileName(ctx: Context): String? =
-        if (isActive(ctx)) lock(ctx).getString("s_profile_name", null) else null
 
     /** True when the running session was started by the location lock (only those may be auto-stopped). */
     fun isLocationSession(ctx: Context): Boolean =
@@ -419,7 +404,6 @@ object Store {
         val e = p.edit().putBoolean("active", false).putLong("end", now)
         if (w != null) e.putLong("suppress", w)
         clearUnlock(e)
-        e.remove("s_profile_apps").remove("s_profile_name")
         e.apply()
         Dnd.restore(ctx) // lock over: notifications come back
         FocusSound.stop() // lock over: the focus sound stops
