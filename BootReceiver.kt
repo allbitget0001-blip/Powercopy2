@@ -11,9 +11,7 @@ class BootReceiver : BroadcastReceiver() {
         try {
             L.load(context)
             Scheduler.onAlarm(context)
-            Reminders.rescheduleAll(context) // morning + plan + routine alarms survive a reboot
-            TimeCapsules.checkDue(context) // a capsule may have opened while the phone was off
-            Routine.sweep(context) // a routine task may have become overdue while the phone was off
+            Reminders.rescheduleAll(context) // morning + plan alarms survive a reboot
             Watchdog.enqueue(context) // safety net: restart the service every 15 min if it dies
             // the location lock has no session, so it must restart the service too
             // (a Pomodoro break has no session either — the service advances its phases)

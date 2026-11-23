@@ -76,6 +76,12 @@ class PowerBlockService : AccessibilityService() {
     private var overlayAttached = false
 
     @Volatile
+    private var active = false
+
+    @Volatile
+    private var endAt = 0L
+
+    @Volatile
     private var locProtecting = false // location lock: blocked while at a saved place, no session
 
     @Volatile
@@ -109,16 +115,6 @@ class PowerBlockService : AccessibilityService() {
     private var usageSince = 0L
     private var usageDay = ""
     private val usageToday = HashMap<String, Long>()
-    // Usage history: the session currently being timed (wall clock for display,
-    // uptime for the duration so a wall-clock change can't stretch it).
-    private var histPkg: String? = null
-    private var histOpenWall = 0L
-    private var histOpenUptime = 0L
-    // Last closed session, for the 30 s merge rule (a quick re-open resumes it).
-    private var lastClosedPkg: String? = null
-    private var lastClosedUptime = 0L
-    private var lastClosedOpenWall = 0L
-    private var lastClosedOpenUptime = 0L
     private var imePkg: String? = null
     private var imeCheckedAt = 0L
     private var limitBlockActive = false // the overlay is up for a daily limit (no lock needed)
@@ -243,11 +239,12 @@ class PowerBlockService : AccessibilityService() {
 
     private fun readState() {
         val p = Store.lock(this)
+        active = p.getBoolean("active", false)
+        endAt = p.getLong("end", 0)
         locProtecting = p.getBoolean("loc_protecting", false)
         // the guard follows the session while one runs (locked at its start); otherwise it
-        // follows the live "App settings protection" switch in Settings.
-        // isActive is monotonic: the wall clock cannot fake a session on or off.
-        val sessionOn = Store.isActive(this)
+        // follows the live "App settings protection" switch in Settings
+        val sessionOn = active && System.currentTimeMillis() < endAt
         guardOn = if (sessionOn) p.getBoolean("s_guard", true)
         else Store.settings(this).getBoolean("guard", true)
         val st = Store.settings(this)
@@ -268,7 +265,7 @@ class PowerBlockService : AccessibilityService() {
         C.load(this) // the chosen accent colour also colours the block overlay
     }
 
-    private fun protecting(): Boolean = Store.isActive(this) || locProtecting
+    private fun protecting(): Boolean = (active && System.currentTimeMillis() < endAt) || locProtecting
 
     /**
      * The system re-binds this service after the process dies, so it is the one
@@ -423,34 +420,8 @@ class PowerBlockService : AccessibilityService() {
             usageDay = Store.dayKey(0)
             usageToday.clear()
             usageToday.putAll(Extra.usageTodayAll(this))
-            flushRestartHistorySession()
-            resumeLiveSlice()
         } catch (e: Exception) {
             Log.e(TAG, "loadUsage failed", e)
-        }
-    }
-
-    /**
-     * A previous service instance may have died mid-app: resume its persisted
-     * live slice so the in-flight seconds aren't lost from the per-day totals
-     * (the next app switch flushes the whole slice via trackUsage). Only
-     * today's slice with a sane elapsed time counts — uptime resets on
-     * reboot, so a negative or over-12 h elapsed means a stale slice, which
-     * is cleared instead.
-     */
-    private fun resumeLiveSlice() {
-        try {
-            val (livePkg, liveSince, liveDay) = Extra.liveSlice(this)
-            if (livePkg == null) return
-            val elapsed = SystemClock.uptimeMillis() - liveSince
-            if (liveDay == usageDay && elapsed in 0..(12L * 60 * 60 * 1000)) {
-                usagePkg = livePkg
-                usageSince = liveSince
-            } else {
-                Extra.setLiveSlice(this, null, 0L, "")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "live slice resume failed", e)
         }
     }
 
@@ -493,85 +464,19 @@ class PowerBlockService : AccessibilityService() {
                     Extra.addUsage(this, prev, secs)
                     usageToday[prev] = (usageToday[prev] ?: 0L) + secs
                 }
-                closeHistorySession(now)
             }
             if (prev != pkg) {
                 usagePkg = pkg
                 usageSince = now
                 Extra.setLiveSlice(this, pkg, now, day)
-                openHistorySession(pkg, now)
             }
         } catch (e: Exception) {
             Log.e(TAG, "trackUsage failed", e)
         }
     }
 
-    /**
-     * Close the history session being timed (if any) and log it. The close
-     * time is derived from the uptime delta so a wall-clock change mid-session
-     * can't stretch or shrink the entry.
-     */
-    private fun closeHistorySession(nowUptime: Long) {
-        val pkg = histPkg ?: return
-        try {
-            val closeWall = histOpenWall + (nowUptime - histOpenUptime)
-            Extra.addHistoryEntry(this, pkg, histOpenWall, closeWall)
-            lastClosedPkg = pkg
-            lastClosedUptime = nowUptime
-            lastClosedOpenWall = histOpenWall
-            lastClosedOpenUptime = histOpenUptime
-        } catch (e: Exception) {
-            Log.e(TAG, "closeHistorySession failed", e)
-        }
-        histPkg = null
-        Extra.setOpenHistory(this, null, 0L, 0L)
-    }
-
-    /**
-     * Start timing a history session for [pkg]. If the same app closed less
-     * than 30 s ago, the closed entry is removed and the session resumes from
-     * its original open time (rapid switching doesn't spam the log).
-     */
-    private fun openHistorySession(pkg: String, nowUptime: Long) {
-        val nowWall = System.currentTimeMillis()
-        val lastPkg = lastClosedPkg
-        if (lastPkg != null && lastPkg == pkg && nowUptime - lastClosedUptime < 30_000L) {
-            if (Extra.removeLastHistoryEntry(this, pkg, lastClosedOpenWall)) {
-                histPkg = pkg
-                histOpenWall = lastClosedOpenWall
-                histOpenUptime = lastClosedOpenUptime
-                Extra.setOpenHistory(this, pkg, histOpenWall, histOpenUptime)
-                return
-            }
-        }
-        histPkg = pkg
-        histOpenWall = nowWall
-        histOpenUptime = nowUptime
-        Extra.setOpenHistory(this, pkg, nowWall, nowUptime)
-    }
-
-    /**
-     * A previous service instance may have died mid-session: flush its
-     * persisted open session with the restart time as the close time. A
-     * session older than 12 h is stale (the screen would have gone off) and
-     * is dropped instead of logged.
-     */
-    private fun flushRestartHistorySession() {
-        try {
-            val (pkg, openWall, _) = Extra.openHistory(this)
-            if (pkg == null) return
-            val nowWall = System.currentTimeMillis()
-            if (nowWall > openWall && nowWall - openWall < 12L * 60 * 60 * 1000) {
-                Extra.addHistoryEntry(this, pkg, openWall, nowWall)
-            }
-            Extra.setOpenHistory(this, null, 0L, 0L)
-        } catch (e: Exception) {
-            Log.e(TAG, "flushRestartHistorySession failed", e)
-        }
-    }
-
-    /** Flush the in-flight usage slice to the per-day totals (no-op when none). */
-    private fun flushUsageSlice() {
+    /** Screen went off: close the running slice (screen-off time is not usage). */
+    private fun flushUsageOnScreenOff() {
         try {
             val prev = usagePkg ?: return
             val secs = (SystemClock.uptimeMillis() - usageSince) / 1000
@@ -582,14 +487,8 @@ class PowerBlockService : AccessibilityService() {
             usagePkg = null
             Extra.setLiveSlice(this, null, 0L, "")
         } catch (e: Exception) {
-            Log.e(TAG, "usage slice flush failed", e)
+            Log.e(TAG, "screen-off usage flush failed", e)
         }
-    }
-
-    /** Screen went off: close the running slice (screen-off time is not usage). */
-    private fun flushUsageOnScreenOff() {
-        flushUsageSlice()
-        closeHistorySession(SystemClock.uptimeMillis())
     }
 
     /** True when the app has a daily limit and today's time (including the live slice) is up. */
@@ -1387,11 +1286,11 @@ class PowerBlockService : AccessibilityService() {
         if (overlayAttached) return // never more than one shield
         try {
             val v = ensureOverlay()
-            val sessionOn = Store.isActive(this)
+            val sessionOn = active && System.currentTimeMillis() < endAt
             overlaySub?.text = if (locProtecting && !sessionOn) {
                 L.t("Location lock is active", "লোকেশন লক সক্রিয়")
             } else {
-                val at = fmtClock(System.currentTimeMillis() + Store.remainingMs(this))
+                val at = fmtClock(endAt)
                 L.t("Power menu is blocked until $at", "$at পর্যন্ত পাওয়ার মেনু ব্লক করা আছে")
             }
             val wm = getSystemService(WINDOW_SERVICE) as WindowManager
@@ -1426,8 +1325,6 @@ class PowerBlockService : AccessibilityService() {
     }
 
     private fun cleanup() {
-        flushUsageSlice()
-        closeHistorySession(SystemClock.uptimeMillis())
         handler.removeCallbacksAndMessages(null)
         hideOverlay()
         hideBlockOverlay()

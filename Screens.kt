@@ -4,13 +4,11 @@ import android.animation.ArgbEvaluator
 import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
 import android.app.AlertDialog
-import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
@@ -22,7 +20,6 @@ import android.os.Build
 import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
-import android.text.InputType
 import android.util.Log
 import android.text.TextUtils
 import android.view.Gravity
@@ -32,8 +29,6 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.SeekBar
 import android.widget.TextView
 import java.util.Calendar
 import java.util.Locale
@@ -62,29 +57,6 @@ class HomeScreen(private val a: MainActivity) {
     private lateinit var treeView: TreeView
     private lateinit var treeLabel: TextView
     private var treeSig = ""
-    private lateinit var animalsRow: LinearLayout
-    private var animalsSig = ""
-    private lateinit var petView: PetView
-    private lateinit var petNameText: TextView
-    private lateinit var petMoodText: TextView
-    private lateinit var petBar: BarView
-    private var petSig = ""
-    private lateinit var storySubText: TextView
-    private var storySig = ""
-    private lateinit var wheelSpinsText: TextView
-    private lateinit var wheelBtn: TextView
-    private var wheelSig = ""
-    private lateinit var xpTitleText: TextView
-    private lateinit var xpSubText: TextView
-    private lateinit var xpBar: BarView
-    private var xpSig = ""
-    private lateinit var chTitleText: TextView
-    private lateinit var chDescText: TextView
-    private lateinit var chBar: BarView
-    private var chSig = ""
-    private var chCheckedAt = 0L
-    private var levelUpShown = false
-    private var challengeShown = false
     private lateinit var profileRow: LinearLayout
     private lateinit var profileNameText: TextView
     private lateinit var profileSubText: TextView
@@ -103,19 +75,9 @@ class HomeScreen(private val a: MainActivity) {
     private lateinit var planBox: LinearLayout
     private lateinit var planCarryBtn: TextView
     private var lastPlanDay = ""
-    private lateinit var routineBox: LinearLayout
-    private lateinit var routineStreakText: TextView
-    private var routineSig = ""
-    private var lastRoutineSweep = 0L
     private lateinit var noteBox: LinearLayout
     private lateinit var noteEdit: EditText
     private var noteSig = ""
-    private lateinit var capsuleBox: LinearLayout
-    private var capsuleSig = ""
-    private var lastCapsuleCheck = 0L
-    private val moodBtns = ArrayList<TextView>()
-    private lateinit var moodLabel: TextView
-    private var moodSig = ""
     private var badgeShown = false
     private lateinit var startBtn: LinearLayout
     private lateinit var stopBtn: LinearLayout
@@ -199,72 +161,7 @@ class HomeScreen(private val a: MainActivity) {
         treeLabel = a.tv("", 13f, C.muted)
         treeLabel.gravity = Gravity.CENTER
         treeCard.addView(treeLabel, lp(MATCH, WRAP, t = a.dp(6)))
-        // garden animals living by the tree (small, newest first)
-        animalsRow = LinearLayout(a)
-        animalsRow.gravity = Gravity.CENTER
-        treeCard.addView(animalsRow, lp(MATCH, WRAP, t = a.dp(4)))
-        // tap the tree card to pick a species (won from the lucky wheel)
-        treeCard.setOnClickListener { speciesDialog() }
-        treeCard.pressFeedback()
         col.addView(treeCard, lp(MATCH, WRAP, t = a.dp(16)))
-
-        // ---- focus pet: happier with every completed lock, sadder when one breaks ----
-        val petCard = a.card(20)
-        petNameText = a.tv("", 18f, C.text, 1)
-        petCard.addView(petNameText)
-        petView = PetView(a)
-        petCard.addView(petView, lp(MATCH, a.dp(140), t = a.dp(4)))
-        petMoodText = a.tv("", 13f, C.muted)
-        petMoodText.gravity = Gravity.CENTER
-        petCard.addView(petMoodText, lp(MATCH, WRAP, t = a.dp(4)))
-        petBar = BarView(a)
-        petCard.addView(petBar, lp(MATCH, a.dp(10), t = a.dp(8)))
-        // tap the pet to rename it
-        petCard.setOnClickListener { renamePetDialog() }
-        petCard.pressFeedback()
-        col.addView(petCard, lp(MATCH, WRAP, t = a.dp(16)))
-
-        // ---- story: one chapter unlocks per completed lock ----
-        val storyCard = a.card(20)
-        storyCard.addView(a.tv(L.t("Story — The Lantern of the Quiet Forest", "গল্প — নীরব বনের লণ্ঠন"), 18f, C.text, 1))
-        storySubText = a.tv("", 13f, C.muted)
-        storyCard.addView(storySubText, lp(MATCH, WRAP, t = a.dp(6)))
-        storyCard.setOnClickListener { Story.showReader(a) }
-        storyCard.pressFeedback()
-        col.addView(storyCard, lp(MATCH, WRAP, t = a.dp(16)))
-
-        // ---- lucky wheel: one spin per completed lock, fun rewards only ----
-        val wheelCard = a.card(20)
-        wheelCard.addView(a.tv(L.t("Lucky wheel", "লাকি হুইল"), 18f, C.text, 1))
-        wheelSpinsText = a.tv("", 13f, C.muted)
-        wheelCard.addView(wheelSpinsText, lp(MATCH, WRAP, t = a.dp(6)))
-        wheelBtn = a.primaryBtn(L.t("Spin the wheel", "চাকা ঘোরাও"))
-        wheelBtn.setOnClickListener { LuckyWheel.showWheel(a) { tick() } }
-        wheelCard.addView(wheelBtn, lp(MATCH, a.dp(48), t = a.dp(12)))
-        col.addView(wheelCard, lp(MATCH, WRAP, t = a.dp(16)))
-
-        // ---- XP & levels: every focus minute earns XP (tap for Statistics) ----
-        val xpCard = a.card(20)
-        xpTitleText = a.tv("", 18f, C.text, 1)
-        xpCard.addView(xpTitleText)
-        xpBar = BarView(a)
-        xpCard.addView(xpBar, lp(MATCH, a.dp(10), t = a.dp(10)))
-        xpSubText = a.tv("", 13f, C.muted)
-        xpCard.addView(xpSubText, lp(MATCH, WRAP, t = a.dp(8)))
-        xpCard.setOnClickListener { a.go(2) }
-        xpCard.pressFeedback()
-        col.addView(xpCard, lp(MATCH, WRAP, t = a.dp(16)))
-
-        // ---- daily challenge: one challenge a day, +25 XP when done ----
-        val chCard = a.card(20)
-        chCard.addView(a.tv(L.t("Daily challenge", "আজকের চ্যালেঞ্জ"), 18f, C.text, 1))
-        chTitleText = a.tv("", 15f, C.text, 1)
-        chCard.addView(chTitleText, lp(MATCH, WRAP, t = a.dp(6)))
-        chDescText = a.tv("", 13f, C.muted)
-        chCard.addView(chDescText, lp(MATCH, WRAP, t = a.dp(4)))
-        chBar = BarView(a)
-        chCard.addView(chBar, lp(MATCH, a.dp(10), t = a.dp(10)))
-        col.addView(chCard, lp(MATCH, WRAP, t = a.dp(16)))
 
         // ---- 7-day detox challenge: one completed lock a day, 7 days in a row ----
         val detox = a.card(20)
@@ -337,19 +234,6 @@ class HomeScreen(private val a: MainActivity) {
         plan.addView(planCarryBtn, lp(MATCH, a.dp(48), t = a.dp(8)))
         col.addView(plan, lp(MATCH, WRAP, t = a.dp(16)))
 
-        // ---- daily routine: repeating tasks; miss one and the phone locks ----
-        val routine = a.card(20)
-        routine.addView(a.tv(L.t("Daily routine", "দৈনিক রুটিন"), 18f, C.text, 1))
-        routineStreakText = a.tv("", 13f, C.mint)
-        routine.addView(routineStreakText, lp(MATCH, WRAP, t = a.dp(4)))
-        routineBox = LinearLayout(a)
-        routineBox.orientation = LinearLayout.VERTICAL
-        routine.addView(routineBox, lp(MATCH, WRAP, t = a.dp(6)))
-        val routineEdit = a.outlineBtn(L.t("Edit routine", "রুটিন বদলান"), C.primary)
-        routineEdit.setOnClickListener { a.go(1) }
-        routine.addView(routineEdit, lp(MATCH, a.dp(48), t = a.dp(12)))
-        col.addView(routine, lp(MATCH, WRAP, t = a.dp(16)))
-
         // ---- focus note: jot a thought during a lock without breaking it ----
         val note = a.card(20)
         note.addView(a.tv(L.t("Focus note", "ফোকাস নোট"), 18f, C.text, 1))
@@ -367,62 +251,6 @@ class HomeScreen(private val a: MainActivity) {
         noteBox.orientation = LinearLayout.VERTICAL
         note.addView(noteBox, lp(MATCH, WRAP, t = a.dp(6)))
         col.addView(note, lp(MATCH, WRAP, t = a.dp(16)))
-
-        // ---- time capsule: a letter to your future self, sealed until a date ----
-        val capsule = a.card(20)
-        capsule.addView(a.tv(L.t("Time capsule", "টাইম ক্যাপসুল"), 18f, C.text, 1))
-        capsule.addView(
-            a.tv(L.t("Write to your future self — the letter opens on its date.", "ভবিষ্যতের নিজেকে চিঠি লিখুন — তারিখ এলে চিঠি খুলবে।"), 13f, C.muted),
-            lp(MATCH, WRAP, t = a.dp(4))
-        )
-        capsuleBox = LinearLayout(a)
-        capsuleBox.orientation = LinearLayout.VERTICAL
-        capsule.addView(capsuleBox, lp(MATCH, WRAP, t = a.dp(6)))
-        val capsuleAdd = a.outlineBtn(L.t("+ Write a letter", "+ চিঠি লিখুন"), C.primary)
-        capsuleAdd.setOnClickListener { createCapsuleDialog() }
-        capsule.addView(capsuleAdd, lp(MATCH, a.dp(48), t = a.dp(12)))
-        col.addView(capsule, lp(MATCH, WRAP, t = a.dp(16)))
-
-        // ---- mini-games: five one-minute games for a break ----
-        val games = a.card(20)
-        games.addView(a.tv(L.t("Mini-games", "মিনি-গেম"), 18f, C.text, 1))
-        games.addView(
-            a.tv(L.t("Quick one-minute games for a break.", "বিরতির জন্য এক মিনিটের ছোট খেলা।"), 13f, C.muted),
-            lp(MATCH, WRAP, t = a.dp(4))
-        )
-        fun gameRow(title: String, sub: String, open: () -> Unit) {
-            val chev = a.tv("›", 22f, C.muted, 1)
-            games.addView(a.row(title, sub, chev, open))
-        }
-        gameRow(L.t("Memory cards", "মেমোরি কার্ড"), L.t("Match all 6 pairs", "৬ জোড়া মিলান")) { MiniGames.showMemory(a) }
-        gameRow(L.t("Colour-word", "রঙ-শব্দ"), L.t("Tap the colour, not the word", "শব্দ নয়, রঙটা চাপুন")) { MiniGames.showStroop(a) }
-        gameRow(L.t("Math quiz", "গণিত কুইজ"), L.t("10 quick sums", "১০টা দ্রুত অঙ্ক")) { MiniGames.showMath(a) }
-        gameRow(L.t("Reaction game", "প্রতিক্রিয়া খেলা"), L.t("How fast can you tap?", "কত দ্রুত চাপতে পারো?")) { MiniGames.showReaction(a) }
-        gameRow(L.t("Daily riddle", "দিনের ধাঁধা"), L.t("One riddle a day", "প্রতিদিন একটা ধাঁধা")) { MiniGames.showRiddle(a) }
-        col.addView(games, lp(MATCH, WRAP, t = a.dp(16)))
-
-        // ---- today's mood: a quick 1–5 daily log ----
-        val moodCard = a.card(20)
-        moodCard.addView(a.tv(L.t("Today's mood", "আজকের মুড"), 18f, C.text, 1))
-        moodLabel = a.tv(L.t("How are you feeling today?", "আজ কেমন লাগছে?"), 13f, C.muted)
-        moodCard.addView(moodLabel, lp(MATCH, WRAP, t = a.dp(4)))
-        val moodRow = LinearLayout(a)
-        moodRow.gravity = Gravity.CENTER_VERTICAL
-        for (v in Mood.MIN..Mood.MAX) {
-            val b = a.tv(L.num(v.toString()), 16f, C.muted, 1)
-            b.gravity = Gravity.CENTER
-            b.background = rounded(C.card2, a.dp(22).toFloat())
-            b.setOnClickListener {
-                Mood.logDaily(a, v)
-                updateMoodRow()
-                a.toast(Mood.label(v))
-            }
-            b.pressFeedback()
-            moodBtns.add(b)
-            moodRow.addView(b, lp(0, a.dp(44), weight = 1f, r = if (v < Mood.MAX) a.dp(8) else 0))
-        }
-        moodCard.addView(moodRow, lp(MATCH, WRAP, t = a.dp(12)))
-        col.addView(moodCard, lp(MATCH, WRAP, t = a.dp(16)))
 
         // ---- lock templates: one tap starts a lock with that duration ----
         col.addView(a.heading(L.t("Lock templates", "লক টেমপ্লেট")), lp(MATCH, WRAP, t = a.dp(26), b = a.dp(4)))
@@ -714,9 +542,6 @@ class HomeScreen(private val a: MainActivity) {
         }
         a.toast(L.t("Finding your location…", "আপনার অবস্থান খোঁজা হচ্ছে…"))
         Extra.currentLocation(a) { loc ->
-            // the fix can take up to 20 s: if the user pressed Back meanwhile,
-            // the activity is dead and tick() must not show dialogs on it
-            if (a.isFinishing || a.isDestroyed) return@currentLocation
             if (loc == null) {
                 a.toast(L.t("Could not get the location. Turn on GPS and try again outside.", "অবস্থান পাওয়া যায়নি। GPS চালু করে বাইরে আবার চেষ্টা করুন।"))
             } else {
@@ -824,16 +649,12 @@ class HomeScreen(private val a: MainActivity) {
         // backup arrival check (the service listener is the main path)
         if (Store.unlockTarget(a) != null) PlaceWatcher.checkUnlockLastKnown(a)
         Pomodoro.sync(a) // advance the Pomodoro set when a phase is over
-        // routine overdue check (throttled: the window-end alarms are the main path)
-        if (now - lastRoutineSweep > 30_000) {
-            lastRoutineSweep = now
-            Routine.sweep(a)
-        }
         val active = Store.isActive(a)
         val st = statusOf(a, active, now)
         applyStatus(st)
         updateSchedPill()
         val p = Store.lock(a)
+        val end = p.getLong("end", 0)
         var total = p.getLong("total", 1)
         if (total < 1) total = 1
         val strict = active && p.getBoolean("s_strict", false)
@@ -841,7 +662,7 @@ class HomeScreen(private val a: MainActivity) {
         val pomBreak = pom.active && pom.phase != Pomodoro.PHASE_FOCUS
         if (pomBreak) {
             // Pomodoro break: no lock session, the ring counts the break down
-            val left = Pomodoro.remainingMs(a)
+            val left = pom.phaseEnd - now
             val phaseTotal = if (pom.phaseTotal > 0) pom.phaseTotal else 1L
             val long = pom.phase == Pomodoro.PHASE_LONG
             ring.active = true
@@ -878,7 +699,7 @@ class HomeScreen(private val a: MainActivity) {
                 previewText.text = L.t("Session in progress · ", "সেশন চলছে · ") +
                     L.t("opens at ${target.name}", "${target.name} পৌঁছালে খুলবে")
             } else {
-                val left = Store.remainingMs(a)
+                val left = end - now
                 ring.active = true
                 ring.icon = Ic.LOCK
                 ring.main = fmtHms(left)
@@ -889,7 +710,7 @@ class HomeScreen(private val a: MainActivity) {
                 if (frac > 1f) frac = 1f
                 ring.animateTo(frac)
                 titleText.setTextAnimated(L.t("Protection is Active", "প্রটেকশন সক্রিয়"))
-                val endAt = fmtClock(now + left)
+                val endAt = fmtClock(end)
                 if (mode == UNLOCK_EITHER && target != null) {
                     subText.setTextAnimated(
                         if (strict) L.t("Strict mode · locked until $endAt or arrival at ${target.name}", "স্ট্রিক্ট মোড · $endAt পর্যন্ত অথবা ${target.name} পৌঁছালে")
@@ -957,25 +778,10 @@ class HomeScreen(private val a: MainActivity) {
         updateScreenTime()
         updateFocusScore()
         updateTree()
-        updateGardenAnimals()
-        updatePet()
-        updateStory()
-        updateWheel()
-        StreakProtection.check(a) // once a day: spend a token to save a breaking streak
         updateDetox()
         updatePomodoro()
         updateHabits()
         updateNotes()
-        updateCapsules()
-        updateMoodRow()
-        // capsule due check (throttled: a capsule may open while the app is open)
-        if (now - lastCapsuleCheck > 60_000) {
-            lastCapsuleCheck = now
-            TimeCapsules.checkDue(a)
-        }
-        updateRoutine()
-        updateXp()
-        updateChallenge()
         // midnight rollover: the plan card shows the new day's tasks
         if (Store.dayKey(0) != lastPlanDay) {
             lastPlanDay = Store.dayKey(0)
@@ -983,11 +789,7 @@ class HomeScreen(private val a: MainActivity) {
         }
         maybeShowTreeOutcome()
         maybeShowSummary()
-        maybeShowPetReaction()
         maybeShowBadge()
-        maybeShowLevelUp()
-        maybeShowChallenge()
-        maybeCelebrateRoutine()
     }
 
     /** Live screen time today: the stored day total (re-read at most every 10 s)
@@ -1109,13 +911,11 @@ class HomeScreen(private val a: MainActivity) {
         if (active && FocusTree.isPlanted(a)) {
             val frac = FocusTree.currentFraction(a)
             val stage = FocusTree.stageFor(frac)
-            val sp = TreeSpecies.selected(a)
             treeView.frac = frac
             treeView.alive = true
-            if (treeView.species != sp) treeView.species = sp
             treeView.invalidate()
             // label every tick: the % keeps counting inside a stage
-            treeSig = "live:$stage:$sp"
+            treeSig = "live:$stage"
             treeLabel.text = FocusTree.stageName(stage) + " · " +
                 L.num((frac * 100).toInt().toString()) + "%"
             return
@@ -1127,7 +927,6 @@ class HomeScreen(private val a: MainActivity) {
                 treeSig = sig
                 treeView.frac = 0f
                 treeView.alive = true
-                treeView.species = TreeSpecies.selected(a)
                 treeView.invalidate()
                 treeLabel.text = L.t("Start a lock and a seed will be planted", "লক শুরু করলে বীজ রোপণ হবে")
             }
@@ -1138,128 +937,9 @@ class HomeScreen(private val a: MainActivity) {
             treeSig = sig
             treeView.frac = last.stage * 0.25f
             treeView.alive = last.alive
-            treeView.species = last.species
             treeView.invalidate()
             treeLabel.text = FocusTree.stageName(last.stage) + " · " + fmtDate(last.endMs) +
                 if (last.alive) "" else " · " + L.t("withered", "শুকিয়ে গেছে")
-        }
-    }
-
-    /** The garden animals living by the tree (small icons, newest first). */
-    private fun updateGardenAnimals() {
-        val animals = GardenAnimals.unlocked(a)
-        val sig = animals.joinToString(",") { it.id }
-        if (sig == animalsSig) return
-        animalsSig = sig
-        animalsRow.removeAllViews()
-        for (an in animals) {
-            val v = AnimalView(a, an.id)
-            v.setOnClickListener { a.toast(L.t(an.nameEn, an.nameBn)) }
-            animalsRow.addView(v, lp(a.dp(44), a.dp(44), r = a.dp(6)))
-        }
-        animalsRow.visibility = if (animals.isEmpty()) View.GONE else View.VISIBLE
-    }
-
-    /** The focus pet: face follows the mood, bar follows happiness. */
-    private fun updatePet() {
-        val happy = FocusPet.happiness(a)
-        val mood = FocusPet.mood(a)
-        val name = FocusPet.name(a)
-        val sig = "$name:$happy:$mood"
-        if (sig == petSig) return
-        petSig = sig
-        petNameText.text = name
-        petView.mood = mood
-        petView.invalidate()
-        petBar.frac = happy / 100f
-        petMoodText.text = FocusPet.moodLabel(a) + " · " +
-            L.num(happy.toString()) + "/100 · " +
-            L.t("tap to rename", "নাম বদলাতে চাপুন")
-    }
-
-    /** Rename the pet (a short name, up to 20 characters). */
-    private fun renamePetDialog() {
-        val et = a.edit(L.t("Pet name", "পোষা প্রাণীর নাম"), false)
-        et.setText(FocusPet.name(a))
-        et.setSelection(et.text.length)
-        a.dlg()
-            .setTitle(L.t("Name your pet", "পোষা প্রাণীর নাম দিন"))
-            .setView(et)
-            .setPositiveButton(L.t("Save", "সংরক্ষণ")) { _, _ ->
-                val n = et.text.toString().trim()
-                if (n.isNotEmpty()) {
-                    FocusPet.setName(a, n)
-                    petSig = ""
-                    updatePet()
-                }
-            }
-            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
-            .show()
-    }
-
-    /** Pick a tree species (won from the lucky wheel; classic is always open). */
-    private fun speciesDialog() {
-        val all = TreeSpecies.ALL
-        val unlocked = TreeSpecies.unlocked(a).map { it.id }.toSet()
-        val items = all.map { sp ->
-            L.t(sp.nameEn, sp.nameBn) +
-                if (sp.id in unlocked) "" else " (" + L.t("locked", "তালাবদ্ধ") + ")"
-        }.toTypedArray()
-        a.dlg()
-            .setTitle(L.t("Tree species", "গাছের প্রজাতি"))
-            .setItems(items) { _, which ->
-                val sp = all[which]
-                if (sp.id !in unlocked) {
-                    a.toast(L.t("Win this species from the lucky wheel", "এই প্রজাতি লাকি হুইল থেকে জিতুন"))
-                    return@setItems
-                }
-                TreeSpecies.select(a, sp.id)
-                treeSig = ""
-                tick()
-            }
-            .setNegativeButton(L.t("Close", "বন্ধ"), null)
-            .show()
-    }
-
-    /** Story progress: chapters unlocked out of 10. */
-    private fun updateStory() {
-        val unlocked = Story.unlockedCount(a)
-        val sig = "$unlocked"
-        if (sig == storySig) return
-        storySig = sig
-        storySubText.text = L.num(unlocked.toString()) + "/" + L.num(Story.TOTAL.toString()) + " " +
-            L.t("chapters unlocked · tap to read", "টি অধ্যায় খুলেছে · পড়তে চাপুন")
-    }
-
-    /** Lucky wheel spins available (the button dims when there are none). */
-    private fun updateWheel() {
-        val spins = LuckyWheel.spins(a)
-        val sig = "$spins"
-        if (sig == wheelSig) return
-        wheelSig = sig
-        wheelSpinsText.text = if (spins > 0) {
-            L.num(spins.toString()) + " " + L.t("spin(s) available", "টি স্পিন আছে")
-        } else {
-            L.t("No spins — complete a lock to earn one!", "স্পিন নেই — একটা লক সম্পন্ন করে স্পিন পান!")
-        }
-        wheelBtn.alpha = if (spins > 0) 1f else 0.5f
-    }
-
-    /** One-time pet reaction after a lock ends: sad = toast, happy rides in the summary dialog. */
-    private fun maybeShowPetReaction() {
-        when (FocusPet.reactPending(a)) {
-            "sad" -> {
-                FocusPet.clearReact(a)
-                a.toast(
-                    FocusPet.name(a) + " " +
-                        L.t("is sad — the lock was stopped early", "দুঃখী — লক আগেই বন্ধ করা হয়েছে")
-                )
-            }
-            "happy" -> {
-                // the summary dialog carries the happy line; if no summary is
-                // pending (edge case), just drop the flag
-                if (!Store.summaryPending(a)) FocusPet.clearReact(a)
-            }
         }
     }
 
@@ -1292,81 +972,17 @@ class HomeScreen(private val a: MainActivity) {
             FocusTree.clearOutcome(a)
             "\n\n" + L.t("Your tree survived!", "তোমার গাছ বেঁচে গেল!")
         } else ""
-        val petLine = if (FocusPet.reactPending(a) == "happy") {
-            FocusPet.clearReact(a)
-            "\n\n" + FocusPet.name(a) + " " + L.t("is happy!", "খুশি!") + " · " +
-                L.num(FocusPet.happiness(a).toString()) + "/100"
-        } else ""
-        val newChapters = Story.newUnlocks(a)
-        val storyLine = if (newChapters > 0) {
-            val unlocked = Story.unlockedCount(a)
-            Story.markSeen(a, unlocked)
-            if (newChapters == 1) {
-                val ch = Story.CHAPTERS[(unlocked - 1).coerceAtLeast(0)]
-                "\n\n" + L.t("New story chapter unlocked: ", "নতুন গল্পের অধ্যায় খুলেছে: ") +
-                    L.t(ch.titleEn, ch.titleBn)
-            } else {
-                "\n\n" + L.t(
-                    "$newChapters new story chapters unlocked!",
-                    "${L.num(newChapters.toString())}টি নতুন গল্পের অধ্যায় খুলেছে!"
-                )
-            }
-        } else ""
-        val newMiles = FocusJourney.newMilestones(a)
-        val journeyLine = if (newMiles > 0) {
-            val latest = FocusJourney.milestoneAt(FocusJourney.passedCount(a) - 1)
-            FocusJourney.markSeen(a)
-            if (latest.km == FocusJourney.ROUTE_KM) {
-                val (journeysDone, _, _) = FocusJourney.progress(a)
-                "\n\n" + L.t(
-                    "Journey complete! Dhaka to Cox's Bazar — $journeysDone journey(s) done!",
-                    "যাত্রা সম্পূর্ণ! ঢাকা থেকে কক্সবাজার পৌঁছে গেছো — ${L.num(journeysDone.toString())}টি যাত্রা শেষ!"
-                )
-            } else if (newMiles == 1) {
-                "\n\n" + L.t("Milestone reached: ", "মাইলফলক: ") + L.t(latest.nameEn, latest.nameBn)
-            } else {
-                "\n\n" + L.t(
-                    "$newMiles milestones passed! Latest: ",
-                    "${L.num(newMiles.toString())}টি মাইলফলক পার করেছো! সর্বশেষ: "
-                ) + L.t(latest.nameEn, latest.nameBn)
-            }
-        } else ""
         val blocksTxt = if (s.blocks > 0) {
             L.num(s.blocks.toString()) + " " + L.t("times an app was blocked", "বার অ্যাপ ব্লক হয়েছে")
         } else {
             L.t("No app needed blocking", "কোনো অ্যাপ ব্লক করতে হয়নি")
         }
-        val quotePair = Quotes.randomPair()
-        val message =
-            L.t("Focus time: ", "ফোকাস সময়: ") + fmtDur(s.durMs) + "\n" + blocksTxt +
-                treeLine + petLine + storyLine + journeyLine + "\n\n" +
-                L.t(quotePair.first, quotePair.second) +
-                "\n\n" + L.t("Fun fact: ", "মজার তথ্য: ") + FunFacts.random(a)
-        // custom view: the message + a "listen" button for the quote + the optional mood question
-        val msgBox = LinearLayout(a)
-        msgBox.orientation = LinearLayout.VERTICAL
-        msgBox.setPadding(a.dp(24), a.dp(8), a.dp(24), 0)
-        msgBox.addView(a.tv(message, 15f, C.text))
-        val actRow = LinearLayout(a)
-        actRow.gravity = Gravity.CENTER_VERTICAL
-        val listenBtn = a.outlineBtn(L.t("Listen", "শোনাও"), C.primary)
-        listenBtn.setOnClickListener { VoiceQuotes.speak(a, quotePair.first, quotePair.second) }
-        actRow.addView(listenBtn, lp(0, a.dp(48), weight = 1f, r = a.dp(8)))
-        val moodBtn = a.outlineBtn(L.t("How do you feel?", "কেমন লাগছে?"), C.mint)
-        moodBtn.setOnClickListener { showAfterMoodDialog() }
-        actRow.addView(moodBtn, lp(0, a.dp(48), weight = 1f))
-        msgBox.addView(actRow, lp(MATCH, WRAP, t = a.dp(14)))
-        val scroll = ScrollView(a)
-        scroll.addView(msgBox)
-        val builder = a.dlg()
+        a.dlg()
             .setTitle(L.t("Session completed!", "সেশন সম্পন্ন!"))
-            .setView(scroll)
-        if (LuckyWheel.spins(a) > 0) {
-            builder.setNeutralButton(L.t("Spin the wheel", "চাকা ঘোরাও")) { _, _ ->
-                LuckyWheel.showWheel(a) { tick() }
-            }
-        }
-        builder
+            .setMessage(
+                L.t("Focus time: ", "ফোকাস সময়: ") + fmtDur(s.durMs) + "\n" + blocksTxt +
+                    treeLine + "\n\n" + Quotes.random()
+            )
             .setPositiveButton(L.t("Great!", "ভালো হয়েছে!"), null)
             .show()
     }
@@ -1677,194 +1293,6 @@ class HomeScreen(private val a: MainActivity) {
             .show()
     }
 
-    // ---- time capsule: sealed letters list + create/view/delete ----
-
-    private fun updateCapsules() {
-        val list = TimeCapsules.all(a).asReversed()
-        val sig = Store.dayKey(0) + "|" + list.joinToString("|") { "${it.id}:${it.open}:${it.opened}" }
-        if (sig == capsuleSig) return
-        capsuleSig = sig
-        capsuleBox.removeAllViews()
-        if (list.isEmpty()) {
-            capsuleBox.addView(
-                a.tv(L.t("No letters yet. Write one to your future self — it opens on its date.", "এখনো কোনো চিঠি নেই। ভবিষ্যতের নিজেকে একটা চিঠি লিখুন — তারিখ এলে খুলবে।"), 13f, C.muted),
-                lp(MATCH, WRAP, t = a.dp(4))
-            )
-            return
-        }
-        val now = System.currentTimeMillis()
-        for (c in list) {
-            val due = TimeCapsules.isDue(c, now)
-            val r = LinearLayout(a)
-            r.orientation = LinearLayout.VERTICAL
-            r.setPadding(0, a.dp(8), 0, a.dp(8))
-            val title = if (due) {
-                L.t("Open now!", "এখন খুলুন!") + " · " + fmtDate(c.open)
-            } else {
-                L.t("Opens: ", "খুলবে: ") + fmtDate(c.open)
-            }
-            r.addView(a.tv(title, 15f, if (due) C.mint else C.text, if (due) 1 else 0))
-            val sub = if (c.opened) L.t("Opened", "খোলা হয়েছে") else TimeCapsules.countdown(c, now)
-            r.addView(a.tv(sub, 12f, C.muted), lp(MATCH, WRAP, t = a.dp(2)))
-            r.pressFeedback()
-            r.setOnClickListener {
-                if (due) {
-                    TimeCapsules.markOpened(a, c.id)
-                    viewCapsuleDialog(c)
-                    updateCapsules()
-                } else {
-                    // sealed: show only the countdown, never the content
-                    a.dlg()
-                        .setTitle(L.t("Still sealed", "এখনো সিল করা"))
-                        .setMessage(
-                            L.t("This letter opens on ", "এই চিঠি খুলবে ") + fmtDate(c.open) +
-                                "\n" + TimeCapsules.countdown(c, System.currentTimeMillis())
-                        )
-                        .setPositiveButton(L.t("OK", "ঠিক আছে"), null)
-                        .show()
-                }
-            }
-            r.setOnLongClickListener {
-                deleteCapsuleDialog(c)
-                true
-            }
-            capsuleBox.addView(r)
-        }
-    }
-
-    private fun viewCapsuleDialog(c: TimeCapsule) {
-        a.dlg()
-            .setTitle(L.t("A letter from your past self", "তোমার অতীতের নিজের চিঠি"))
-            .setMessage(L.t("Written: ", "লেখা: ") + fmtDate(c.created) + "\n\n" + c.text)
-            .setPositiveButton(L.t("Close", "বন্ধ করুন"), null)
-            .show()
-    }
-
-    private fun deleteCapsuleDialog(c: TimeCapsule) {
-        a.dlg()
-            .setTitle(L.t("Delete this letter?", "এই চিঠি মুছে ফেলবেন?"))
-            .setMessage(
-                if (TimeCapsules.isDue(c)) L.t("This letter has already opened.", "এই চিঠি এরই মধ্যে খুলে গেছে।")
-                else L.t("Opens: ", "খুলবে: ") + fmtDate(c.open)
-            )
-            .setPositiveButton(L.t("Delete", "মুছে ফেলুন")) { _, _ ->
-                TimeCapsules.delete(a, c.id)
-                updateCapsules()
-            }
-            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
-            .show()
-    }
-
-    /** Seals a new letter: the text + an open date (7/30/90 days, or a picked date). */
-    private fun createCapsuleDialog() {
-        val box = LinearLayout(a)
-        box.orientation = LinearLayout.VERTICAL
-        box.setPadding(a.dp(24), a.dp(8), a.dp(24), 0)
-        val et = a.edit(L.t("Write to your future self…", "ভবিষ্যতের নিজেকে লিখুন…"), false)
-        et.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-        et.gravity = Gravity.START or Gravity.TOP
-        et.minLines = 4
-        box.addView(et, lp(MATCH, WRAP))
-        box.addView(a.tv(L.t("Opens in", "খুলবে"), 13f, C.muted), lp(WRAP, WRAP, t = a.dp(14)))
-        var openMs = Store.dayStart(System.currentTimeMillis(), 30)
-        val dateVal = a.tv(fmtDate(openMs), 16f, C.primary, 1)
-        val chips = ArrayList<TextView>()
-        fun styleDateChips() {
-            val now = System.currentTimeMillis()
-            val days = listOf(7, 30, 90)
-            for (i in chips.indices) {
-                val sel = openMs == Store.dayStart(now, days[i])
-                chips[i].background = rounded(if (sel) C.selFill else C.card2, a.dp(12).toFloat())
-                chips[i].setTextColor(if (sel) C.mint else C.muted)
-            }
-            dateVal.setTextAnimated(fmtDate(openMs))
-        }
-        val chipRow = LinearLayout(a)
-        for ((i, d) in listOf(7, 30, 90).withIndex()) {
-            val ch = a.tv(L.num(d.toString()) + " " + L.t("days", "দিন"), 14f, C.muted, 1)
-            ch.gravity = Gravity.CENTER
-            ch.setPadding(0, a.dp(10), 0, a.dp(10))
-            ch.setOnClickListener {
-                openMs = Store.dayStart(System.currentTimeMillis(), d)
-                styleDateChips()
-            }
-            ch.pressFeedback()
-            chips.add(ch)
-            chipRow.addView(ch, lp(0, WRAP, weight = 1f, r = if (i < 2) a.dp(8) else 0))
-        }
-        box.addView(chipRow, lp(MATCH, WRAP, t = a.dp(8)))
-        val pickBtn = a.outlineBtn(L.t("Pick a date", "তারিখ বাছুন"), C.primary)
-        pickBtn.setOnClickListener {
-            val c = Calendar.getInstance()
-            c.timeInMillis = openMs
-            val dlg = DatePickerDialog(
-                a,
-                { _, y, m, d ->
-                    val cal = Calendar.getInstance()
-                    cal.set(y, m, d, 0, 0, 0)
-                    cal.set(Calendar.MILLISECOND, 0)
-                    openMs = cal.timeInMillis
-                    styleDateChips()
-                },
-                c.get(Calendar.YEAR), c.get(Calendar.MONTH), c.get(Calendar.DAY_OF_MONTH)
-            )
-            dlg.datePicker.minDate = Store.dayStart(System.currentTimeMillis(), 1)
-            dlg.show()
-        }
-        box.addView(pickBtn, lp(MATCH, a.dp(48), t = a.dp(10)))
-        val dateRow = LinearLayout(a)
-        dateRow.gravity = Gravity.CENTER_VERTICAL
-        dateRow.addView(a.tv(L.t("Opens on ", "খুলবে "), 14f, C.text), lp(WRAP, WRAP))
-        dateRow.addView(dateVal, lp(WRAP, WRAP, l = a.dp(4)))
-        box.addView(dateRow, lp(MATCH, WRAP, t = a.dp(12)))
-        styleDateChips()
-        a.dlg()
-            .setTitle(L.t("Time capsule", "টাইম ক্যাপসুল"))
-            .setView(box)
-            .setPositiveButton(L.t("Seal the letter", "চিঠি সিল করুন")) { _, _ ->
-                if (TimeCapsules.add(a, et.text.toString(), openMs)) {
-                    updateCapsules()
-                    a.toast(L.t("Sealed! It opens on ", "সিল হয়ে গেছে! খুলবে ") + fmtDate(openMs))
-                } else {
-                    a.toast(L.t("Write something first", "আগে কিছু লিখুন"))
-                }
-            }
-            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
-            .show()
-    }
-
-    // ---- today's mood: 1–5 quick log ----
-
-    private fun updateMoodRow() {
-        val today = Mood.todayDaily(a)
-        val sig = today?.toString() ?: "-"
-        if (sig == moodSig) return
-        moodSig = sig
-        for ((i, b) in moodBtns.withIndex()) {
-            val v = i + Mood.MIN
-            val sel = today == v
-            b.background = rounded(if (sel) C.selFill else C.card2, a.dp(22).toFloat())
-            b.setTextColor(if (sel) C.mint else C.muted)
-        }
-        moodLabel.setTextAnimated(
-            if (today != null) L.t("Today you feel: ", "আজ তোমার মুড: ") + Mood.label(today)
-            else L.t("How are you feeling today?", "আজ কেমন লাগছে?")
-        )
-    }
-
-    /** Optional after-lock mood question, from the session-complete dialog. Skippable. */
-    private fun showAfterMoodDialog() {
-        val labels = (Mood.MIN..Mood.MAX).map { Mood.label(it) }.toTypedArray()
-        a.dlg()
-            .setTitle(L.t("How do you feel after the lock?", "লকের পর কেমন লাগছে?"))
-            .setItems(labels) { _, which ->
-                Mood.logAfter(a, which + Mood.MIN)
-                a.toast(L.t("Thanks!", "ধন্যবাদ!"))
-            }
-            .setNegativeButton(L.t("Skip", "এড়িয়ে যান"), null)
-            .show()
-    }
-
     /** Today's plan rows: tap a row to check it off, ✕ to delete it. */
     private fun updatePlan() {
         planBox.removeAllViews()
@@ -1935,67 +1363,6 @@ class HomeScreen(private val a: MainActivity) {
             .show()
     }
 
-    /** Today's routine tasks: tap to check off. Overdue tasks show in warn colour;
-     * a running penalty lock names the task that caused it. */
-    private fun updateRoutine() {
-        val tasks = Routine.tasksToday(a)
-        val day = Store.dayKey(0)
-        val done = Routine.doneIds(a, day)
-        val missed = Routine.missedIds(a, day)
-        val pen = Routine.isPenaltyLock(a)
-        val penTitle = Routine.penaltyTaskTitle(a)
-        val sig = "$day#" + tasks.joinToString("|") { "${it.id}:${it.title}:${it.timeMin}:${it.graceMin}" } + "#" +
-            tasks.joinToString("|") { if (it.id in done) "1" else if (it.id in missed) "2" else "0" } +
-            "#$pen:$penTitle"
-        if (sig == routineSig) return
-        routineSig = sig
-        val s = Routine.streak(a)
-        routineStreakText.text = if (s > 0) L.num(s.toString()) + " " + L.t("day routine streak", "দিনের রুটিন স্ট্রিক") else ""
-        routineStreakText.visibility = if (s > 0) View.VISIBLE else View.GONE
-        routineBox.removeAllViews()
-        if (tasks.isEmpty()) {
-            routineBox.addView(
-                a.tv(L.t("No routine yet. Build one in the Schedule tab — miss a task and the phone locks until you do it.", "এখনো রুটিন নেই। সময়সূচি ট্যাবে বানান — কাজ বাদ গেলে ফোন লক হবে, কাজ শেষ করলে খুলবে।"), 13f, C.muted),
-                lp(MATCH, WRAP, t = a.dp(4))
-            )
-            return
-        }
-        if (pen && penTitle != null) {
-            routineBox.addView(
-                a.tv(
-                    L.t("Locked: \"$penTitle\" is overdue. Finish it and check it off to unlock.", "লক হয়েছে: \"$penTitle\" বাকি আছে। কাজ শেষ করে টিক দিলে লক খুলবে।"),
-                    13f, C.warn, 1
-                ),
-                lp(MATCH, WRAP, t = a.dp(4), b = a.dp(4))
-            )
-        }
-        for (t in tasks) {
-            val isDone = t.id in done
-            val isMissed = t.id in missed
-            val r = LinearLayout(a)
-            r.gravity = Gravity.CENTER_VERTICAL
-            r.setPadding(0, a.dp(8), 0, a.dp(8))
-            val box = a.tv(if (isDone) "☑" else "☐", 20f, if (isDone) C.mint else if (isMissed) C.warn else C.muted, 1)
-            r.addView(box, lp(WRAP, WRAP, r = a.dp(10)))
-            val col2 = LinearLayout(a)
-            col2.orientation = LinearLayout.VERTICAL
-            val title = a.tv(t.title, 15f, if (isDone) C.muted else C.text)
-            if (isDone) title.paintFlags = title.paintFlags or Paint.STRIKE_THRU_TEXT_FLAG
-            col2.addView(title)
-            val meta = fmtMin(t.timeMin) + if (isMissed && !isDone) "  ·  " + L.t("overdue", "বাকি আছে") else ""
-            col2.addView(a.tv(meta, 12f, if (isMissed && !isDone) C.warn else C.primary))
-            r.addView(col2, lp(0, WRAP, weight = 1f))
-            r.pressFeedback()
-            r.setOnClickListener {
-                Routine.toggleDone(a, t.id)
-                routineSig = ""
-                updateRoutine()
-                tick()
-            }
-            routineBox.addView(r)
-        }
-    }
-
     /** Shows the "new badge" dialog once, the first time Home ticks after one is earned. */
     private fun maybeShowBadge() {
         if (badgeShown) return
@@ -2007,87 +1374,6 @@ class HomeScreen(private val a: MainActivity) {
             .setMessage(L.t(b.titleEn, b.titleBn) + "\n" + L.t(b.descEn, b.descBn))
             .setPositiveButton(L.t("Great!", "ভালো হয়েছে!"), null)
             .show()
-    }
-
-    /** XP & level line: updates only when the totals change. */
-    private fun updateXp() {
-        val (level, into, need) = Xp.progress(a)
-        val sig = "$level:$into:$need"
-        if (sig == xpSig) return
-        xpSig = sig
-        xpTitleText.text = L.t("Level $level", "লেভেল ${L.num(level.toString())}") + " · " + Xp.title(level)
-        xpBar.frac = if (need > 0) into.toFloat() / need.toFloat() else 1f
-        xpSubText.text = L.num(Xp.total(a).toString()) + " " + L.t("XP total", "মোট XP") + " · " +
-            L.num(into.toString()) + "/" + L.num(need.toString()) + " " + L.t("XP to the next level", "XP পরের লেভেলে")
-    }
-
-    /** Today's challenge with live progress (recomputed at most every 10 s). */
-    private fun updateChallenge() {
-        val now = System.currentTimeMillis()
-        if (now - chCheckedAt < 10_000 && chSig.isNotEmpty()) return
-        chCheckedAt = now
-        DailyChallenge.checkCompletion(a)
-        val def = DailyChallenge.today(a)
-        val (cur, target) = DailyChallenge.progress(a, def)
-        val done = DailyChallenge.isDone(a)
-        val sig = "${def.id}:$cur:$target:$done"
-        if (sig == chSig) return
-        chSig = sig
-        chTitleText.text = L.t(def.titleEn, def.titleBn)
-        chBar.frac = if (target > 0) cur.toFloat() / target.toFloat() else 0f
-        chDescText.text = if (done) {
-            L.t(
-                "Done! +${DailyChallenge.BONUS_XP} XP earned.",
-                "শেষ! +${L.num(DailyChallenge.BONUS_XP.toString())} XP পেয়েছো।"
-            )
-        } else {
-            when (def.kind) {
-                "focus", "morning" -> L.num(cur.toString()) + " / " + L.num(target.toString()) + " " + L.t("min", "মিনিট")
-                "locks" -> L.num(cur.toString()) + " / " + L.num(target.toString()) + " " + L.t("locks", "লক")
-                else -> L.t("Not done yet", "এখনো শেষ হয়নি")
-            }
-        }
-    }
-
-    /** One-time "level up" dialog after XP crosses a level threshold. */
-    private fun maybeShowLevelUp() {
-        if (levelUpShown) return
-        val lvl = Xp.levelUpPending(a) ?: return
-        levelUpShown = true
-        Xp.clearLevelUpPending(a)
-        a.dlg()
-            .setTitle(L.t("Level up!", "লেভেল আপ!"))
-            .setMessage(
-                L.t("You reached level $lvl", "তুমি লেভেল ${L.num(lvl.toString())} এ পৌঁছেছো") +
-                    ": " + Xp.title(lvl)
-            )
-            .setPositiveButton(L.t("Great!", "ভালো হয়েছে!"), null)
-            .show()
-    }
-
-    /** One-time dialog when today's challenge completes (+25 XP). */
-    private fun maybeShowChallenge() {
-        if (challengeShown) return
-        if (!DailyChallenge.pending(a)) return
-        challengeShown = true
-        DailyChallenge.clearPending(a)
-        a.dlg()
-            .setTitle(L.t("Challenge complete!", "চ্যালেঞ্জ সম্পন্ন!"))
-            .setMessage(
-                L.t(
-                    "Today's challenge is done — +${DailyChallenge.BONUS_XP} XP!",
-                    "আজকের চ্যালেঞ্জ শেষ — +${L.num(DailyChallenge.BONUS_XP.toString())} XP!"
-                )
-            )
-            .setPositiveButton(L.t("Great!", "ভালো হয়েছে!"), null)
-            .show()
-    }
-
-    /** Confetti when the day's routine is fully complete (once a day, never after locks). */
-    private fun maybeCelebrateRoutine() {
-        if (!Confetti.shouldCelebrate(a)) return
-        Confetti.markShown(a)
-        Confetti.show(a)
     }
 
     private fun warnCard(icon: String, title: String, sub: String, onClick: () -> Unit): View {
@@ -2116,22 +1402,10 @@ class HomeScreen(private val a: MainActivity) {
         // warn only while a lock runs: the admin was on, now it is off, so
         // the app could be uninstalled mid-lock
         val adminOff = Store.isActive(a) && DeviceAdmin.wasActive(a) && !adminActive
-        val pen = Routine.isPenaltyLock(a)
-        val penTitle = Routine.penaltyTaskTitle(a)
-        val sig = "$acc|$bat|$adminOff|$pen:$penTitle|${L.bn}"
+        val sig = "$acc|$bat|$adminOff|${L.bn}"
         if (sig == warnSig) return
         warnSig = sig
         warnBox.removeAllViews()
-        if (pen) {
-            warnBox.addView(
-                warnCard(
-                    "!",
-                    L.t("Routine task overdue", "রুটিনের কাজ বাকি"),
-                    (penTitle ?: "") + " — " + L.t("finish it and check it off below to unlock early.", "শেষ করে নিচে টিক দিলে লক আগেই খুলবে।")
-                ) { },
-                lp(MATCH, WRAP, b = a.dp(8))
-            )
-        }
         if (!acc) {
             warnBox.addView(
                 warnCard(
@@ -2206,9 +1480,6 @@ class HomeScreen(private val a: MainActivity) {
         }
         // already at the destination? warn in the confirm dialog (the lock would open at once)
         Extra.currentLocation(a) { loc ->
-            // the fix can take up to 20 s: if the user pressed Back meanwhile,
-            // the activity is dead and the confirm dialog must not be shown
-            if (a.isFinishing || a.isDestroyed) return@currentLocation
             var alreadyThere = false
             if (loc != null) {
                 val res = FloatArray(1)
@@ -2397,9 +1668,6 @@ class HomeScreen(private val a: MainActivity) {
 // =====================================================================
 class ScheduleScreen(private val a: MainActivity) {
     private lateinit var list: LinearLayout
-    private lateinit var routineList: LinearLayout
-    private val routineDayChips = ArrayList<TextView>()
-    private var routineDay = dayIdx(Calendar.getInstance()) // today by default
 
     fun build(): View {
         val (sv, col) = a.page()
@@ -2418,176 +1686,7 @@ class ScheduleScreen(private val a: MainActivity) {
         list.orientation = LinearLayout.VERTICAL
         col.addView(list, lp(MATCH, WRAP, t = a.dp(14)))
         refresh()
-
-        // ---- daily routine: repeating tasks per weekday ----
-        col.addView(a.tv(L.t("Daily routine", "দৈনিক রুটিন"), 24f, C.text, 1), lp(MATCH, WRAP, t = a.dp(26)))
-        col.addView(
-            a.tv(
-                L.t("Tasks that repeat every day. Miss one and the phone locks until you do it.", "প্রতিদিনের কাজ। একটা বাদ গেলে ফোন লক হবে — কাজ শেষ করলে খুলবে।"),
-                13f, C.muted
-            ),
-            lp(MATCH, WRAP, t = a.dp(4), b = a.dp(12))
-        )
-        val dayRow = LinearLayout(a)
-        for (i in 0..6) {
-            val d = a.chip(L.dayShort(i), i == routineDay)
-            d.setPadding(0, a.dp(10), 0, a.dp(10))
-            d.setOnClickListener {
-                routineDay = i
-                for ((j, c) in routineDayChips.withIndex()) a.animateChip(c, j == i)
-                refreshRoutine()
-            }
-            routineDayChips.add(d)
-            dayRow.addView(d, lp(0, WRAP, r = if (i < 6) a.dp(4) else 0, weight = 1f))
-        }
-        col.addView(dayRow)
-        val rAdd = a.primaryBtn("＋  " + L.t("Add routine task", "রুটিনের কাজ যোগ করুন"))
-        rAdd.setOnClickListener { routineEditor(null) }
-        col.addView(rAdd, lp(MATCH, a.dp(52), t = a.dp(12)))
-        val rTpl = a.outlineBtn(L.t("Use a template", "টেমপ্লেট ব্যবহার করুন"), C.primary)
-        rTpl.setOnClickListener { templateDialog() }
-        col.addView(rTpl, lp(MATCH, a.dp(48), t = a.dp(8)))
-        routineList = LinearLayout(a)
-        routineList.orientation = LinearLayout.VERTICAL
-        col.addView(routineList, lp(MATCH, WRAP, t = a.dp(14)))
-        refreshRoutine()
         return sv
-    }
-
-    /** The selected weekday's routine tasks. */
-    private fun refreshRoutine() {
-        routineList.removeAllViews()
-        val items = Routine.tasksForDay(a, routineDay)
-        if (items.isEmpty()) {
-            val c = a.card(24)
-            c.gravity = Gravity.CENTER_HORIZONTAL
-            val t = a.tv(L.t("No tasks on ${L.dayLong(routineDay)}", "${L.dayLong(routineDay)}-এ কোনো কাজ নেই"), 15f, C.muted, 1)
-            t.gravity = Gravity.CENTER
-            c.addView(t, lp(MATCH, WRAP, t = a.dp(8)))
-            routineList.addView(c)
-            return
-        }
-        for (t in items) {
-            val c = a.card()
-            val r = LinearLayout(a)
-            r.gravity = Gravity.CENTER_VERTICAL
-            val col2 = LinearLayout(a)
-            col2.orientation = LinearLayout.VERTICAL
-            col2.addView(a.tv(t.title, 17f, C.text, 1))
-            col2.addView(
-                a.tv(fmtMin(t.timeMin) + "  ·  " + L.t("${t.graceMin} min grace", "${L.num(t.graceMin.toString())} মিনিট ছাড়"), 13f, C.primary),
-                lp(MATCH, WRAP, t = a.dp(4))
-            )
-            r.addView(col2, lp(0, WRAP, weight = 1f))
-            val del = a.tv("🗑", 20f)
-            del.setPadding(a.dp(16), a.dp(4), a.dp(4), a.dp(4))
-            del.setOnClickListener {
-                a.dlg()
-                    .setTitle(L.t("Delete this task?", "এই কাজ মুছে ফেলবেন?"))
-                    .setMessage(t.title)
-                    .setPositiveButton(L.t("Delete", "মুছুন")) { _, _ ->
-                        Routine.saveTasks(a, routineDay, Routine.tasksForDay(a, routineDay).filter { it.id != t.id })
-                        refreshRoutine()
-                    }
-                    .setNegativeButton(L.t("Cancel", "বাতিল"), null)
-                    .show()
-            }
-            r.addView(del)
-            c.addView(r)
-            c.setOnClickListener { routineEditor(t) }
-            routineList.addView(c, lp(MATCH, WRAP, b = a.dp(12)))
-        }
-    }
-
-    /** Add or edit one routine task for the selected weekday. */
-    private fun routineEditor(existing: RoutineTask?) {
-        var timeMin = existing?.timeMin ?: (8 * 60)
-        var grace = existing?.graceMin ?: 30
-        val box = LinearLayout(a)
-        box.orientation = LinearLayout.VERTICAL
-        box.setPadding(a.dp(20), a.dp(8), a.dp(20), 0)
-        val et = a.edit(L.t("Task (e.g. Exercise)", "কাজ (যেমন ব্যায়াম)"), false)
-        if (existing != null) et.setText(existing.title)
-        box.addView(et)
-        val timeView = a.tv("", 18f, C.text, 1)
-        timeView.gravity = Gravity.CENTER
-        timeView.background = withRipple(rounded(C.card2, a.dp(12).toFloat()))
-        timeView.setPadding(a.dp(8), a.dp(14), a.dp(8), a.dp(14))
-        fun renderTime() {
-            timeView.text = L.t("Time  ", "সময়  ") + fmtMin(timeMin)
-        }
-        timeView.setOnClickListener {
-            TimePickerDialog(a, android.R.style.Theme_DeviceDefault_Dialog, { _, h, m ->
-                timeMin = h * 60 + m
-                renderTime()
-            }, timeMin / 60, timeMin % 60, false).show()
-        }
-        box.addView(timeView, lp(MATCH, WRAP, t = a.dp(14)))
-        renderTime()
-        box.addView(
-            a.tv(L.t("Grace time — how long after the time before the phone locks", "ছাড় — সময়ের কত পরে ফোন লক হবে"), 13f, C.muted),
-            lp(MATCH, WRAP, t = a.dp(14))
-        )
-        val graceRow = LinearLayout(a)
-        val graceChips = ArrayList<TextView>()
-        val graceOpts = listOf(15, 30, 60)
-        for (g in graceOpts) {
-            val ch = a.chip(L.num(g.toString()) + " " + L.t("min", "মিনিট"), g == grace)
-            ch.setOnClickListener {
-                grace = g
-                for ((i, c) in graceChips.withIndex()) a.animateChip(c, graceOpts[i] == g)
-            }
-            graceChips.add(ch)
-            graceRow.addView(ch, lp(0, WRAP, r = a.dp(8), t = a.dp(8), weight = 1f))
-        }
-        box.addView(graceRow)
-        val d = a.dlg()
-            .setTitle(if (existing == null) L.t("New routine task", "নতুন রুটিনের কাজ") else L.t("Edit routine task", "রুটিনের কাজ বদলান"))
-            .setView(box)
-            .setPositiveButton(L.t("Save", "সংরক্ষণ"), null)
-            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
-            .create()
-        d.show()
-        d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-            val title = et.text.toString().trim()
-            if (title.isEmpty()) {
-                et.error = L.t("Write a task name", "কাজের নাম লিখুন")
-            } else {
-                val all = Routine.tasksForDay(a, routineDay)
-                val updated = if (existing == null) {
-                    all + RoutineTask(System.currentTimeMillis(), title.take(40), timeMin, grace, "manual")
-                } else {
-                    all.map { if (it.id == existing.id) it.copy(title = title.take(40), timeMin = timeMin, graceMin = grace) else it }
-                }
-                Routine.saveTasks(a, routineDay, updated)
-                d.dismiss()
-                refreshRoutine()
-            }
-        }
-    }
-
-    /** One-tap presets (student / office / general) — replaces the whole routine. */
-    private fun templateDialog() {
-        val tpls = Routine.templates()
-        val items = tpls.map {
-            L.t(it.nameEn, it.nameBn) + "  ·  " + L.num(it.tasks.size.toString()) + " " + L.t("tasks", "টি কাজ")
-        }.toTypedArray()
-        a.dlg()
-            .setTitle(L.t("Routine template", "রুটিন টেমপ্লেট"))
-            .setItems(items) { _, which ->
-                val tpl = tpls[which]
-                a.dlg()
-                    .setTitle(L.t(tpl.nameEn, tpl.nameBn))
-                    .setMessage(L.t("This replaces your whole routine (all days) with the template's tasks.", "এটা তোমার পুরো রুটিন (সব দিন) টেমপ্লেটের কাজ দিয়ে বদলে দেবে।"))
-                    .setPositiveButton(L.t("Apply", "প্রয়োগ করুন")) { _, _ ->
-                        Routine.applyTemplate(a, tpl)
-                        refreshRoutine()
-                        a.toast(L.t("Routine applied", "রুটিন প্রয়োগ হয়েছে"))
-                    }
-                    .setNegativeButton(L.t("Cancel", "বাতিল"), null)
-                    .show()
-            }
-            .show()
     }
 
     private fun refresh() {
@@ -2894,146 +1993,6 @@ class StatsScreen(private val a: MainActivity) {
         }
         col.addView(scoreCard, lp(MATCH, WRAP, b = a.dp(14)))
 
-        // XP & level: lifetime XP with progress to the next level
-        val (xpLevel, xpInto, xpNeed) = Xp.progress(a)
-        val xpCard = a.card()
-        xpCard.addView(a.section(L.t("XP & level", "XP ও লেভেল")))
-        val xpBig = LinearLayout(a)
-        xpBig.gravity = Gravity.CENTER_VERTICAL
-        xpBig.addView(a.tv(L.t("Level $xpLevel", "লেভেল ${L.num(xpLevel.toString())}"), 24f, C.text, 1))
-        xpBig.addView(a.tv(" · " + Xp.title(xpLevel), 16f, C.mint, 1), lp(WRAP, WRAP, l = a.dp(4)))
-        xpCard.addView(xpBig, lp(MATCH, WRAP, t = a.dp(8)))
-        val xpBarS = BarView(a)
-        xpBarS.frac = if (xpNeed > 0) xpInto.toFloat() / xpNeed.toFloat() else 1f
-        xpCard.addView(xpBarS, lp(MATCH, a.dp(10), t = a.dp(10)))
-        xpCard.addView(
-            a.tv(
-                L.num(Xp.total(a).toString()) + " " + L.t("XP total", "মোট XP") + " · " +
-                    L.num(xpInto.toString()) + "/" + L.num(xpNeed.toString()) + " " + L.t("XP to the next level", "XP পরের লেভেলে"),
-                13f, C.muted
-            ),
-            lp(MATCH, WRAP, t = a.dp(8))
-        )
-        col.addView(xpCard, lp(MATCH, WRAP, b = a.dp(14)))
-
-        // focus journey: lifetime focus minutes walk Dhaka → Cox's Bazar (1 min = 1 km)
-        val (journeys, journeyKm, _) = FocusJourney.progress(a)
-        val journeyCard = a.card()
-        journeyCard.addView(a.section(L.t("Focus journey", "ফোকাস যাত্রা")))
-        val journeyView = JourneyView(a)
-        journeyView.km = journeyKm
-        journeyCard.addView(journeyView, lp(MATCH, a.dp(84), t = a.dp(8)))
-        val nextMs = FocusJourney.nextMilestone(a)
-        val journeyText = StringBuilder()
-        journeyText.append(L.num(journeyKm.toString()))
-        journeyText.append(" / ")
-        journeyText.append(L.num(FocusJourney.ROUTE_KM.toString()))
-        journeyText.append(" " + L.t("km", "কিমি"))
-        if (nextMs != null) {
-            val toGo = nextMs.km - journeyKm
-            journeyText.append(" · " + L.t("next: ", "পরের মাইলফলক: "))
-            journeyText.append(L.t(nextMs.nameEn, nextMs.nameBn))
-            journeyText.append(" (" + L.num(toGo.toString()) + " " + L.t("km to go", "কিমি বাকি") + ")")
-        }
-        if (journeys > 0) {
-            journeyText.append("\n" + L.t("Journeys completed: ", "সম্পন্ন যাত্রা: ") + L.num(journeys.toString()))
-        }
-        journeyCard.addView(a.tv(journeyText.toString(), 14f, C.text), lp(MATCH, WRAP, t = a.dp(8)))
-        col.addView(journeyCard, lp(MATCH, WRAP, b = a.dp(14)))
-
-        // record board: personal bests, recomputed from stored data on every build
-        val recordCard = a.card()
-        recordCard.addView(a.section(L.t("Records", "রেকর্ড")))
-        for (rec in Records.all(a)) {
-            val r = LinearLayout(a)
-            r.gravity = Gravity.CENTER_VERTICAL
-            r.setPadding(0, a.dp(6), 0, a.dp(6))
-            r.addView(a.tv(L.t(rec.labelEn, rec.labelBn), 14f, C.text, 1), lp(0, WRAP, weight = 1f))
-            r.addView(a.tv(rec.value, 14f, if (rec.dateMs != null) C.mint else C.muted, 1))
-            recordCard.addView(r)
-            if (rec.dateMs != null) {
-                recordCard.addView(
-                    a.tv(fmtDate(rec.dateMs), 12f, C.muted),
-                    lp(MATCH, WRAP, b = a.dp(2))
-                )
-            }
-        }
-        col.addView(recordCard, lp(MATCH, WRAP, b = a.dp(14)))
-
-        // routine: streak + today's progress + the last 7 days
-        val (rDone, rTotal) = Routine.todaySummary(a)
-        val rStreak = Routine.streak(a)
-        val routineCard = a.card()
-        routineCard.addView(a.section(L.t("Daily routine", "দৈনিক রুটিন")))
-        val rBig = LinearLayout(a)
-        rBig.gravity = Gravity.CENTER_VERTICAL
-        rBig.addView(a.tv(L.num(rStreak.toString()), 34f, C.mint, 1))
-        rBig.addView(a.tv(L.t(" day streak", " দিনের স্ট্রিক"), 16f, C.muted), lp(WRAP, WRAP, l = a.dp(4)))
-        routineCard.addView(rBig, lp(MATCH, WRAP, t = a.dp(8)))
-        // streak protection tokens (won from the lucky wheel)
-        val tokens = StreakProtection.tokens(a)
-        val tokenTxt = if (tokens == 1) L.t("1 token", "১টি টোকেন")
-        else L.num(tokens.toString()) + " " + L.t("tokens", "টি টোকেন")
-        routineCard.addView(
-            a.tv(
-                L.t("Streak protection: ", "স্ট্রিক সুরক্ষা: ") + tokenTxt + " · " +
-                    L.t("a token saves your streak when a day is missed", "একদিন মিস হলে টোকেন স্ট্রিক বাঁচায়"),
-                13f, if (tokens > 0) C.mint else C.muted
-            ),
-            lp(MATCH, WRAP, t = a.dp(6))
-        )
-        routineCard.addView(
-            a.tv(
-                if (rTotal > 0) L.t("Today: $rDone of $rTotal tasks done", "আজ: ${L.num(rTotal.toString())}টি কাজের মধ্যে ${L.num(rDone.toString())}টি শেষ")
-                else L.t("No routine tasks today — build one in the Schedule tab.", "আজ কোনো রুটিনের কাজ নেই — সময়সূচি ট্যাবে বানান।"),
-                14f, C.text
-            ),
-            lp(MATCH, WRAP, t = a.dp(6))
-        )
-        for (i in 6 downTo 0) {
-            val c = Calendar.getInstance()
-            c.add(Calendar.DAY_OF_YEAR, -i)
-            val label = if (i == 0) L.t("Today", "আজ") else L.dayLong(dayIdx(c))
-            val tasks = Routine.tasksForDay(a, dayIdx(c))
-            val done = Routine.doneIds(a, Store.dayKey(i))
-            val doneCount = tasks.count { it.id in done }
-            val r = LinearLayout(a)
-            r.gravity = Gravity.CENTER_VERTICAL
-            r.setPadding(0, a.dp(6), 0, a.dp(6))
-            r.addView(a.tv(label, 14f, C.text, 1), lp(0, WRAP, weight = 1f))
-            val txt = if (tasks.isEmpty()) "—" else L.num(doneCount.toString()) + "/" + L.num(tasks.size.toString())
-            r.addView(a.tv(txt, 14f, if (tasks.isNotEmpty() && doneCount == tasks.size) C.mint else C.muted, 1))
-            routineCard.addView(r)
-        }
-        col.addView(routineCard, lp(MATCH, WRAP, b = a.dp(14)))
-
-        // mood: the last 7 days as a graph + the before/after-lock comparison
-        val moodCard = a.card()
-        moodCard.addView(a.section(L.t("Mood", "মুড")))
-        val moodWeek = Mood.weekValues(a)
-        if (moodWeek.all { it == null }) {
-            moodCard.addView(
-                a.tv(L.t("Log your mood on Home and the 7-day graph will show here.", "হোমে মুড লগ করলে এখানে ৭ দিনের গ্রাফ দেখাবে।"), 13f, C.muted),
-                lp(MATCH, WRAP, t = a.dp(6))
-            )
-        } else {
-            val graph = MoodGraphView(a)
-            graph.values = moodWeek
-            moodCard.addView(graph, lp(MATCH, a.dp(140), t = a.dp(8)))
-            val todayMood = Mood.todayDaily(a)
-            if (todayMood != null) {
-                moodCard.addView(
-                    a.tv(L.t("Today you feel: ", "আজ তোমার মুড: ") + Mood.label(todayMood), 14f, C.text),
-                    lp(MATCH, WRAP, t = a.dp(6))
-                )
-            }
-            val cmp = Mood.comparison(a)
-            if (cmp != null) {
-                moodCard.addView(a.tv(cmp, 14f, C.mint, 1), lp(MATCH, WRAP, t = a.dp(6)))
-            }
-        }
-        col.addView(moodCard, lp(MATCH, WRAP, b = a.dp(14)))
-
         // this week vs last week: focus minutes + completed locks (focus_days, 90 days kept)
         val cmpCard = a.card()
         cmpCard.addView(a.section(L.t("This week vs last week", "এই সপ্তাহ বনাম গত সপ্তাহ")))
@@ -3159,37 +2118,6 @@ class StatsScreen(private val a: MainActivity) {
         // garden: every finished tree, newest first (dead ones withered and grey)
         val gardenCard = a.card()
         gardenCard.addView(a.section(L.t("Garden", "বাগান")))
-        // garden animals: earned by growing trees, or won from the lucky wheel
-        val animals = GardenAnimals.unlocked(a)
-        if (animals.isEmpty()) {
-            val next = GardenAnimals.nextByTrees(a)
-            if (next != null) {
-                gardenCard.addView(
-                    a.tv(
-                        L.t(
-                            "Grow ${next.trees} trees to meet your first animal: ${next.nameEn}.",
-                            "${L.num(next.trees.toString())}টি গাছ বড় করলে প্রথম প্রাণী আসবে: ${next.nameBn}।"
-                        ),
-                        13f, C.muted
-                    ),
-                    lp(MATCH, WRAP, t = a.dp(6))
-                )
-            }
-        } else {
-            val aRow = LinearLayout(a)
-            aRow.gravity = Gravity.CENTER_VERTICAL
-            for (an in animals) {
-                val cell = LinearLayout(a)
-                cell.orientation = LinearLayout.VERTICAL
-                cell.gravity = Gravity.CENTER_HORIZONTAL
-                cell.addView(AnimalView(a, an.id), lp(a.dp(56), a.dp(56)))
-                val nl = a.tv(L.t(an.nameEn, an.nameBn), 11f, C.muted, 1)
-                nl.gravity = Gravity.CENTER
-                cell.addView(nl, lp(MATCH, WRAP, t = a.dp(2)))
-                aRow.addView(cell, lp(0, WRAP, weight = 1f))
-            }
-            gardenCard.addView(aRow, lp(MATCH, WRAP, t = a.dp(8)))
-        }
         val trees = FocusTree.garden(a)
         if (trees.isEmpty()) {
             gardenCard.addView(
@@ -3209,7 +2137,6 @@ class StatsScreen(private val a: MainActivity) {
                         val tv = TreeView(a)
                         tv.frac = t.stage * 0.25f
                         tv.alive = t.alive
-                        tv.species = t.species
                         cell.addView(tv, lp(a.dp(96), a.dp(96)))
                         val dl = a.tv(fmtDate(t.endMs), 11f, C.muted, 1)
                         dl.gravity = Gravity.CENTER
@@ -3308,90 +2235,16 @@ class StatsScreen(private val a: MainActivity) {
         }
         col.addView(usageCard, lp(MATCH, WRAP, b = a.dp(14)))
 
-        // usage history: per-session open/close times, grouped by day, newest first.
-        val histCard = a.card()
-        histCard.addView(a.section(L.t("Usage history", "ব্যবহারের হিস্ট্রি")))
-        val hist = Extra.historyEntries(a)
-        if (hist.isEmpty()) {
-            histCard.addView(
-                a.tv(L.t("No history yet — recording starts from this version. Accessibility must be on to track app time.", "এখনো কোনো হিস্ট্রি নেই — এই ভার্সন থেকে রেকর্ড শুরু হয়েছে। অ্যাপের সময় ট্র্যাক করতে Accessibility চালু থাকতে হবে।"), 13f, C.muted),
-                lp(MATCH, WRAP, t = a.dp(6))
-            )
-        } else {
-            val pm = a.packageManager
-            val labelCache = HashMap<String, String>()
-            val iconCache = HashMap<String, Drawable?>()
-            val byDay = LinkedHashMap<String, ArrayList<UsageSession>>()
-            for (s in hist.take(200)) {
-                byDay.getOrPut(Store.dayKeyFor(s.open)) { ArrayList() }.add(s)
-            }
-            val todayKey = Store.dayKey(0)
-            val yestKey = Store.dayKey(1)
-            for ((dayKey, sessions) in byDay) {
-                val dayLabel = when (dayKey) {
-                    todayKey -> L.t("Today", "আজ")
-                    yestKey -> L.t("Yesterday", "গতকাল")
-                    else -> fmtDate(sessions.first().open)
-                }
-                val dayTotalMs = sessions.sumOf { (it.close - it.open).coerceAtLeast(0L) }
-                val header = LinearLayout(a)
-                header.gravity = Gravity.CENTER_VERTICAL
-                header.addView(a.tv(dayLabel, 14f, C.text, 1), lp(0, WRAP, weight = 1f))
-                header.addView(a.tv(fmtDur(dayTotalMs), 13f, C.muted))
-                histCard.addView(header, lp(MATCH, WRAP, t = a.dp(12)))
-                for (s in sessions) {
-                    val r = LinearLayout(a)
-                    r.gravity = Gravity.CENTER_VERTICAL
-                    r.setPadding(0, a.dp(6), 0, a.dp(6))
-                    val icon = iconCache.getOrPut(s.pkg) {
-                        try {
-                            pm.getApplicationIcon(pm.getApplicationInfo(s.pkg, 0))
-                        } catch (e: Exception) {
-                            null
-                        }
-                    }
-                    if (icon != null) {
-                        val iv = ImageView(a)
-                        iv.setImageDrawable(icon)
-                        r.addView(iv, lp(a.dp(32), a.dp(32), r = a.dp(10)))
-                    } else {
-                        r.addView(View(a), lp(a.dp(32), a.dp(32), r = a.dp(10)))
-                    }
-                    val label = labelCache.getOrPut(s.pkg) {
-                        try {
-                            pm.getApplicationLabel(pm.getApplicationInfo(s.pkg, 0)).toString()
-                        } catch (e: Exception) {
-                            s.pkg
-                        }
-                    }
-                    val labelCol = LinearLayout(a)
-                    labelCol.orientation = LinearLayout.VERTICAL
-                    labelCol.addView(a.tv(label, 14f, C.text))
-                    labelCol.addView(a.tv(fmtClock(s.open) + " – " + fmtClock(s.close), 12f, C.muted))
-                    r.addView(labelCol, lp(0, WRAP, weight = 1f))
-                    r.addView(a.tv(fmtDur(s.close - s.open), 13f, C.text, 1))
-                    histCard.addView(r, lp(MATCH, WRAP))
-                }
-            }
-            if (hist.size > 200) {
-                histCard.addView(
-                    a.tv(L.t("Showing the latest 200 sessions", "সর্বশেষ ২০০টি সেশন দেখানো হচ্ছে"), 12f, C.muted),
-                    lp(MATCH, WRAP, t = a.dp(8))
-                )
-            }
-        }
-        col.addView(histCard, lp(MATCH, WRAP, b = a.dp(14)))
-
         // temptation counter: blocked/limited apps the user tried to open
         col.addView(a.attemptsCard(), lp(MATCH, WRAP, b = a.dp(14)))
 
         // history
-        val sessHistCard = a.card()
-        sessHistCard.addView(a.section(L.t("Session history", "সেশন ইতিহাস")))
+        val hist = a.card()
+        hist.addView(a.section(L.t("Session history", "সেশন ইতিহাস")))
         if (all.isEmpty()) {
             val e = a.tv(L.t("No sessions yet", "এখনো কোনো সেশন নেই"), 14f, C.muted)
             e.gravity = Gravity.CENTER
-            sessHistCard.addView(e, lp(MATCH, WRAP, t = a.dp(16), b = a.dp(8)))
+            hist.addView(e, lp(MATCH, WRAP, t = a.dp(16), b = a.dp(8)))
         } else {
             for (s in all.reversed().take(30)) {
                 val r = LinearLayout(a)
@@ -3409,10 +2262,10 @@ class StatsScreen(private val a: MainActivity) {
                 left.addView(a.tv("$src · $state", 12f, C.muted))
                 r.addView(left, lp(0, WRAP, weight = 1f))
                 r.addView(a.tv(fmtDur(s.dur), 15f, if (s.ok) C.mint else C.warn, 1))
-                sessHistCard.addView(r)
+                hist.addView(r)
             }
         }
-        col.addView(sessHistCard)
+        col.addView(hist)
         return sv
     }
 
@@ -3560,14 +2413,7 @@ class SettingsScreen(private val a: MainActivity) {
 
     /** Pick the focus sound. Choosing one while a lock runs starts it right away. */
     private fun focusSoundDialog() {
-        val choices = ArrayList<String>().apply {
-            add(FocusSound.OFF)
-            add(FocusSound.WHITE)
-            add(FocusSound.BROWN)
-            add(FocusSound.RAIN)
-            add(FocusSound.MIX) // the user's own mix from the sound mixer
-            if (LuckyWheel.isOceanUnlocked(a)) add(FocusSound.OCEAN) // wheel-only
-        }
+        val choices = listOf(FocusSound.OFF, FocusSound.WHITE, FocusSound.BROWN, FocusSound.RAIN)
         val labels = choices.map { FocusSound.label(it) }.toTypedArray()
         val current = choices.indexOf(FocusSound.choice(a)).coerceAtLeast(0)
         a.dlg()
@@ -3577,8 +2423,6 @@ class SettingsScreen(private val a: MainActivity) {
                 FocusSound.setChoice(a, picked)
                 if (picked == FocusSound.OFF) {
                     FocusSound.stop()
-                } else if (picked == FocusSound.MIX && SoundMixer.activeChannels(a).isEmpty()) {
-                    a.toast(L.t("Turn on at least one sound in the mixer first", "আগে মিক্সারে অন্তত একটা সাউন্ড চালু করুন"))
                 } else if (Store.isActive(a)) {
                     // explicit choice: start even on silent/vibrate
                     FocusSound.startExplicit(a)
@@ -3587,88 +2431,6 @@ class SettingsScreen(private val a: MainActivity) {
                 a.go(3)
             }
             .setNegativeButton(L.t("Cancel", "বাতিল"), null)
-            .show()
-    }
-
-    /** Sound mixer: per-channel volume sliders, a preview, and one saved mix ("My mix"). */
-    private fun mixerDialog() {
-        val vols = SoundMixer.volumes(a).toMutableMap()
-        val box = LinearLayout(a)
-        box.orientation = LinearLayout.VERTICAL
-        box.setPadding(a.dp(24), a.dp(8), a.dp(24), 0)
-        box.addView(
-            a.tv(L.t("Mix the focus sounds — each slider is one sound's volume.", "ফোকাস সাউন্ড মেশান — প্রতিটা স্লাইডার একটা সাউন্ডের ভলিউম।"), 13f, C.muted),
-            lp(MATCH, WRAP, t = a.dp(4))
-        )
-        for (ch in SoundMixer.CHANNELS) {
-            val locked = ch == FocusSound.OCEAN && !LuckyWheel.isOceanUnlocked(a)
-            val head = LinearLayout(a)
-            head.gravity = Gravity.CENTER_VERTICAL
-            head.addView(
-                a.tv(
-                    FocusSound.label(ch) + if (locked) " · " + L.t("win it on the wheel", "চাকায় জিতুন") else "",
-                    14f, if (locked) C.muted else C.text, 1
-                ),
-                lp(0, WRAP, weight = 1f)
-            )
-            val valTxt = a.tv(L.num((vols[ch] ?: 0).toString()) + "%", 14f, C.primary, 1)
-            head.addView(valTxt)
-            box.addView(head, lp(MATCH, WRAP, t = a.dp(14)))
-            val seek = SeekBar(a)
-            seek.max = 100
-            seek.progress = vols[ch] ?: 0
-            seek.isEnabled = !locked
-            seek.progressTintList = ColorStateList.valueOf(C.primary)
-            seek.progressBackgroundTintList = ColorStateList.valueOf(C.card2)
-            seek.thumbTintList = ColorStateList.valueOf(C.mint)
-            seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
-                    vols[ch] = p
-                    valTxt.setTextAnimated(L.num(p.toString()) + "%")
-                }
-
-                override fun onStartTrackingTouch(s: SeekBar?) {}
-                override fun onStopTrackingTouch(s: SeekBar?) {}
-            })
-            box.addView(seek, lp(MATCH, WRAP, t = a.dp(4)))
-        }
-        // preview: plays the current (unsaved) slider values right away
-        val previewRow = LinearLayout(a)
-        previewRow.gravity = Gravity.CENTER_VERTICAL
-        val playBtn = a.outlineBtn(L.t("Listen", "শুনুন"), C.primary)
-        playBtn.setOnClickListener {
-            if (SoundMixer.activeChannels(a, vols).isEmpty()) {
-                a.toast(L.t("Turn on at least one sound first", "আগে অন্তত একটা সাউন্ড চালু করুন"))
-            } else {
-                FocusSound.previewMix(a, vols)
-            }
-        }
-        previewRow.addView(playBtn, lp(0, a.dp(48), weight = 1f, r = a.dp(8)))
-        val stopBtn = a.outlineBtn(L.t("Stop", "থামান"), C.muted)
-        stopBtn.setOnClickListener {
-            FocusSound.stop()
-            FocusSound.sync(a)
-        }
-        previewRow.addView(stopBtn, lp(0, a.dp(48), weight = 1f))
-        box.addView(previewRow, lp(MATCH, WRAP, t = a.dp(16)))
-        a.dlg()
-            .setTitle(L.t("Sound mixer", "সাউন্ড মিক্সার"))
-            .setView(box)
-            .setPositiveButton(L.t("Save my mix", "আমার মিক্স সেভ করুন")) { _, _ ->
-                SoundMixer.save(a, vols)
-                // a playing mix restarts with the saved volumes; a preview stops
-                FocusSound.stop()
-                FocusSound.sync(a)
-                a.toast(L.t("Mix saved — pick \"My mix\" in the focus sounds", "মিক্স সেভ হয়েছে — ফোকাস সাউন্ডে \"আমার মিক্স\" বাছুন"))
-                a.go(3)
-            }
-            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
-            .setOnDismissListener {
-                // a preview must never keep playing after the dialog closes;
-                // the lock's own sound (if any) is restored by sync()
-                FocusSound.stop()
-                FocusSound.sync(a)
-            }
             .show()
     }
 
@@ -3741,66 +2503,35 @@ class SettingsScreen(private val a: MainActivity) {
         tr.addView(t0, lp(0, WRAP, r = a.dp(8), t = a.dp(10), weight = 1f))
         tr.addView(t1, lp(0, WRAP, t = a.dp(10), weight = 1f))
         theme.addView(tr)
-        // accent colour: 5 base swatches + 3 wheel-only + 4 progress-locked ones
+        // accent colour: 5 swatches — the chosen one colours the ring, chips and buttons
         val acLabel = a.tv(L.t("Accent colour", "অ্যাকসেন্ট রঙ"), 13f, C.muted, 1)
         theme.addView(acLabel, lp(MATCH, WRAP, t = a.dp(16)))
-        val allAccents = C.allAccents()
-        val acRow1 = LinearLayout(a)
-        acRow1.gravity = Gravity.CENTER_VERTICAL
-        val acRow2 = LinearLayout(a)
-        acRow2.gravity = Gravity.CENTER_VERTICAL
-        val acRow3 = LinearLayout(a)
-        acRow3.gravity = Gravity.CENTER_VERTICAL
+        val acRow = LinearLayout(a)
+        acRow.gravity = Gravity.CENTER_VERTICAL
         val swatches = ArrayList<View>()
         fun styleSwatches() {
             val sel = Store.settings(a).getInt("accent", 0)
             for ((i, sw) in swatches.withIndex()) {
-                val col = Color.parseColor(allAccents[i][0])
+                val col = Color.parseColor(C.ACCENTS[i][0])
                 sw.background = if (i == sel) rounded(col, a.dp(20).toFloat(), C.text, a.dp(2))
                 else rounded(col, a.dp(20).toFloat())
-                sw.alpha = if (ThemeUnlocks.isUnlocked(a, i)) 1f else 0.35f
             }
         }
         fun pickAccent(i: Int) {
-            if (!ThemeUnlocks.isUnlocked(a, i)) {
-                if (i >= ThemeUnlocks.FIRST) {
-                    val name = C.UNLOCK_ACCENT_NAMES[i - ThemeUnlocks.FIRST]
-                    a.toast(L.t(name.first, name.second) + " — " + ThemeUnlocks.condition(i))
-                } else {
-                    a.toast(L.t("Win this colour from the lucky wheel", "এই রঙ লাকি হুইল থেকে জিতুন"))
-                }
-                return
-            }
             if (Store.settings(a).getInt("accent", 0) == i) return
             Store.settings(a).edit().putInt("accent", i).apply()
             styleSwatches()
-            acRow1.postDelayed({ a.crossfade { C.load(a) } }, 240)
+            acRow.postDelayed({ a.crossfade { C.load(a) } }, 240)
         }
-        for (i in allAccents.indices) {
+        for (i in C.ACCENTS.indices) {
             val sw = View(a)
             sw.setOnClickListener { pickAccent(i) }
             sw.pressFeedback()
             swatches.add(sw)
-            val row = when {
-                i < C.ACCENTS.size -> acRow1
-                i < C.ACCENTS.size + C.WHEEL_ACCENTS.size -> acRow2
-                else -> acRow3
-            }
-            val last = when {
-                i < C.ACCENTS.size -> i == C.ACCENTS.size - 1
-                i < C.ACCENTS.size + C.WHEEL_ACCENTS.size -> i == C.ACCENTS.size + C.WHEEL_ACCENTS.size - 1
-                else -> i == allAccents.size - 1
-            }
-            row.addView(sw, lp(a.dp(40), a.dp(40), r = if (last) 0 else a.dp(12), t = a.dp(10)))
+            acRow.addView(sw, lp(a.dp(40), a.dp(40), r = if (i < C.ACCENTS.size - 1) a.dp(12) else 0, t = a.dp(10)))
         }
         styleSwatches()
-        theme.addView(acRow1)
-        theme.addView(acRow2)
-        theme.addView(acRow3)
-        theme.addView(
-            a.tv(ThemeUnlocks.hintLine(), 12f, C.muted),
-            lp(MATCH, WRAP, t = a.dp(8))
-        )
+        theme.addView(acRow)
         col.addView(theme, lp(MATCH, WRAP, b = a.dp(12)))
 
         // morning reminder: a daily notification to start the first lock
@@ -3826,31 +2557,6 @@ class SettingsScreen(private val a: MainActivity) {
             }, cur / 60, cur % 60, false).show()
         })
         col.addView(morn, lp(MATCH, WRAP, b = a.dp(12)))
-
-        // routine: how long the penalty lock lasts when a task is missed
-        val routine = a.card()
-        routine.addView(a.section(L.t("Routine", "রুটিন")))
-        routine.addView(
-            a.tv(
-                L.t("Miss a routine task and the phone locks for this long. Finish the task and check it off to unlock early.", "রুটিনের কাজ বাদ গেলে ফোন এতক্ষণ লক হবে। কাজ শেষ করে টিক দিলে আগেই খুলবে।"),
-                13f, C.muted
-            ),
-            lp(MATCH, WRAP, t = a.dp(8))
-        )
-        val penRow = LinearLayout(a)
-        val penChips = ArrayList<TextView>()
-        val penOpts = listOf(15, 30, 60)
-        for (m in penOpts) {
-            val ch = a.chip(L.num(m.toString()) + " " + L.t("min", "মিনিট"), Routine.penaltyMin(a) == m)
-            ch.setOnClickListener {
-                Routine.setPenaltyMin(a, m)
-                for ((i, c) in penChips.withIndex()) a.animateChip(c, penOpts[i] == m)
-            }
-            penChips.add(ch)
-            penRow.addView(ch, lp(0, WRAP, r = a.dp(8), t = a.dp(10), weight = 1f))
-        }
-        routine.addView(penRow)
-        col.addView(routine, lp(MATCH, WRAP, b = a.dp(12)))
 
         // strict protection
         val strictCard = a.card()
@@ -3997,14 +2703,6 @@ class SettingsScreen(private val a: MainActivity) {
                 FocusSound.label(FocusSound.choice(a)) + " · " + L.t("plays during a lock", "লক চলাকালীন বাজবে"),
                 a.tv("›", 22f, C.muted)
             ) { focusSoundDialog() }
-        )
-        // sound mixer: blend the generated sounds into one custom mix
-        gen.addView(
-            a.row(
-                L.t("Sound mixer", "সাউন্ড মিক্সার"),
-                SoundMixer.summary(a),
-                a.tv("›", 22f, C.muted)
-            ) { mixerDialog() }
         )
         // home background photo: a gallery photo behind the Home screen, dimmed
         gen.addView(

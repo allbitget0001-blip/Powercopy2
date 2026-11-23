@@ -93,7 +93,6 @@ class MainActivity : Activity() {
         navHolder.addView(buildNav())
         Scheduler.onAlarm(this)
         Reminders.rescheduleAll(this) // morning + plan alarms (idempotent)
-        TimeCapsules.checkDue(this) // a capsule may have opened while the app was closed
         go(tab, false)
         Store.kickService(this) // restart the foreground service if it was swiped away
         Watchdog.enqueue(this) // safety net: restart the service every 15 min if it dies
@@ -115,11 +114,6 @@ class MainActivity : Activity() {
     override fun onPause() {
         handler.removeCallbacks(ticker)
         super.onPause()
-    }
-
-    override fun onDestroy() {
-        VoiceQuotes.shutdown()
-        super.onDestroy()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {

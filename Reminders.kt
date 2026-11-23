@@ -73,7 +73,6 @@ object Reminders {
     fun rescheduleAll(ctx: Context) {
         rescheduleMorning(ctx)
         Plan.rescheduleAlarms(ctx)
-        Routine.rescheduleAlarms(ctx)
     }
 
     /** Fires at the morning time: a lock reminder + today's task summary (if any). */
@@ -102,14 +101,13 @@ object Reminders {
             L.load(ctx)
             val t = Plan.tasks(ctx, dayKey).find { it.id == taskId } ?: return
             if (t.done) return
-            show(ctx, 10000 + (taskId % 1000).toInt(), L.t("Reminder", "রিমাইন্ডার"), t.title) // plan range 10000–10999
+            show(ctx, 20 + (taskId % 100).toInt(), L.t("Reminder", "রিমাইন্ডার"), t.title)
         } catch (e: Exception) {
             Log.e(TAG, "plan reminder failed", e)
         }
     }
 
-    /** Shared notification helper (the routine reminders use it too). */
-    fun show(ctx: Context, id: Int, title: String, text: String) {
+    private fun show(ctx: Context, id: Int, title: String, text: String) {
         try {
             val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             nm.createNotificationChannel(
@@ -142,17 +140,6 @@ class ReminderReceiver : BroadcastReceiver() {
                     intent.getLongExtra("task_id", 0),
                     intent.getStringExtra("day") ?: ""
                 )
-                ACTION_ROUTINE_REMIND -> Routine.onRemind(
-                    context,
-                    intent.getLongExtra("task_id", 0),
-                    intent.getStringExtra("day") ?: ""
-                )
-                ACTION_ROUTINE_OVERDUE -> Routine.onOverdue(
-                    context,
-                    intent.getLongExtra("task_id", 0),
-                    intent.getStringExtra("day") ?: ""
-                )
-                ACTION_ROUTINE_REPORT -> Routine.onReport(context)
             }
         } catch (e: Exception) {
             Log.e(TAG, "ReminderReceiver failed", e)
@@ -172,12 +159,8 @@ object Plan {
         try {
             val arr = JSONArray(Store.settings(ctx).getString("plan_$dayKey", "[]"))
             for (i in 0 until arr.length()) {
-                try {
-                    val o = arr.getJSONObject(i)
-                    out.add(PlanTask(o.getLong("id"), o.getString("t"), o.optInt("m", -1), o.optBoolean("d", false)))
-                } catch (_: Exception) {
-                    // one malformed entry: skip it, keep the rest
-                }
+                val o = arr.getJSONObject(i)
+                out.add(PlanTask(o.getLong("id"), o.getString("t"), o.optInt("m", -1), o.optBoolean("d", false)))
             }
         } catch (e: Exception) {
             Log.e(TAG, "plan read failed", e)
@@ -188,11 +171,6 @@ object Plan {
     fun tasksToday(ctx: Context): List<PlanTask> = tasks(ctx, Store.dayKey(0))
 
     fun saveTasks(ctx: Context, dayKey: String, list: List<PlanTask>) {
-        // a corrupt stored list must never be overwritten with a fresh one
-        if (JsonGuard.isCorrupt(Store.settings(ctx), "plan_$dayKey")) {
-            Log.e(TAG, "plan corrupt, keeping stored value")
-            return
-        }
         val arr = JSONArray()
         for (t in list) {
             val o = JSONObject()
@@ -242,9 +220,6 @@ object Plan {
             list.add(PlanTask(now + i, t.title, t.timeMin, false))
         }
         saveTasks(ctx, Store.dayKey(0), list)
-        // clear yesterday's copied tasks so a repeat tap has nothing to copy
-        // again (and the carry-over button disappears)
-        saveTasks(ctx, Store.dayKey(1), tasks(ctx, Store.dayKey(1)).filter { it.done })
         rescheduleAlarms(ctx)
     }
 

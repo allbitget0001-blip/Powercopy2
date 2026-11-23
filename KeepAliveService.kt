@@ -39,12 +39,6 @@ class KeepAliveService : Service() {
             // backup arrival check for a location-unlock session (cheap, last known fix only)
             PlaceWatcher.checkUnlockLastKnown(this)
             Pomodoro.sync(this) // advance the Pomodoro set when a phase is over
-            Routine.sweep(this) // a routine task may have become overdue while the app is closed
-            Scheduler.onAlarm(this) // a schedule window may have opened (e.g. missed while another lock ran)
-            PlaceWatcher.sync(this) // retry the watcher if it never registered (location was off)
-            // re-sync the site-block VPN while a lock runs: if it died mid-lock
-            // (revoked, another VPN), it comes back within a minute
-            if (SiteBlock.isOn(this) && Store.isActive(this)) SiteBlock.sync(this)
             LockWidget.refresh(this) // keep the widget countdown fresh while the app is closed
         } catch (e: Exception) {
             Log.e(TAG, "heartbeat failed", e)
@@ -210,11 +204,10 @@ class KeepAliveService : Service() {
     private fun refresh() {
         handler.removeCallbacks(finishTask)
         Store.finalizeIfExpired(this)
+        val p = Store.lock(this)
+        val end = p.getLong("end", 0)
         val now = System.currentTimeMillis()
-        val active = Store.isActive(this)
-        // the real end time: monotonic remaining + the current wall clock, so
-        // the countdown and the finish task stay right after a date/time change
-        val end = now + Store.remainingMs(this).coerceAtLeast(0)
+        val active = p.getBoolean("active", false) && end > now
 
         val b = Notification.Builder(this, "powerlock")
             .setSmallIcon(smallIcon)

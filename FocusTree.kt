@@ -4,14 +4,13 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.os.SystemClock
 import android.util.Log
 import android.view.View
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** One finished tree in the garden: when it ended, how long the lock ran, its final stage, alive or withered, and its species. */
-data class GardenTree(val endMs: Long, val durMin: Int, val stage: Int, val alive: Boolean, val species: String = "classic")
+/** One finished tree in the garden: when it ended, how long the lock ran, its final stage, alive or withered. */
+data class GardenTree(val endMs: Long, val durMin: Int, val stage: Int, val alive: Boolean)
 
 /**
  * Focus tree: a seed is planted when a normal lock starts; it grows as the
@@ -50,24 +49,10 @@ object FocusTree {
         return fractionFor(ctx, now)
     }
 
-    /** Monotonic elapsed time (ms) of the running session: the wall clock
-     * cannot distort the tree's growth. Falls back to wall elapsed for
-     * sessions started before the monotonic timer existed. */
-    private fun elapsedMs(ctx: Context, atMs: Long): Long {
-        val p = Store.lock(ctx)
-        return if ((p.getString("u_mode", UNLOCK_TIME) ?: UNLOCK_TIME) == UNLOCK_LOC) {
-            val mark = p.getLong("start_mono", -1L)
-            if (mark >= 0) (SystemClock.elapsedRealtime() - mark).coerceAtLeast(0L)
-            else (atMs - p.getLong("start", atMs)).coerceAtLeast(0L)
-        } else {
-            val total = p.getLong("total", 0L)
-            if (total <= 0L) 0L else (total - Store.remainingMs(ctx)).coerceIn(0L, total)
-        }
-    }
-
     private fun fractionFor(ctx: Context, atMs: Long): Float {
         val p = Store.lock(ctx)
-        val elapsed = elapsedMs(ctx, atMs)
+        val start = p.getLong("start", atMs)
+        val elapsed = (atMs - start).coerceAtLeast(0L)
         return if ((p.getString("u_mode", UNLOCK_TIME) ?: UNLOCK_TIME) == UNLOCK_LOC) {
             (elapsed.toFloat() / LOC_FULL_MS.toFloat()).coerceIn(0f, 1f)
         } else {
@@ -86,19 +71,10 @@ object FocusTree {
         if (!p.getBoolean("tree_planted", false)) return
         val frac = fractionFor(ctx, endMs)
         val stage = stageFor(frac)
-        val durMin = (elapsedMs(ctx, endMs) / 60000L).toInt().coerceAtLeast(0)
-        val e = p.edit()
-            .remove("tree_planted")
-            .putString("tree_outcome", if (alive) "alive" else "dead")
-        // a corrupt stored garden must never be overwritten with a fresh one —
-        // the tree is lost, but the garden and the outcome flag survive
-        if (JsonGuard.isCorrupt(p, "garden")) {
-            Log.e(TAG, "garden corrupt, keeping stored value")
-            e.apply()
-            return
-        }
+        val start = p.getLong("start", endMs)
+        val durMin = ((endMs - start) / 60000L).toInt().coerceAtLeast(0)
         val list = garden(ctx).toMutableList()
-        list.add(0, GardenTree(endMs, durMin, stage, alive, TreeSpecies.selected(ctx)))
+        list.add(0, GardenTree(endMs, durMin, stage, alive))
         val trimmed = if (list.size > MAX_GARDEN) list.subList(0, MAX_GARDEN) else list
         val arr = JSONArray()
         for (t in trimmed) {
@@ -107,10 +83,13 @@ object FocusTree {
             o.put("d", t.durMin)
             o.put("s", t.stage)
             o.put("a", t.alive)
-            o.put("sp", t.species)
             arr.put(o)
         }
-        e.putString("garden", arr.toString()).apply()
+        p.edit()
+            .putString("garden", arr.toString())
+            .remove("tree_planted")
+            .putString("tree_outcome", if (alive) "alive" else "dead")
+            .apply()
     }
 
     /** Saved trees, newest first (max 30). */
@@ -119,12 +98,8 @@ object FocusTree {
         try {
             val arr = JSONArray(Store.lock(ctx).getString("garden", "[]"))
             for (i in 0 until arr.length()) {
-                try {
-                    val o = arr.getJSONObject(i)
-                    out.add(GardenTree(o.getLong("e"), o.getInt("d"), o.getInt("s"), o.getBoolean("a"), o.optString("sp", "classic")))
-                } catch (_: Exception) {
-                    // one malformed entry: skip it, keep the rest
-                }
+                val o = arr.getJSONObject(i)
+                out.add(GardenTree(o.getLong("e"), o.getInt("d"), o.getInt("s"), o.getBoolean("a")))
             }
         } catch (e: Exception) {
             Log.e(TAG, "garden read failed", e)
@@ -144,7 +119,6 @@ object FocusTree {
 /**
  * Draws a tree on a Canvas: seed → sprout → sapling → young tree → full tree.
  * [frac] 0..1 grows it continuously; [alive] false draws it withered and grey.
- * [species] recolours the leaves (classic follows the theme accent).
  * No image assets needed; colours follow the theme accent.
  */
 class TreeView(ctx: Context) : View(ctx) {
@@ -153,7 +127,6 @@ class TreeView(ctx: Context) : View(ctx) {
             field = v.coerceIn(0f, 1f)
         }
     var alive: Boolean = true
-    var species: String = "classic"
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
@@ -164,11 +137,6 @@ class TreeView(ctx: Context) : View(ctx) {
         val cx = w / 2f
         val groundY = h * 0.88f
         val f = frac
-        // species leaf colours (classic = the theme accent)
-        val sp = TreeSpecies.byId(species)
-        val leafDark = sp?.dark?.let { Color.parseColor(it) } ?: Color.parseColor("#0E7A4F")
-        val leafMid = sp?.mid?.let { Color.parseColor(it) } ?: C.primary
-        val leafLight = sp?.light?.let { Color.parseColor(it) } ?: C.mint
 
         // ground mound
         paint.style = Paint.Style.FILL
@@ -222,21 +190,21 @@ class TreeView(ctx: Context) : View(ctx) {
         paint.style = Paint.Style.FILL
         if (f < 0.4f) {
             val r = w * (0.05f + 0.05f * f)
-            paint.color = leafMid
+            paint.color = C.primary
             canvas.drawCircle(cx - r * 0.8f, trunkTop - r * 0.4f, r, paint)
-            paint.color = leafLight
+            paint.color = C.mint
             canvas.drawCircle(cx + r * 0.8f, trunkTop - r * 0.4f, r, paint)
             return
         }
         // canopy: overlapping circles, growing with f
         val cr = w * (0.10f + 0.17f * f)
         val cy = trunkTop - cr * 0.35f
-        paint.color = leafDark
+        paint.color = Color.parseColor("#0E7A4F")
         canvas.drawCircle(cx, cy - cr * 0.35f, cr * 0.95f, paint)
-        paint.color = leafMid
+        paint.color = C.primary
         canvas.drawCircle(cx - cr * 0.75f, cy + cr * 0.25f, cr * 0.8f, paint)
         canvas.drawCircle(cx + cr * 0.75f, cy + cr * 0.25f, cr * 0.8f, paint)
-        paint.color = leafLight
+        paint.color = C.mint
         canvas.drawCircle(cx - cr * 0.3f, cy - cr * 0.5f, cr * 0.45f, paint)
     }
 }

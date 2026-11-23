@@ -43,12 +43,11 @@ class LockWidget : AppWidgetProvider() {
             try {
                 L.load(ctx)
                 // raw prefs only — never finalize here (Store already refreshes
-                // the widget when a session actually ends). remainingMs only
-                // reads the timer; it never finalizes a session.
+                // the widget when a session actually ends)
                 val p = Store.lock(ctx)
                 val now = System.currentTimeMillis()
-                val left = Store.remainingMs(ctx)
-                val active = p.getBoolean("active", false) && left > 0
+                val end = p.getLong("end", 0)
+                val active = p.getBoolean("active", false) && now < end
                 val views = RemoteViews(ctx.packageName, R.layout.lock_widget)
                 if (active) {
                     val mode = Store.unlockMode(ctx)
@@ -57,8 +56,8 @@ class LockWidget : AppWidgetProvider() {
                         views.setTextViewText(R.id.widget_status, L.t("On the way", "যাত্রায়"))
                         views.setTextViewText(R.id.widget_sub, target.name)
                     } else {
-                        views.setTextViewText(R.id.widget_status, L.t("Left ", "বাকি ") + fmtHms(left))
-                        views.setTextViewText(R.id.widget_sub, L.t("Ends at ", "শেষ হবে ") + fmtClock(now + left))
+                        views.setTextViewText(R.id.widget_status, L.t("Left ", "বাকি ") + fmtHms(end - now))
+                        views.setTextViewText(R.id.widget_sub, L.t("Ends at ", "শেষ হবে ") + fmtClock(end))
                     }
                 } else {
                     views.setTextViewText(R.id.widget_status, L.t("OFF", "বন্ধ"))

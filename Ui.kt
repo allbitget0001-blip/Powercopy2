@@ -6,7 +6,6 @@ import android.graphics.PixelFormat
 import android.graphics.ColorFilter
 import android.animation.ArgbEvaluator
 import android.animation.ValueAnimator
-import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
 import android.content.res.ColorStateList
@@ -36,7 +35,6 @@ import android.view.animation.LinearInterpolator
 import android.view.animation.PathInterpolator
 import android.widget.EditText
 import android.widget.FrameLayout
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Switch
@@ -73,35 +71,6 @@ object C {
         arrayOf("#FF5C8A", "#FFD0DD", "#3B0A1E", "#7D2447", "#6B2A40") // rose
     )
 
-    /** Wheel-only accents: same shape as ACCENTS, won from the lucky wheel. */
-    val WHEEL_ACCENTS = listOf(
-        arrayOf("#14B8A6", "#99F6E4", "#042F2E", "#0F766E", "#134E4A"), // teal
-        arrayOf("#EAB308", "#FEF08A", "#422006", "#854D0E", "#713F12"), // gold
-        arrayOf("#67E8F9", "#CFFAFE", "#083344", "#155E75", "#164E63") // ice
-    )
-    val WHEEL_ACCENT_NAMES = listOf(
-        Pair("Teal", "টিল"),
-        Pair("Gold", "সোনালি"),
-        Pair("Ice", "বরফ")
-    )
-
-    /** Progress-locked accents: same shape as ACCENTS, unlocked by level/streak (see ThemeUnlocks). */
-    val UNLOCK_ACCENTS = listOf(
-        arrayOf("#E53935", "#FFCDD2", "#3B0A0A", "#7D1F1F", "#6B2A2A"), // crimson
-        arrayOf("#7CB342", "#DCEDC8", "#1E2E0A", "#558B2F", "#4A5D23"), // lime
-        arrayOf("#29B6F6", "#B3E5FC", "#082A3B", "#0277BD", "#1E4A6B"), // sky
-        arrayOf("#7C4DFF", "#D1C4E9", "#1A0A3B", "#4527A0", "#3A2A6B") // violet
-    )
-    val UNLOCK_ACCENT_NAMES = listOf(
-        Pair("Crimson", "গাঢ় লাল"),
-        Pair("Lime", "লেবু সবুজ"),
-        Pair("Sky", "আকাশি"),
-        Pair("Violet", "বেগুনি")
-    )
-
-    /** All accents: base 0..4, wheel-only 5..7, progress-locked 8..11. */
-    fun allAccents(): List<Array<String>> = ACCENTS + WHEEL_ACCENTS + UNLOCK_ACCENTS
-
     fun load(ctx: Context) {
         val amoled = Store.settings(ctx).getInt("theme", 0) == 1
         if (amoled) {
@@ -116,8 +85,7 @@ object C {
             chipFill = Color.parseColor("#12271D")
         }
         // the chosen accent overrides primary / mint and the derived tints
-        val all = allAccents()
-        val ac = all[Store.settings(ctx).getInt("accent", 0).coerceIn(0, all.size - 1)]
+        val ac = ACCENTS[Store.settings(ctx).getInt("accent", 0).coerceIn(0, ACCENTS.size - 1)]
         primary = Color.parseColor(ac[0])
         mint = Color.parseColor(ac[1])
         onPrimary = Color.parseColor(ac[2])
@@ -326,38 +294,8 @@ fun Context.edit(hint: String, number: Boolean): EditText {
     return e
 }
 
-/** A dialog that can never attach to a window: used when the host activity is
- * already finishing or destroyed, so an async callback can never crash with
- * BadTokenException. show()/dismiss() are no-ops; getButton returns a dummy
- * button so callers chaining setOnClickListener do not hit null. */
-private class DeadAlertDialog(ctx: Context) : AlertDialog(ctx) {
-    override fun show() {}
-    override fun dismiss() {}
-    override fun getButton(whichButton: Int): Button = Button(context)
-}
-
-/** A builder that never shows anything: the chained setters still work, but
- * show()/create() return a dead dialog instead of a live one. */
-private class DeadDlgBuilder(private val appCtx: Context) :
-    AlertDialog.Builder(appCtx, android.R.style.Theme_DeviceDefault_Dialog_Alert) {
-    override fun show(): AlertDialog = DeadAlertDialog(appCtx)
-    override fun create(): AlertDialog = DeadAlertDialog(appCtx)
-}
-
-/**
- * The app's dialog builder. When the host activity is finishing or destroyed
- * (an async callback firing after Back), it returns a dead builder whose
- * show()/create() never touch a window — every .show() site is protected
- * at once, and chained setters still compile and run harmlessly.
- */
-fun Context.dlg(): AlertDialog.Builder {
-    val a = this as? Activity
-    return if (a != null && (a.isFinishing || a.isDestroyed)) {
-        DeadDlgBuilder(applicationContext)
-    } else {
-        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-    }
-}
+fun Context.dlg(): AlertDialog.Builder =
+    AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
 
 fun Context.page(): Pair<ScrollView, LinearLayout> {
     val sv = ScrollView(this)

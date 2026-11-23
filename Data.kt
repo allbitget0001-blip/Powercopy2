@@ -11,7 +11,6 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.PowerManager
-import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import org.json.JSONArray
@@ -103,14 +102,6 @@ data class FocusNote(val id: Long, val text: String, val time: Long, val duringL
 
 /** One task in today's plan: optional reminder time in minutes since midnight (-1 = none). */
 data class PlanTask(val id: Long, val title: String, val timeMin: Int, val done: Boolean)
-
-/** One repeating routine task: [timeMin] is the time, [graceMin] the window
- * before the phone locks, [verify] the check-off type ("manual" in v1 —
- * a later build adds sensor verification per task). */
-data class RoutineTask(val id: Long, val title: String, val timeMin: Int, val graceMin: Int, val verify: String = "manual")
-
-/** One usage-history session: which app, opened when, closed when (wall-clock ms). */
-data class UsageSession(val pkg: String, val open: Long, val close: Long)
 
 // ---------- formatting helpers ----------
 
@@ -308,11 +299,9 @@ object FocusScore {
         return ScoreBreakdown(total, focusPts, locksPts, streakPts, calmPts, focusMin, locks, streak, attempts)
     }
 
-    /** Streak ending on the day N days ago (today: ending today or yesterday).
-     * A day saved by a streak-protection token counts as complete. */
-    private fun streakFor(ctx: Context, focusMap: Map<String, Int>, daysAgo: Int): Int {
-        fun hasDay(ago: Int) = (focusMap[Store.dayKey(ago)] ?: 0) > 0 ||
-            StreakProtection.isFocusProtected(ctx, Store.dayKey(ago))
+    /** Streak ending on the day N days ago (today: ending today or yesterday). */
+    private fun streakFor(focusMap: Map<String, Int>, daysAgo: Int): Int {
+        fun hasDay(ago: Int) = (focusMap[Store.dayKey(ago)] ?: 0) > 0
         val startAgo = if (daysAgo == 0) {
             if (hasDay(0)) 0 else if (hasDay(1)) 1 else -1
         } else if (hasDay(daysAgo)) daysAgo else -1
@@ -326,14 +315,12 @@ object FocusScore {
         return streak
     }
 
-    /** Elapsed minutes of the lock running right now (0 when idle). Monotonic:
-     * changing the date/time cannot inflate it. */
+    /** Elapsed minutes of the lock running right now (0 when idle). */
     private fun liveMin(ctx: Context): Int {
         if (!Store.isActive(ctx)) return 0
-        val total = Store.lock(ctx).getLong("total", 0L)
-        if (total <= 0) return 0
-        val elapsed = (total - Store.remainingMs(ctx)).coerceIn(0L, total)
-        return (elapsed / 60000L).toInt()
+        val start = Store.lock(ctx).getLong("start", 0L)
+        if (start <= 0) return 0
+        return ((System.currentTimeMillis() - start) / 60000L).toInt().coerceAtLeast(0)
     }
 
     fun forDay(ctx: Context, daysAgo: Int): ScoreBreakdown {
@@ -346,7 +333,7 @@ object FocusScore {
         val from = Store.dayStart(now, -daysAgo)
         val to = Store.dayStart(now, -daysAgo + 1)
         val attempts = Extra.attempts(ctx).count { it.first >= from && it.first < to }
-        return build(focusMin, locks, streakFor(ctx, focusMap, daysAgo), attempts)
+        return build(focusMin, locks, streakFor(focusMap, daysAgo), attempts)
     }
 
     fun today(ctx: Context): ScoreBreakdown = forDay(ctx, 0)
@@ -371,7 +358,7 @@ object FocusScore {
             val key = Store.dayKey(ago)
             var focusMin = focusMap[key] ?: 0
             if (ago == 0) focusMin += live
-            out.add(build(focusMin, locksByDay[key] ?: 0, streakFor(ctx, focusMap, ago), attemptsByDay[key] ?: 0))
+            out.add(build(focusMin, locksByDay[key] ?: 0, streakFor(focusMap, ago), attemptsByDay[key] ?: 0))
         }
         return out
     }
@@ -380,12 +367,6 @@ object FocusScore {
     fun recordToday(ctx: Context, b: ScoreBreakdown = today(ctx)) {
         try {
             val p = Store.lock(ctx)
-            // a corrupt stored object must never be replaced by a fresh empty
-            // one — that would wipe 90 days of scores; skip this write instead
-            if (JsonGuard.isCorrupt(p, "focus_scores")) {
-                Log.e(TAG, "focus scores corrupt, keeping stored value")
-                return
-            }
             val obj = try {
                 JSONObject(p.getString("focus_scores", "{}"))
             } catch (e: Exception) {
@@ -430,94 +411,6 @@ object FocusScore {
 
 // ---------- persistent storage ----------
 
-/**
- * Monotonic remaining time (ms) for a deadline stored as a wall-clock
- * [wallEnd] plus a monotonic deadline under [monoKey] and a boot marker
- * under [markKey]. Used by lock sessions and Pomodoro phases alike.
- *
- * The monotonic clock (elapsedRealtime) is authoritative on the same boot,
- * so changing the date/time cannot end a lock early or extend it. After a
- * reboot elapsedRealtime resets, which the boot marker detects (the marker
- * is an elapsedRealtime value from before the reboot, so the current value
- * is smaller): the remaining time is then the MINIMUM of the wall-clock
- * estimate and the smallest remaining ever seen ([minKey]) — the clock
- * going backwards can never add time — and the monotonic deadline is
- * re-anchored from that value. Sessions started before this existed get
- * their monotonic deadline derived once from the wall deadline.
- */
-private fun monoRemaining(
-    p: SharedPreferences,
-    wallEnd: Long,
-    monoKey: String,
-    markKey: String,
-    minKey: String
-): Long {
-    val mono = SystemClock.elapsedRealtime()
-    val wallRem = wallEnd - System.currentTimeMillis()
-    var monoEnd = p.getLong(monoKey, -1L)
-    var mark = p.getLong(markKey, -1L)
-    if (monoEnd < 0 || mark < 0) {
-        // migration: started before the monotonic timer existed — derive once
-        monoEnd = mono + wallRem.coerceAtLeast(0)
-        mark = mono
-        p.edit()
-            .putLong(monoKey, monoEnd)
-            .putLong(markKey, mark)
-            .putLong(minKey, wallRem.coerceAtLeast(0))
-            .apply()
-        return wallRem.coerceAtLeast(0)
-    }
-    if (mono < mark) {
-        // reboot: elapsedRealtime reset. Take the minimum of the available
-        // estimates so a backwards clock jump cannot add time, then re-anchor.
-        val floor = p.getLong(minKey, -1L)
-        val rem = if (floor >= 0) minOf(wallRem, floor) else wallRem
-        val remC = rem.coerceAtLeast(0)
-        p.edit()
-            .putLong(monoKey, mono + remC)
-            .putLong(markKey, mono)
-            .putLong(minKey, remC)
-            .apply()
-        return remC
-    }
-    val rem = monoEnd - mono
-    // track the smallest remaining ever seen (writes throttled: only when it
-    // dropped by more than 30 s since the last persist, so the Home tick does
-    // not write to prefs every second)
-    val prevMin = p.getLong(minKey, Long.MAX_VALUE)
-    if (rem < prevMin - 30_000L) {
-        p.edit().putLong(minKey, rem.coerceAtLeast(0)).apply()
-    }
-    return rem
-}
-
-/**
- * Guards JSON lists/objects stored in prefs against corruption: a corrupt
- * stored string must never be silently replaced by a fresh empty list.
- * Readers return empty for display, but writers must refuse to overwrite
- * a corrupt value — the raw string stays (and the failure is logged) until
- * the user clears the data. One malformed ENTRY must not fail a whole
- * read either: list readers skip bad entries and keep the good ones.
- */
-object JsonGuard {
-    /** True when [key] holds a string that is neither a valid JSON object nor array (a missing or empty key is not corrupt). */
-    fun isCorrupt(p: SharedPreferences, key: String): Boolean {
-        val raw = p.getString(key, null) ?: return false
-        if (raw.isEmpty()) return false
-        try {
-            JSONObject(raw)
-            return false
-        } catch (_: Exception) {
-        }
-        try {
-            JSONArray(raw)
-            return false
-        } catch (_: Exception) {
-        }
-        return true
-    }
-}
-
 object Store {
     fun lock(ctx: Context): SharedPreferences = ctx.getSharedPreferences("lock", Context.MODE_PRIVATE)
     fun settings(ctx: Context): SharedPreferences = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
@@ -527,18 +420,7 @@ object Store {
     fun isActive(ctx: Context): Boolean {
         finalizeIfExpired(ctx)
         val p = lock(ctx)
-        return p.getBoolean("active", false) && remainingMs(ctx) > 0
-    }
-
-    /**
-     * Remaining time (ms) of the running session, from the monotonic clock —
-     * changing the date/time cannot change it. 0 when no session runs.
-     * Location-only sessions return the 15-day safety cap's remainder.
-     */
-    fun remainingMs(ctx: Context): Long {
-        val p = lock(ctx)
-        if (!p.getBoolean("active", false)) return 0
-        return monoRemaining(p, p.getLong("end", 0), "end_mono", "start_mono", "rem_min")
+        return p.getBoolean("active", false) && System.currentTimeMillis() < p.getLong("end", 0)
     }
 
     /** Records the session once when its time is over. Safe to call many times. */
@@ -546,16 +428,14 @@ object Store {
     fun finalizeIfExpired(ctx: Context) {
         val p = lock(ctx)
         if (!p.getBoolean("active", false)) return
-        if (remainingMs(ctx) > 0) return
-        val now = System.currentTimeMillis()
+        val end = p.getLong("end", 0)
+        if (System.currentTimeMillis() < end) return
         val src = p.getString("src", "manual") ?: "manual"
-        addSession(ctx, Session(p.getLong("start", now), now, p.getLong("total", 0), true, src))
-        FocusTree.recordOutcome(ctx, true, now) // the lock completed: the tree survives
-        val e = p.edit().putBoolean("active", false).putLong("lastDone", now)
+        addSession(ctx, Session(p.getLong("start", end), end, p.getLong("total", 0), true, src))
+        FocusTree.recordOutcome(ctx, true, end) // the lock completed: the tree survives
+        val e = p.edit().putBoolean("active", false).putLong("lastDone", end)
         clearUnlock(e)
-        clearMono(e)
         e.remove("s_profile_apps").remove("s_profile_name")
-        e.remove("pen_task_id").remove("pen_task")
         e.apply()
         Dnd.restore(ctx) // lock over: notifications come back
         FocusSound.stop() // lock over: the focus sound stops
@@ -597,9 +477,7 @@ object Store {
         FocusTree.recordOutcome(ctx, true, now) // arrived: the lock completed, the tree survives
         val e = p.edit().putBoolean("active", false).putLong("lastDone", now).putLong("end", now)
         clearUnlock(e)
-        clearMono(e)
         e.remove("s_profile_apps").remove("s_profile_name")
-        e.remove("pen_task_id").remove("pen_task")
         e.apply()
         Dnd.restore(ctx) // lock over: notifications come back
         FocusSound.stop() // lock over: the focus sound stops
@@ -607,47 +485,11 @@ object Store {
         LockWidget.refresh(ctx)
         PlaceWatcher.sync(ctx) // no session left: stop watching unless the location lock needs it
         kickService(ctx) // refresh the notification: the lock is off now
-        Scheduler.onAlarm(ctx) // a schedule window may be open now that this lock ended
-        return true
-    }
-
-    /**
-     * Ends a penalty lock early because the user finished the overdue routine
-     * task and checked it off. Counts as a completed session (the task was
-     * done), unlike stopSession. Returns true when a penalty lock was ended.
-     */
-    @Synchronized
-    fun finalizePenalty(ctx: Context): Boolean {
-        val p = lock(ctx)
-        if (!p.getBoolean("active", false)) return false
-        if ((p.getString("src", "manual") ?: "manual") != "routine") return false
-        val now = System.currentTimeMillis()
-        val start = p.getLong("start", now)
-        addSession(ctx, Session(start, now, now - start, true, "routine"))
-        FocusTree.recordOutcome(ctx, true, now) // task done: the lock completed, the tree survives
-        val e = p.edit().putBoolean("active", false).putLong("lastDone", now).putLong("end", now)
-        clearUnlock(e)
-        clearMono(e)
-        e.remove("s_profile_apps").remove("s_profile_name")
-        e.remove("pen_task_id").remove("pen_task")
-        e.apply()
-        Dnd.restore(ctx) // lock over: notifications come back
-        FocusSound.stop() // lock over: the focus sound stops
-        SiteBlock.sync(ctx) // lock over: the site-block VPN stops
-        LockWidget.refresh(ctx)
-        PlaceWatcher.sync(ctx) // no session left: stop watching unless the location lock needs it
-        kickService(ctx) // refresh the notification: the lock is off now
-        Scheduler.onAlarm(ctx) // a schedule window may be open now that this lock ended
         return true
     }
 
     private fun clearUnlock(e: SharedPreferences.Editor) {
         e.remove("u_mode").remove("u_lat").remove("u_lng").remove("u_radius").remove("u_name")
-    }
-
-    /** Drops the monotonic timer keys when a session ends (a new session stores fresh ones). */
-    private fun clearMono(e: SharedPreferences.Editor) {
-        e.remove("end_mono").remove("start_mono").remove("rem_min")
     }
 
     fun startSession(ctx: Context, durationMs: Long, src: String): Boolean =
@@ -660,7 +502,6 @@ object Store {
      * profile's apps into the session — they are blocked for this session on top of
      * the global full-block list, and later profile edits do not affect it.
      */
-    @Synchronized
     fun startSession(ctx: Context, durationMs: Long, src: String, unlock: UnlockTarget?, mode: String, profileId: Long = -1L): Boolean {
         if (isActive(ctx)) return false
         val now = System.currentTimeMillis()
@@ -672,10 +513,6 @@ object Store {
             .putLong("start", now)
             .putLong("end", now + durationMs)
             .putLong("total", durationMs)
-            // monotonic deadline: the wall clock cannot end or extend the lock
-            .putLong("end_mono", SystemClock.elapsedRealtime() + durationMs)
-            .putLong("start_mono", SystemClock.elapsedRealtime())
-            .putLong("rem_min", durationMs)
             .putString("src", src)
             .putLong("lastDone", 0)
         val prof = if (profileId > 0) Extra.lockProfiles(ctx).find { it.id == profileId } else null
@@ -696,7 +533,6 @@ object Store {
         }
         // a normal lock plants a seed; Pomodoro focus rounds never grow trees
         if (src == "pomodoro") e.remove("tree_planted") else e.putBoolean("tree_planted", true)
-        e.remove("pen_task_id").remove("pen_task") // only a penalty lock sets these (after this call)
         e.apply()
         Dnd.apply(ctx) // lock started: silence notifications if the user wants it
         FocusSound.sync(ctx) // lock started: play the chosen focus sound, if any
@@ -731,7 +567,6 @@ object Store {
      * [force] is only for the location lock: leaving/arriving ends the session even in strict
      * mode, because the lock follows presence. The manual Stop button never passes force.
      */
-    @Synchronized
     fun stopSession(ctx: Context, force: Boolean = false) {
         if (!isActive(ctx)) return
         if (!force && lock(ctx).getBoolean("s_strict", false)) return
@@ -746,9 +581,7 @@ object Store {
         val e = p.edit().putBoolean("active", false).putLong("end", now)
         if (w != null) e.putLong("suppress", w)
         clearUnlock(e)
-        clearMono(e)
         e.remove("s_profile_apps").remove("s_profile_name")
-        e.remove("pen_task_id").remove("pen_task")
         e.apply()
         Dnd.restore(ctx) // lock over: notifications come back
         FocusSound.stop() // lock over: the focus sound stops
@@ -756,7 +589,6 @@ object Store {
         LockWidget.refresh(ctx)
         PlaceWatcher.sync(ctx) // no session left: stop watching unless the location lock needs it
         kickService(ctx)
-        Scheduler.onAlarm(ctx) // a schedule window may be open now that this lock ended
     }
 
     fun kickService(ctx: Context) {
@@ -795,13 +627,7 @@ object Store {
         val out = ArrayList<String>()
         try {
             val arr = JSONArray(locData(ctx).getString("route_days", "[]"))
-            for (i in 0 until arr.length()) {
-                try {
-                    out.add(arr.getString(i))
-                } catch (_: Exception) {
-                    // one malformed entry: skip it, keep the rest
-                }
-            }
+            for (i in 0 until arr.length()) out.add(arr.getString(i))
         } catch (e: Exception) {
             Log.e(TAG, "route days read failed", e)
         }
@@ -818,12 +644,8 @@ object Store {
             if (raw == null) return out
             val arr = JSONArray(raw)
             for (i in 0 until arr.length()) {
-                try {
-                    val o = arr.getJSONObject(i)
-                    out.add(RoutePoint(o.getDouble("la"), o.getDouble("lo"), o.getLong("t")))
-                } catch (_: Exception) {
-                    // one malformed entry: skip it, keep the rest
-                }
+                val o = arr.getJSONObject(i)
+                out.add(RoutePoint(o.getDouble("la"), o.getDouble("lo"), o.getLong("t")))
             }
         } catch (e: Exception) {
             Log.e(TAG, "route read failed", e)
@@ -861,12 +683,6 @@ object Store {
         try {
             val p = locData(ctx)
             val day = todayKey()
-            // a corrupt stored day or day index must never be overwritten
-            // with a fresh empty list — the point is dropped instead
-            if (JsonGuard.isCorrupt(p, "route_$day") || JsonGuard.isCorrupt(p, "route_days")) {
-                Log.e(TAG, "route data corrupt, keeping stored value")
-                return
-            }
             val pts = routeForDay(ctx, day).toMutableList()
             val now = System.currentTimeMillis()
             val last = pts.lastOrNull()
@@ -907,12 +723,8 @@ object Store {
         try {
             val arr = JSONArray(locData(ctx).getString("events", "[]"))
             for (i in 0 until arr.length()) {
-                try {
-                    val o = arr.getJSONObject(i)
-                    out.add(PlaceEvent(o.getLong("id"), o.getString("n"), o.getLong("in"), o.optLong("out", 0)))
-                } catch (_: Exception) {
-                    // one malformed entry: skip it, keep the rest
-                }
+                val o = arr.getJSONObject(i)
+                out.add(PlaceEvent(o.getLong("id"), o.getString("n"), o.getLong("in"), o.optLong("out", 0)))
             }
         } catch (e: Exception) {
             Log.e(TAG, "events read failed", e)
@@ -921,11 +733,6 @@ object Store {
     }
 
     private fun saveEvents(ctx: Context, list: List<PlaceEvent>) {
-        // a corrupt stored list must never be overwritten with a fresh one
-        if (JsonGuard.isCorrupt(locData(ctx), "events")) {
-            Log.e(TAG, "place events corrupt, keeping stored value")
-            return
-        }
         // drop closed events older than 30 days; an open visit is always kept
         val cutoff = System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000
         val kept = list.filter { it.outTime == 0L || it.inTime > cutoff }.take(500)
@@ -969,12 +776,8 @@ object Store {
         try {
             val arr = JSONArray(lock(ctx).getString("sessions", "[]"))
             for (i in 0 until arr.length()) {
-                try {
-                    val o = arr.getJSONObject(i)
-                    out.add(Session(o.getLong("s"), o.getLong("e"), o.getLong("d"), o.getBoolean("ok"), o.optString("src", "manual")))
-                } catch (_: Exception) {
-                    // one malformed entry: skip it, keep the rest
-                }
+                val o = arr.getJSONObject(i)
+                out.add(Session(o.getLong("s"), o.getLong("e"), o.getLong("d"), o.getBoolean("ok"), o.optString("src", "manual")))
             }
         } catch (e: Exception) {
             Log.e(TAG, "sessions read failed", e)
@@ -983,34 +786,24 @@ object Store {
     }
 
     private fun addSession(ctx: Context, s: Session) {
-        // a corrupt stored list must never be overwritten with a fresh one —
-        // the session is not recorded, but the lock's rewards still apply
-        if (JsonGuard.isCorrupt(lock(ctx), "sessions")) {
-            Log.e(TAG, "sessions corrupt, keeping stored value; session not recorded")
-        } else {
-            val list = sessions(ctx).toMutableList()
-            list.add(s)
-            val trimmed = if (list.size > 500) list.subList(list.size - 500, list.size) else list
-            val arr = JSONArray()
-            for (x in trimmed) {
-                val o = JSONObject()
-                o.put("s", x.start)
-                o.put("e", x.end)
-                o.put("d", x.dur)
-                o.put("ok", x.ok)
-                o.put("src", x.src)
-                arr.put(o)
-            }
-            lock(ctx).edit().putString("sessions", arr.toString()).apply()
+        val list = sessions(ctx).toMutableList()
+        list.add(s)
+        val trimmed = if (list.size > 500) list.subList(list.size - 500, list.size) else list
+        val arr = JSONArray()
+        for (x in trimmed) {
+            val o = JSONObject()
+            o.put("s", x.start)
+            o.put("e", x.end)
+            o.put("d", x.dur)
+            o.put("ok", x.ok)
+            o.put("src", x.src)
+            arr.put(o)
         }
+        lock(ctx).edit().putString("sessions", arr.toString()).apply()
         if (s.ok) recordFocus(ctx, s)
-        if (s.ok) Xp.awardForSession(ctx, s) // XP: minutes + 10 per completed lock
         if (s.ok) saveSessionSummary(ctx, s)
         if (s.ok) Badges.check(ctx)
         if (s.ok) FocusScore.recordToday(ctx)
-        if (s.ok) FocusPet.onLockCompleted(ctx) // the pet is happier
-        if (s.ok) LuckyWheel.onLockCompleted(ctx) // +1 wheel spin
-        if (!s.ok) FocusPet.onLockBroken(ctx) // the pet is sadder
     }
 
     /** The last completed lock's summary (duration + blocks fired in its window),
@@ -1090,8 +883,7 @@ object Store {
                 p.edit().putString("focus_days", obj.toString()).putLong("focus_total_min", total).apply()
             } catch (e: Exception) {
                 Log.e(TAG, "focus backfill failed", e)
-                // never write a fresh empty object here: a corrupt stored
-                // value would be wiped instead of kept
+                p.edit().putString("focus_days", "{}").apply()
             }
         }
         val obj = try {
@@ -1099,9 +891,7 @@ object Store {
         } catch (e: Exception) {
             JSONObject()
         }
-        // a day saved by a streak-protection token counts as complete
-        fun hasDay(daysAgo: Int) = obj.optInt(dayKey(daysAgo), 0) > 0 ||
-            StreakProtection.isFocusProtected(ctx, dayKey(daysAgo))
+        fun hasDay(daysAgo: Int) = obj.optInt(dayKey(daysAgo), 0) > 0
         var streak = 0
         if (hasDay(0) || hasDay(1)) {
             var i = if (hasDay(0)) 0 else 1
@@ -1189,12 +979,8 @@ object Store {
         try {
             val arr = JSONArray(settings(ctx).getString("habits", "[]"))
             for (i in 0 until arr.length()) {
-                try {
-                    val o = arr.getJSONObject(i)
-                    out.add(Habit(o.getLong("id"), o.getString("n"), o.optLong("c", 0)))
-                } catch (_: Exception) {
-                    // one malformed entry: skip it, keep the rest
-                }
+                val o = arr.getJSONObject(i)
+                out.add(Habit(o.getLong("id"), o.getString("n"), o.optLong("c", 0)))
             }
         } catch (e: Exception) {
             Log.e(TAG, "habits read failed", e)
@@ -1203,11 +989,6 @@ object Store {
     }
 
     fun saveHabits(ctx: Context, list: List<Habit>) {
-        // a corrupt stored list must never be overwritten with a fresh one
-        if (JsonGuard.isCorrupt(settings(ctx), "habits")) {
-            Log.e(TAG, "habits corrupt, keeping stored value")
-            return
-        }
         val arr = JSONArray()
         for (h in list) {
             val o = JSONObject()
@@ -1233,14 +1014,10 @@ object Store {
             val keys = obj.keys()
             while (keys.hasNext()) {
                 val k = keys.next()
-                try {
-                    val set = HashSet<String>()
-                    val arr = obj.getJSONArray(k)
-                    for (i in 0 until arr.length()) set.add(arr.getString(i))
-                    out[k.toLong()] = set
-                } catch (_: Exception) {
-                    // one malformed day list: skip it, keep the rest
-                }
+                val set = HashSet<String>()
+                val arr = obj.getJSONArray(k)
+                for (i in 0 until arr.length()) set.add(arr.getString(i))
+                out[k.toLong()] = set
             }
         } catch (e: Exception) {
             Log.e(TAG, "habit checks read failed", e)
@@ -1249,11 +1026,6 @@ object Store {
     }
 
     private fun saveHabitChecks(ctx: Context, map: Map<Long, Set<String>>) {
-        // a corrupt stored map must never be overwritten with a fresh one
-        if (JsonGuard.isCorrupt(settings(ctx), "habit_checks")) {
-            Log.e(TAG, "habit checks corrupt, keeping stored value")
-            return
-        }
         val obj = JSONObject()
         for ((id, days) in map) {
             val arr = JSONArray()
@@ -1294,12 +1066,8 @@ object Store {
         try {
             val arr = JSONArray(settings(ctx).getString("focus_notes", "[]"))
             for (i in 0 until arr.length()) {
-                try {
-                    val o = arr.getJSONObject(i)
-                    out.add(FocusNote(o.getLong("id"), o.getString("t"), o.optLong("tm", 0), o.optBoolean("l", false)))
-                } catch (_: Exception) {
-                    // one malformed entry: skip it, keep the rest
-                }
+                val o = arr.getJSONObject(i)
+                out.add(FocusNote(o.getLong("id"), o.getString("t"), o.optLong("tm", 0), o.optBoolean("l", false)))
             }
         } catch (e: Exception) {
             Log.e(TAG, "focus notes read failed", e)
@@ -1308,11 +1076,6 @@ object Store {
     }
 
     fun saveFocusNotes(ctx: Context, list: List<FocusNote>) {
-        // a corrupt stored list must never be overwritten with a fresh one
-        if (JsonGuard.isCorrupt(settings(ctx), "focus_notes")) {
-            Log.e(TAG, "focus notes corrupt, keeping stored value")
-            return
-        }
         val arr = JSONArray()
         for (n in list.takeLast(100)) {
             val o = JSONObject()
@@ -1385,12 +1148,8 @@ object Store {
         try {
             val arr = JSONArray(settings(ctx).getString("schedules", "[]"))
             for (i in 0 until arr.length()) {
-                try {
-                    val o = arr.getJSONObject(i)
-                    out.add(Schedule(o.getLong("id"), o.getInt("d"), o.getInt("s"), o.getInt("e"), o.getBoolean("on")))
-                } catch (_: Exception) {
-                    // one malformed entry: skip it, keep the rest
-                }
+                val o = arr.getJSONObject(i)
+                out.add(Schedule(o.getLong("id"), o.getInt("d"), o.getInt("s"), o.getInt("e"), o.getBoolean("on")))
             }
         } catch (e: Exception) {
             Log.e(TAG, "schedules read failed", e)
@@ -1399,11 +1158,6 @@ object Store {
     }
 
     fun saveSchedules(ctx: Context, list: List<Schedule>) {
-        // a corrupt stored list must never be overwritten with a fresh one
-        if (JsonGuard.isCorrupt(settings(ctx), "schedules")) {
-            Log.e(TAG, "schedules corrupt, keeping stored value")
-            return
-        }
         val arr = JSONArray()
         for (x in list) {
             val o = JSONObject()
@@ -1450,17 +1204,12 @@ object Pomodoro {
     }
 
     private fun saveState(ctx: Context, round: Int, phase: String, end: Long, total: Long) {
-        val mono = SystemClock.elapsedRealtime()
         Store.lock(ctx).edit()
             .putBoolean("pom_active", true)
             .putInt("pom_round", round)
             .putString("pom_phase", phase)
             .putLong("pom_phase_end", end)
             .putLong("pom_phase_total", total)
-            // monotonic deadline: the wall clock cannot end or extend a phase
-            .putLong("pom_end_mono", mono + total)
-            .putLong("pom_start_mono", mono)
-            .putLong("pom_rem_min", total)
             .apply()
     }
 
@@ -1469,19 +1218,7 @@ object Pomodoro {
         Store.lock(ctx).edit()
             .remove("pom_active").remove("pom_round").remove("pom_phase")
             .remove("pom_phase_end").remove("pom_phase_total")
-            .remove("pom_end_mono").remove("pom_start_mono").remove("pom_rem_min")
             .apply()
-    }
-
-    /** Remaining time (ms) of the current phase, from the monotonic clock —
-     * changing the date/time cannot change it. 0 when no set runs. */
-    fun remainingMs(ctx: Context): Long {
-        val st = state(ctx)
-        if (!st.active) return 0
-        return monoRemaining(
-            Store.lock(ctx), st.phaseEnd,
-            "pom_end_mono", "pom_start_mono", "pom_rem_min"
-        )
     }
 
     /** Starts a set with focus round 1. False when a lock is already running. */
@@ -1518,8 +1255,8 @@ object Pomodoro {
         try {
             val st = state(ctx)
             if (!st.active) return
-            if (remainingMs(ctx) > 0) return
             val now = System.currentTimeMillis()
+            if (now < st.phaseEnd) return
             when (st.phase) {
                 PHASE_FOCUS -> {
                     // the focus session ends now: record it as a completed lock
@@ -1601,11 +1338,7 @@ object Badges {
         BadgeDef("locks_50", Ic.LOCK, "50 locks", "৫০টা লক", "Complete 50 locks", "৫০টা লক সম্পন্ন করুন"),
         BadgeDef("focus_100h", Ic.CLOCK, "100 hours", "১০০ ঘণ্টা", "100 hours of total focus", "মোট ১০০ ঘণ্টা ফোকাস"),
         BadgeDef("detox_done", Ic.SHIELD, "Detox champion", "ডিটক্স চ্যাম্পিয়ন", "Complete a 7-day detox challenge", "৭ দিনের ডিটক্স চ্যালেঞ্জ সম্পন্ন করুন"),
-        BadgeDef("blocks_1000", Ic.BARS, "1000 blocks", "১০০০ বার ব্লক", "1000 blocked attempts", "১০০০ বার ব্লক হয়েছে"),
-        BadgeDef("wheel_first", Ic.CHECK, "First spin", "প্রথম স্পিন", "Win your first lucky wheel reward", "লাকি হুইল থেকে প্রথম পুরস্কার জিতুন"),
-        BadgeDef("wheel_lucky", Ic.SHIELD, "Lucky!", "ভাগ্যবান!", "Win a badge from the lucky wheel", "লাকি হুইল থেকে ব্যাজ জিতুন"),
-        BadgeDef("wheel_collector", Ic.BARS, "Collector", "সংগ্রাহক", "Win a tree species and an animal from the wheel", "হুইল থেকে গাছের প্রজাতি ও প্রাণী দুটোই জিতুন"),
-        BadgeDef("journey_done", Ic.PIN, "Journey complete", "যাত্রা সম্পূর্ণ", "Walk from Dhaka to Cox's Bazar", "ঢাকা থেকে কক্সবাজার হাঁটুন")
+        BadgeDef("blocks_1000", Ic.BARS, "1000 blocks", "১০০০ বার ব্লক", "1000 blocked attempts", "১০০০ বার ব্লক হয়েছে")
     )
 
     fun byId(id: String): BadgeDef? = ALL.firstOrNull { it.id == id }
@@ -1618,11 +1351,7 @@ object Badges {
             val keys = obj.keys()
             while (keys.hasNext()) {
                 val k = keys.next()
-                try {
-                    out[k] = obj.getLong(k)
-                } catch (_: Exception) {
-                    // one malformed entry: skip it, keep the rest
-                }
+                out[k] = obj.getLong(k)
             }
         } catch (e: Exception) {
             Log.e(TAG, "badges read failed", e)
@@ -1655,7 +1384,6 @@ object Badges {
             if (fs.completed >= 10) award(ctx, "locks_10")
             if (fs.completed >= 50) award(ctx, "locks_50")
             if (fs.totalMin >= 6000) award(ctx, "focus_100h")
-            if (FocusJourney.progress(ctx).first >= 1) award(ctx, "journey_done")
             if (Store.detoxState(ctx).mode == "done") award(ctx, "detox_done")
             if (Store.totalBlocks(ctx) >= 1000) award(ctx, "blocks_1000")
         } catch (e: Exception) {

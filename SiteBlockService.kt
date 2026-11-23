@@ -80,9 +80,8 @@ object SiteBlock {
 
     /** Start/stop the VPN to match the desired state: on only while a lock runs. */
     fun sync(ctx: Context) {
-        var want = false
         try {
-            want = isOn(ctx) && Store.isActive(ctx) && hasPermission(ctx)
+            val want = isOn(ctx) && Store.isActive(ctx) && hasPermission(ctx)
             val action = if (want) SiteBlockService.ACTION_START else SiteBlockService.ACTION_STOP
             val i = Intent(ctx, SiteBlockService::class.java).setAction(action)
             // startForegroundService: the service goes foreground at once, so
@@ -90,24 +89,6 @@ object SiteBlock {
             ctx.startForegroundService(i)
         } catch (e: Exception) {
             Log.e(TAG, "SiteBlock sync failed", e)
-            // Android 12+ refuses a foreground-service start from the background
-            // (inexact-alarm lock starts have no exemption): ask for an
-            // alarm-clock restart instead — when KeepAlive starts it re-runs
-            // sync from a foreground context, so the VPN is back in ~1 s
-            // instead of up to 15 min. Only for START: when the VPN should be
-            // off there is nothing to start, and a failed STOP is harmless.
-            // The exception type is matched by name (it only exists on API 31+).
-            if (want && e.javaClass.name == "android.app.ForegroundServiceStartNotAllowedException") {
-                try {
-                    val p = Store.settings(ctx)
-                    val now = System.currentTimeMillis()
-                    if (now - p.getLong("site_retry_at", 0) > 60_000L) {
-                        p.edit().putLong("site_retry_at", now).apply()
-                        KeepAliveService.restartSoon(ctx, 1000)
-                    }
-                } catch (_: Exception) {
-                }
-            }
         }
     }
 }
