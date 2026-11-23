@@ -72,7 +72,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "51"
+    const val BUILD_ID = "52"
 
     // ---------- extend time (never reduce) ----------
 
@@ -1913,7 +1913,11 @@ private fun MainActivity.ifPlaceNotLocking(pl: Place, block: () -> Unit) {
     }
 }
 
-fun MainActivity.locationCard(): View {
+/** The full Location Lock card (switch, saved places, map/save-place buttons,
+ * permission rows, battery note). Used by Settings and by Home's location
+ * section; [onPlaceChanged] rebuilds the host screen after a place is added
+ * or deleted — Settings by default, Home passes its own rebuild. */
+fun MainActivity.locationCard(onPlaceChanged: () -> Unit = { go(3) }): View {
     val c = card()
     val st = Store.settings(this)
     // header first: title on the left, master on/off on the right
@@ -2001,11 +2005,11 @@ fun MainActivity.locationCard(): View {
         del.gravity = Gravity.CENTER
         del.background = withRipple(rounded(C.card2, dp(18).toFloat()))
         del.pressFeedback()
-        del.setOnClickListener { ifPlaceNotLocking(pl) { deletePlaceDialog(pl) { go(3) } } }
+        del.setOnClickListener { ifPlaceNotLocking(pl) { deletePlaceDialog(pl) { onPlaceChanged() } } }
         r.addView(del, lp(dp(36), dp(36), r = dp(10)))
         r.addView(rowSw)
         r.setOnLongClickListener {
-            ifPlaceNotLocking(pl) { deletePlaceDialog(pl) { go(3) } }
+            ifPlaceNotLocking(pl) { deletePlaceDialog(pl) { onPlaceChanged() } }
             true
         }
         c.addView(r)
@@ -2016,7 +2020,7 @@ fun MainActivity.locationCard(): View {
     c.addView(mapBtn, lp(MATCH, dp(48), t = dp(12)))
 
     val add = outlineBtn("＋ " + L.t("Save my current place", "আমার এই জায়গা সেভ করুন"), C.primary)
-    add.setOnClickListener { addPlaceFlow { go(3) } }
+    add.setOnClickListener { addPlaceFlow { onPlaceChanged() } }
     c.addView(add, lp(MATCH, dp(48), t = dp(12)))
 
     val locOk = Perm.locationOn(this)

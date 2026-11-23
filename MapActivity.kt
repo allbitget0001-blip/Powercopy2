@@ -44,6 +44,7 @@ class MapActivity : Activity() {
     private lateinit var addBtn: TextView
     private lateinit var saveBtn: TextView
     private lateinit var delBtn: TextView
+    private lateinit var destBtn: TextView
     private lateinit var hintTv: TextView
     private lateinit var satBtn: TextView
     private lateinit var routeDayTv: TextView
@@ -251,6 +252,10 @@ class MapActivity : Activity() {
         delBtn.setOnClickListener { deleteSelected() }
         btnRow.addView(delBtn, lp(0, WRAP, l = dp(10), t = dp(12), weight = 1f))
         editBox.addView(btnRow)
+        // set this place as the unlock destination for the next location lock
+        destBtn = outlineBtn("📍 " + L.t("Set as unlock destination", "গন্তব্য হিসেবে সেট করুন"), C.primary)
+        destBtn.setOnClickListener { setUnlockDest() }
+        editBox.addView(destBtn, lp(MATCH, WRAP, t = dp(12)))
         panel.addView(editBox)
 
         // add button: only when the map was tapped (pending place)
@@ -480,6 +485,23 @@ class MapActivity : Activity() {
         toast(L.t("Saved", "সংরক্ষণ হয়েছে"))
         updatePanel()
         pushDataJs()
+    }
+
+    /** Saves the selected place (with any radius/mode edits) as the unlock
+     * destination for the next location lock, then returns. */
+    private fun setUnlockDest() {
+        val id = selectedId ?: return
+        val idx = places.indexOfFirst { it.id == id }
+        if (idx < 0) return
+        // persist any radius/mode edits first, so the target matches the place
+        places[idx] = places[idx].copy(radius = editRadius, mode = editMode)
+        Extra.savePlaces(this, places)
+        PlaceWatcher.sync(this)
+        PlaceWatcher.checkNow(this)
+        val pl = places[idx]
+        Store.saveUnlockDest(this, UnlockTarget(pl.lat, pl.lng, pl.radius, pl.name))
+        toast(L.t("Unlock destination set: ", "গন্তব্য সেট হয়েছে: ") + pl.name)
+        finish()
     }
 
     private fun deleteSelected() {

@@ -290,6 +290,22 @@ object Store {
         )
     }
 
+    /** Saves the picked unlock destination (for the next location lock).
+     * Stored in settings, separate from the running session's target. */
+    fun saveUnlockDest(ctx: Context, t: UnlockTarget?) {
+        val e = settings(ctx).edit()
+        if (t == null) {
+            e.remove("unlock_dest").apply()
+            return
+        }
+        val o = JSONObject()
+        o.put("la", t.lat)
+        o.put("lo", t.lng)
+        o.put("r", t.radius)
+        o.put("n", t.name)
+        e.putString("unlock_dest", o.toString()).apply()
+    }
+
     /** The running session's unlock mode: "time", "loc" or "either". */
     fun unlockMode(ctx: Context): String = lock(ctx).getString("u_mode", UNLOCK_TIME) ?: UNLOCK_TIME
 

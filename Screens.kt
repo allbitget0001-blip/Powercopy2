@@ -50,9 +50,7 @@ class HomeScreen(private val a: MainActivity) {
     private val quick = listOf(5, 10, 15, 30, 60)
     private val modeChips = ArrayList<TextView>()
     private val modes = listOf(UNLOCK_TIME, UNLOCK_LOC, UNLOCK_EITHER)
-    private lateinit var destRow: LinearLayout
-    private lateinit var destNameText: TextView
-    private lateinit var destRadiusText: TextView
+    private lateinit var homeLocCard: View
     private var warnSig = ""
     private var lastStatus: PStatus? = null
     private var lastActive: Boolean? = null
@@ -153,25 +151,12 @@ class HomeScreen(private val a: MainActivity) {
             modeRow.addView(ch, lp(0, a.dp(56), r = if (i < 2) a.dp(10) else 0, t = a.dp(10), weight = 1f))
         }
         col.addView(modeRow)
-        // destination row (only for the location modes): name opens the picker, radius is tappable
-        destRow = LinearLayout(a)
-        destRow.orientation = LinearLayout.HORIZONTAL
-        destRow.gravity = Gravity.CENTER_VERTICAL
-        destRow.background = rounded(C.card2, a.dp(18).toFloat())
-        destRow.setPadding(a.dp(16), a.dp(14), a.dp(16), a.dp(14))
-        destRow.addView(IconView(a, Ic.PIN, C.primary), lp(a.dp(26), a.dp(26), r = a.dp(12)))
-        val destCol = LinearLayout(a)
-        destCol.orientation = LinearLayout.VERTICAL
-        destNameText = a.tv("", 16f, C.text, 1)
-        destCol.addView(destNameText)
-        destRadiusText = a.tv("", 12f, C.primary)
-        destRadiusText.setOnClickListener { pickRadius() }
-        destCol.addView(destRadiusText)
-        destRow.addView(destCol, lp(0, WRAP, weight = 1f))
-        destRow.addView(a.tv("›", 22f, C.muted, 1))
-        destRow.setOnClickListener { pickDestination() }
-        destRow.pressFeedback()
-        col.addView(destRow, lp(MATCH, WRAP, t = a.dp(10)))
+
+        // ---- location lock card (the same full card as Settings) ----
+        // It replaces the old destination row: the map (from this card) is
+        // where the unlock destination is picked.
+        homeLocCard = a.locationCard { a.go(0) }
+        col.addView(homeLocCard, lp(MATCH, WRAP, t = a.dp(10)))
 
         // ---- schedule card ----
         val scd = a.card(20)
@@ -243,20 +228,6 @@ class HomeScreen(private val a: MainActivity) {
         }
     }
 
-    private fun saveUnlockDest(t: UnlockTarget?) {
-        val e = Store.settings(a).edit()
-        if (t == null) {
-            e.remove("unlock_dest").apply()
-            return
-        }
-        val o = JSONObject()
-        o.put("la", t.lat)
-        o.put("lo", t.lng)
-        o.put("r", t.radius)
-        o.put("n", t.name)
-        e.putString("unlock_dest", o.toString()).apply()
-    }
-
     private fun refreshModeChips(animate: Boolean = false) {
         val active = Store.isActive(a)
         val mode = unlockMode()
@@ -265,21 +236,12 @@ class HomeScreen(private val a: MainActivity) {
             if (animate) a.animateChip(c, sel) else a.styleChip(c, sel)
             c.alpha = if (active) 0.4f else 1f
         }
-        refreshDestRow()
+        refreshLocCard()
     }
 
-    private fun refreshDestRow() {
-        val show = unlockMode() != UNLOCK_TIME
-        destRow.visibility = if (show) View.VISIBLE else View.GONE
-        if (!show) return
-        val d = unlockDest()
-        destNameText.text = d?.name ?: L.t("Choose a destination", "গন্তব্য বাছুন")
-        destRadiusText.text = if (d != null) {
-            fmtDistM(d.radius.toFloat()) + " " + L.t("radius · tap to change", "ব্যাসার্ধ · বদলাতে চাপুন")
-        } else {
-            L.t("Tap to choose", "বাছতে চাপুন")
-        }
-        destRow.alpha = if (Store.isActive(a)) 0.4f else 1f
+    /** The Home location card is shown only for the location unlock modes. */
+    private fun refreshLocCard() {
+        homeLocCard.visibility = if (unlockMode() != UNLOCK_TIME) View.VISIBLE else View.GONE
     }
 
     private fun pickMode(m: String) {
@@ -288,62 +250,6 @@ class HomeScreen(private val a: MainActivity) {
         refreshModeChips(true)
         refreshChips()
         tick()
-    }
-
-    private fun pickDestination() {
-        if (Store.isActive(a)) return
-        val places = Extra.places(a)
-        val items = ArrayList<String>()
-        for (pl in places) items.add(pl.name + "  ·  " + fmtDistM(pl.radius.toFloat()))
-        items.add(L.t("My current location", "আমার বর্তমান অবস্থান"))
-        items.add(L.t("Open map to add a place", "ম্যাপ খুলে জায়গা যোগ করুন"))
-        a.dlg()
-            .setTitle(L.t("Unlock destination", "গন্তব্য বাছুন"))
-            .setItems(items.toTypedArray()) { _, which ->
-                when {
-                    which < places.size -> {
-                        val pl = places[which]
-                        saveUnlockDest(UnlockTarget(pl.lat, pl.lng, pl.radius, pl.name))
-                        refreshDestRow()
-                        tick()
-                    }
-                    which == places.size -> pickCurrentLocation()
-                    else -> a.startActivity(Intent(a, MapActivity::class.java))
-                }
-            }
-            .show()
-    }
-
-    private fun pickCurrentLocation() {
-        if (!Perm.locationOn(a)) {
-            a.requestLocationPerm()
-            return
-        }
-        a.toast(L.t("Finding your location…", "আপনার অবস্থান খোঁজা হচ্ছে…"))
-        Extra.currentLocation(a) { loc ->
-            if (loc == null) {
-                a.toast(L.t("Could not get the location. Turn on GPS and try again outside.", "অবস্থান পাওয়া যায়নি। GPS চালু করে বাইরে আবার চেষ্টা করুন।"))
-            } else {
-                saveUnlockDest(UnlockTarget(loc.latitude, loc.longitude, 200, L.t("Current location", "বর্তমান অবস্থান")))
-                refreshDestRow()
-                tick()
-            }
-        }
-    }
-
-    private fun pickRadius() {
-        if (Store.isActive(a)) return
-        val d = unlockDest() ?: return
-        val radii = intArrayOf(100, 200, 500, 1000, 5000, 10000)
-        val labels = Array(radii.size) { fmtDistM(radii[it].toFloat()) }
-        a.dlg()
-            .setTitle(L.t("Radius", "ব্যাসার্ধ"))
-            .setItems(labels) { _, which ->
-                saveUnlockDest(d.copy(radius = radii[which]))
-                refreshDestRow()
-                tick()
-            }
-            .show()
     }
 
     private fun nextText(now: Long): String {
@@ -501,9 +407,9 @@ class HomeScreen(private val a: MainActivity) {
             val dest = unlockDest()
             previewText.text = when {
                 mode == UNLOCK_LOC && dest != null -> L.t("Opens when you arrive at ${dest.name}", "লক খুলবে: ${dest.name} পৌঁছালে")
-                mode == UNLOCK_LOC -> L.t("Choose a destination below", "নিচে গন্তব্য বাছুন")
+                mode == UNLOCK_LOC -> L.t("Choose a destination on the map", "ম্যাপে গন্তব্য বাছুন")
                 mode == UNLOCK_EITHER && dest != null -> L.t("Duration ${fmtDur(sel)} · ends at $ends or at ${dest.name}", "সময় ${fmtDur(sel)} · শেষ হবে $ends অথবা ${dest.name} পৌঁছালে")
-                mode == UNLOCK_EITHER -> L.t("Duration ${fmtDur(sel)} · ends at $ends · choose a destination", "সময় ${fmtDur(sel)} · শেষ হবে $ends · গন্তব্য বাছুন")
+                mode == UNLOCK_EITHER -> L.t("Duration ${fmtDur(sel)} · ends at $ends · choose a destination on the map", "সময় ${fmtDur(sel)} · শেষ হবে $ends · ম্যাপে গন্তব্য বাছুন")
                 else -> L.t("Duration ${fmtDur(sel)} · ends at $ends", "সময় ${fmtDur(sel)} · শেষ হবে $ends")
             }
         }
@@ -645,8 +551,8 @@ class HomeScreen(private val a: MainActivity) {
         // location modes need a destination + location permission
         val dest = unlockDest()
         if (dest == null) {
-            a.toast(L.t("Choose a destination first", "আগে গন্তব্য বাছুন"))
-            pickDestination()
+            a.toast(L.t("Choose a destination first — pick a place on the map", "আগে গন্তব্য বাছুন — ম্যাপ থেকে জায়গা বাছুন"))
+            a.startActivity(Intent(a, MapActivity::class.java))
             return
         }
         if (!Perm.locationOn(a)) {
