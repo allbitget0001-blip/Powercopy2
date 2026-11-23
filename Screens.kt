@@ -51,6 +51,9 @@ class HomeScreen(private val a: MainActivity) {
     private val modeChips = ArrayList<TextView>()
     private val modes = listOf(UNLOCK_TIME, UNLOCK_LOC, UNLOCK_EITHER)
     private lateinit var homeLocCard: View
+    private lateinit var focusScoreText: TextView
+    private lateinit var focusScoreDetail: TextView
+    private var lastScoreAt = 0L
     private var warnSig = ""
     private var lastStatus: PStatus? = null
     private var lastActive: Boolean? = null
@@ -112,6 +115,23 @@ class HomeScreen(private val a: MainActivity) {
         extendBtn.setOnClickListener { a.extendFlow { tick() } }
         sc.addView(extendBtn, lp(MATCH, a.dp(60), t = a.dp(12)))
         col.addView(sc, lp(MATCH, WRAP, t = a.dp(16)))
+
+        // ---- focus score today (0–100) ----
+        val fsCard = a.card()
+        val fsRow = LinearLayout(a)
+        fsRow.gravity = Gravity.CENTER_VERTICAL
+        fsRow.addView(IconView(a, Ic.BARS, C.primary), lp(a.dp(26), a.dp(26), r = a.dp(12)))
+        val fsCol = LinearLayout(a)
+        fsCol.orientation = LinearLayout.VERTICAL
+        fsCol.addView(a.tv(L.t("Focus score today", "আজকের ফোকাস স্কোর"), 13f, C.muted, 1))
+        focusScoreText = a.tv("", 22f, C.mint, 1)
+        fsCol.addView(focusScoreText)
+        fsRow.addView(fsCol, lp(0, WRAP, weight = 1f))
+        fsCard.addView(fsRow)
+        focusScoreDetail = a.tv("", 12f, C.muted)
+        fsCard.addView(focusScoreDetail, lp(MATCH, WRAP, t = a.dp(6)))
+        col.addView(fsCard, lp(MATCH, WRAP, t = a.dp(14)))
+        refreshFocusScore()
 
         // ---- duration ----
         col.addView(a.heading(L.t("Select Lock Duration", "লক সময় বাছুন")), lp(MATCH, WRAP, t = a.dp(26), b = a.dp(4)))
@@ -329,8 +349,27 @@ class HomeScreen(private val a: MainActivity) {
         }
     }
 
+    /** Refreshes the Home focus-score card from today's data. */
+    private fun refreshFocusScore() {
+        if (!::focusScoreText.isInitialized) return
+        val fs = Extra.focusScore(a)
+        focusScoreText.text = L.num(fs.score.toString()) + " / " + L.num("100")
+        val done = if (fs.completedToday) L.t(" · lock completed today", " · আজ লক সম্পন্ন") else ""
+        focusScoreDetail.text = L.num(
+            L.t(
+                "Focus ${fs.focusMinToday}m of ${fs.goalMin}m goal · ${fs.blocksToday} blocks resisted · ${fs.streak}-day streak$done",
+                "ফোকাস ${fs.focusMinToday} মিনিট / ${fs.goalMin} মিনিট লক্ষ্য · ${fs.blocksToday}টি ব্লক প্রতিহত · ${fs.streak} দিনের স্ট্রিক$done"
+            )
+        )
+    }
+
     fun tick() {
         val now = System.currentTimeMillis()
+        // focus score moves slowly: refresh it at most every 30 s
+        if (now - lastScoreAt >= 30_000) {
+            lastScoreAt = now
+            refreshFocusScore()
+        }
         // backup arrival check (the service listener is the main path)
         if (Store.unlockTarget(a) != null) PlaceWatcher.checkUnlockLastKnown(a)
         val active = Store.isActive(a)
@@ -913,6 +952,15 @@ class StatsScreen(private val a: MainActivity) {
     private lateinit var calGrid: LinearLayout
     private lateinit var calLabel: TextView
     private lateinit var calDetail: TextView
+    // live-refresh cards: their bodies are rebuilt by tick() every 5 s
+    private lateinit var usageCard: LinearLayout
+    private lateinit var usageLogLabel: TextView
+    private lateinit var usageLogBody: LinearLayout
+    private var usageLogOffset = 0 // days ago shown in the usage log (0 = today, up to 29)
+    private lateinit var focusScoreValue: TextView
+    private lateinit var focusScoreDetail: TextView
+    private lateinit var recordCard: LinearLayout
+    private var lastStatsTick = 0L
 
     fun build(): View {
         Store.finalizeIfExpired(a)
@@ -969,6 +1017,16 @@ class StatsScreen(private val a: MainActivity) {
             statCard(Ic.SHIELD, L.t("Longest session", "সবচেয়ে বড় সেশন"), fmtDur(longest))
         )
 
+        // focus score today (0–100): focus minutes vs goal + blocks resisted + streak
+        val scoreCard = a.card()
+        scoreCard.addView(a.section(L.t("Focus score today", "আজকের ফোকাস স্কোর")))
+        focusScoreValue = a.tv("", 34f, C.mint, 1)
+        scoreCard.addView(focusScoreValue, lp(MATCH, WRAP, t = a.dp(8)))
+        focusScoreDetail = a.tv("", 13f, C.muted)
+        scoreCard.addView(focusScoreDetail, lp(MATCH, WRAP, t = a.dp(4)))
+        col.addView(scoreCard, lp(MATCH, WRAP, b = a.dp(14)))
+        refreshFocusScore()
+
         // chart
         val chartCard = a.card()
         chartCard.addView(a.section(L.t("Last 7 days", "গত ৭ দিন")))
@@ -1004,6 +1062,57 @@ class StatsScreen(private val a: MainActivity) {
             focus7.addView(r)
         }
         col.addView(focus7, lp(MATCH, WRAP, b = a.dp(14)))
+
+        // weekly comparison: this week (last 7 days) vs the week before it,
+        // from the stored session + attempts history
+        val weekCard = a.card()
+        weekCard.addView(a.section(L.t("This week vs last week", "এই সপ্তাহ বনাম গত সপ্তাহ")))
+        val thisFrom = Store.dayStart(now, -6)
+        val lastFrom = Store.dayStart(now, -13)
+        val thisFocus = Store.sumRange(all, thisFrom, end)
+        val lastFocus = Store.sumRange(all, lastFrom, thisFrom)
+        val thisSessions = all.count { it.ok && it.start >= thisFrom }
+        val lastSessions = all.count { it.ok && it.start >= lastFrom && it.start < thisFrom }
+        val attemptsList = Extra.attempts(a)
+        val thisBlocks = attemptsList.count { it.first >= thisFrom }
+        val lastBlocks = attemptsList.count { it.first >= lastFrom && it.first < thisFrom }
+        fun weekRow(label: String, thisVal: String, lastVal: String, thisN: Long, lastN: Long) {
+            val r = LinearLayout(a)
+            r.gravity = Gravity.CENTER_VERTICAL
+            r.setPadding(0, a.dp(8), 0, a.dp(2))
+            r.addView(a.tv(label, 14f, C.text, 1), lp(0, WRAP, weight = 1f))
+            r.addView(a.tv(thisVal, 15f, C.text, 1))
+            val arrow = when {
+                thisN > lastN -> "▲"
+                thisN < lastN -> "▼"
+                else -> "—"
+            }
+            val arrowColor = when {
+                thisN > lastN -> C.mint
+                thisN < lastN -> C.danger
+                else -> C.muted
+            }
+            val arrowTv = a.tv(arrow, 14f, arrowColor, 1)
+            arrowTv.setPadding(a.dp(8), 0, 0, 0)
+            r.addView(arrowTv)
+            weekCard.addView(r)
+            weekCard.addView(
+                a.tv(L.t("Last week: ", "গত সপ্তাহ: ") + lastVal, 12f, C.muted),
+                lp(MATCH, WRAP, b = a.dp(4))
+            )
+        }
+        weekRow(L.t("Focus time", "ফোকাস সময়"), fmtDur(thisFocus), fmtDur(lastFocus), thisFocus, lastFocus)
+        weekRow(
+            L.t("Completed locks", "সম্পন্ন লক"),
+            L.num(thisSessions.toString()), L.num(lastSessions.toString()),
+            thisSessions.toLong(), lastSessions.toLong()
+        )
+        weekRow(
+            L.t("Blocks resisted", "প্রতিহত ব্লক"),
+            L.num(thisBlocks.toString()), L.num(lastBlocks.toString()),
+            thisBlocks.toLong(), lastBlocks.toLong()
+        )
+        col.addView(weekCard, lp(MATCH, WRAP, b = a.dp(14)))
 
         // milestone badges: earned in colour with the date, unearned greyed out
         val badgeCard = a.card()
@@ -1088,74 +1197,54 @@ class StatsScreen(private val a: MainActivity) {
         col.addView(calCard, lp(MATCH, WRAP, b = a.dp(14)))
         buildCalendar()
 
-        // today's app usage (from the daily-limits tracker): most-used first.
-        // Tapping a row opens its daily-limit setting.
-        val usageCard = a.card()
-        usageCard.addView(a.section(L.t("App usage today", "আজকের অ্যাপ ব্যবহার")))
-        val usageToday = Extra.usageTodayAll(a)
-        val usage7 = Extra.usage7DayTotal(a)
-        if (usageToday.isEmpty()) {
-            usageCard.addView(
-                a.tv(L.t("No usage tracked yet today. Accessibility must be on to track app time.", "আজ এখনো কোনো ব্যবহার ট্র্যাক হয়নি। অ্যাপের সময় ট্র্যাক করতে Accessibility চালু থাকতে হবে।"), 13f, C.muted),
-                lp(MATCH, WRAP, t = a.dp(6))
-            )
-        } else {
-            data class URow(val pkg: String, val label: String, val icon: Drawable?, val todaySec: Long, val weekSec: Long)
-            val rows = ArrayList<URow>()
-            val pm = a.packageManager
-            for ((pkg, sec) in usageToday) {
-                try {
-                    val ai = pm.getApplicationInfo(pkg, 0)
-                    rows.add(URow(pkg, pm.getApplicationLabel(ai).toString(), pm.getApplicationIcon(ai), sec, usage7[pkg] ?: 0L))
-                } catch (e: Exception) {
-                    // uninstalled: skip the row (its seconds still count in the totals)
-                }
-            }
-            rows.sortByDescending { it.todaySec }
-            val maxSec = rows.firstOrNull()?.todaySec ?: 1L
-            for (row in rows.take(10)) {
-                val r = LinearLayout(a)
-                r.gravity = Gravity.CENTER_VERTICAL
-                r.setPadding(0, a.dp(8), 0, a.dp(2))
-                if (row.icon != null) {
-                    val icon = ImageView(a)
-                    icon.setImageDrawable(row.icon)
-                    r.addView(icon, lp(a.dp(36), a.dp(36), r = a.dp(12)))
-                } else {
-                    r.addView(View(a), lp(a.dp(36), a.dp(36), r = a.dp(12)))
-                }
-                val labelCol = LinearLayout(a)
-                labelCol.orientation = LinearLayout.VERTICAL
-                labelCol.addView(a.tv(row.label, 15f, C.text))
-                labelCol.addView(a.tv(L.t("7 days: ", "৭ দিনে: ") + fmtDur(row.weekSec * 1000L), 12f, C.muted))
-                r.addView(labelCol, lp(0, WRAP, weight = 1f))
-                r.addView(a.tv(fmtDur(row.todaySec * 1000L), 14f, C.text, 1))
-                r.pressFeedback()
-                r.setOnClickListener { a.limitChoiceDialog(row.pkg, row.label, Extra.dailyLimit(a, row.pkg)) { a.go(2) } }
-                usageCard.addView(r, lp(MATCH, WRAP, t = a.dp(4)))
-                // usage bar, relative to the most-used app
-                val barWrap = LinearLayout(a)
-                barWrap.orientation = LinearLayout.HORIZONTAL
-                barWrap.background = rounded(C.card2, a.dp(3).toFloat())
-                val frac = (row.todaySec.toFloat() / maxSec.toFloat()).coerceIn(0.02f, 1f)
-                val fill = View(a)
-                fill.background = rounded(C.primary, a.dp(3).toFloat())
-                barWrap.addView(fill, lp(0, a.dp(6), weight = frac))
-                barWrap.addView(View(a), lp(0, a.dp(6), weight = 1f - frac))
-                usageCard.addView(barWrap, lp(MATCH, a.dp(6), t = a.dp(4)))
-            }
-            val yest = Extra.usageDayTotal(a, Store.dayKey(1))
-            val weekTotal = usage7.values.sum()
-            usageCard.addView(
-                a.tv(
-                    L.t("Yesterday total: ", "গতকাল মোট: ") + fmtDur(yest * 1000L) + " · " +
-                        L.t("Last 7 days total: ", "গত ৭ দিন মোট: ") + fmtDur(weekTotal * 1000L),
-                    12f, C.muted
-                ),
-                lp(MATCH, WRAP, t = a.dp(10))
-            )
-        }
+        // today's app usage (all apps, tracked by the accessibility service):
+        // most-used first. Tapping a row opens its daily-limit setting.
+        // The body is rebuilt by tick() so the numbers move live.
+        usageCard = a.card()
+        buildUsageCardBody()
         col.addView(usageCard, lp(MATCH, WRAP, b = a.dp(14)))
+
+        // per-day usage log (30 days of history): pick a day, see per-app
+        // minutes that day
+        val logCard = a.card()
+        logCard.addView(a.section(L.t("Usage log", "ব্যবহারের লগ")))
+        val logNav = LinearLayout(a)
+        logNav.gravity = Gravity.CENTER_VERTICAL
+        val logPrev = a.tv("‹", 28f, C.primary, 1)
+        logPrev.setPadding(a.dp(12), 0, a.dp(12), 0)
+        logPrev.setOnClickListener {
+            if (usageLogOffset < 29) {
+                usageLogOffset++
+                buildUsageLogBody()
+            }
+        }
+        val logNext = a.tv("›", 28f, C.primary, 1)
+        logNext.setPadding(a.dp(12), 0, a.dp(12), 0)
+        logNext.setOnClickListener {
+            if (usageLogOffset > 0) {
+                usageLogOffset--
+                buildUsageLogBody()
+            }
+        }
+        usageLogLabel = a.tv("", 16f, C.text, 1)
+        usageLogLabel.gravity = Gravity.CENTER
+        logNav.addView(logPrev)
+        logNav.addView(usageLogLabel, lp(0, WRAP, weight = 1f))
+        logNav.addView(logNext)
+        logCard.addView(logNav, lp(MATCH, WRAP, t = a.dp(8)))
+        usageLogBody = LinearLayout(a)
+        usageLogBody.orientation = LinearLayout.VERTICAL
+        logCard.addView(usageLogBody, lp(MATCH, WRAP, t = a.dp(4)))
+        col.addView(logCard, lp(MATCH, WRAP, b = a.dp(14)))
+        buildUsageLogBody()
+
+        // temptation counter: blocked attempts (today / 7 days / total + per kind)
+        col.addView(a.attemptsCard(), lp(MATCH, WRAP, b = a.dp(14)))
+
+        // record board: best-ever numbers, computed live from stored history
+        recordCard = a.card()
+        buildRecordBoardBody()
+        col.addView(recordCard, lp(MATCH, WRAP, b = a.dp(14)))
 
         // history
         val hist = a.card()
@@ -1186,6 +1275,201 @@ class StatsScreen(private val a: MainActivity) {
         }
         col.addView(hist)
         return sv
+    }
+
+    /** Live tick from the MainActivity ticker (throttled to every 5 s): rebuilds
+     * the cards whose numbers move while the screen is open. */
+    fun tick() {
+        val now = System.currentTimeMillis()
+        if (now - lastStatsTick < 5000) return
+        lastStatsTick = now
+        try {
+            if (!::usageCard.isInitialized) return
+            buildUsageCardBody()
+            if (usageLogOffset == 0) buildUsageLogBody() // only today's log moves
+            refreshFocusScore()
+            buildRecordBoardBody()
+        } catch (e: Exception) {
+            Log.e(TAG, "stats tick failed", e)
+        }
+    }
+
+    /** (Re)builds the "App usage today" card body: most-used first, top 10,
+     * with per-app bars and 7-day totals. Tapping a row opens its daily-limit
+     * setting. Rebuilt on every live tick so the numbers move. */
+    private fun buildUsageCardBody() {
+        usageCard.removeAllViews()
+        usageCard.addView(a.section(L.t("App usage today", "আজকের অ্যাপ ব্যবহার")))
+        val usageToday = Extra.usageTodayAll(a)
+        val usage7 = Extra.usage7DayTotal(a)
+        if (usageToday.isEmpty()) {
+            usageCard.addView(
+                a.tv(L.t("No usage tracked yet today. Accessibility must be on to track app time.", "আজ এখনো কোনো ব্যবহার ট্র্যাক হয়নি। অ্যাপের সময় ট্র্যাক করতে Accessibility চালু থাকতে হবে।"), 13f, C.muted),
+                lp(MATCH, WRAP, t = a.dp(6))
+            )
+            return
+        }
+        data class URow(val pkg: String, val label: String, val icon: Drawable?, val todaySec: Long, val weekSec: Long)
+        val rows = ArrayList<URow>()
+        val pm = a.packageManager
+        for ((pkg, sec) in usageToday) {
+            try {
+                val ai = pm.getApplicationInfo(pkg, 0)
+                rows.add(URow(pkg, pm.getApplicationLabel(ai).toString(), pm.getApplicationIcon(ai), sec, usage7[pkg] ?: 0L))
+            } catch (e: Exception) {
+                // uninstalled: skip the row (its seconds still count in the totals)
+            }
+        }
+        rows.sortByDescending { it.todaySec }
+        val maxSec = rows.firstOrNull()?.todaySec ?: 1L
+        for (row in rows.take(10)) {
+            val r = LinearLayout(a)
+            r.gravity = Gravity.CENTER_VERTICAL
+            r.setPadding(0, a.dp(8), 0, a.dp(2))
+            if (row.icon != null) {
+                val icon = ImageView(a)
+                icon.setImageDrawable(row.icon)
+                r.addView(icon, lp(a.dp(36), a.dp(36), r = a.dp(12)))
+            } else {
+                r.addView(View(a), lp(a.dp(36), a.dp(36), r = a.dp(12)))
+            }
+            val labelCol = LinearLayout(a)
+            labelCol.orientation = LinearLayout.VERTICAL
+            labelCol.addView(a.tv(row.label, 15f, C.text))
+            labelCol.addView(a.tv(L.t("7 days: ", "৭ দিনে: ") + fmtDur(row.weekSec * 1000L), 12f, C.muted))
+            r.addView(labelCol, lp(0, WRAP, weight = 1f))
+            r.addView(a.tv(fmtDur(row.todaySec * 1000L), 14f, C.text, 1))
+            r.pressFeedback()
+            r.setOnClickListener { a.limitChoiceDialog(row.pkg, row.label, Extra.dailyLimit(a, row.pkg)) { a.go(2) } }
+            usageCard.addView(r, lp(MATCH, WRAP, t = a.dp(4)))
+            // usage bar, relative to the most-used app
+            val barWrap = LinearLayout(a)
+            barWrap.orientation = LinearLayout.HORIZONTAL
+            barWrap.background = rounded(C.card2, a.dp(3).toFloat())
+            val frac = (row.todaySec.toFloat() / maxSec.toFloat()).coerceIn(0.02f, 1f)
+            val fill = View(a)
+            fill.background = rounded(C.primary, a.dp(3).toFloat())
+            barWrap.addView(fill, lp(0, a.dp(6), weight = frac))
+            barWrap.addView(View(a), lp(0, a.dp(6), weight = 1f - frac))
+            usageCard.addView(barWrap, lp(MATCH, a.dp(6), t = a.dp(4)))
+        }
+        val yest = Extra.usageDayTotal(a, Store.dayKey(1))
+        val weekTotal = usage7.values.sum()
+        usageCard.addView(
+            a.tv(
+                L.t("Yesterday total: ", "গতকাল মোট: ") + fmtDur(yest * 1000L) + " · " +
+                    L.t("Last 7 days total: ", "গত ৭ দিন মোট: ") + fmtDur(weekTotal * 1000L),
+                12f, C.muted
+            ),
+            lp(MATCH, WRAP, t = a.dp(10))
+        )
+    }
+
+    /** (Re)builds the per-day usage log for [usageLogOffset] days ago:
+     * every app's minutes that day, most-used first, plus the day total. */
+    private fun buildUsageLogBody() {
+        usageLogLabel.text = when (usageLogOffset) {
+            0 -> L.t("Today", "আজ")
+            1 -> L.t("Yesterday", "গতকাল")
+            else -> fmtDate(Store.dayStart(System.currentTimeMillis(), -usageLogOffset))
+        }
+        usageLogBody.removeAllViews()
+        val day = Extra.usageForDay(a, Store.dayKey(usageLogOffset))
+        if (day.isEmpty()) {
+            usageLogBody.addView(
+                a.tv(L.t("No usage tracked on this day.", "এই দিনে কোনো ব্যবহার ট্র্যাক হয়নি।"), 13f, C.muted),
+                lp(MATCH, WRAP, t = a.dp(6))
+            )
+            return
+        }
+        val rows = day.entries.sortedByDescending { it.value }
+        val pm = a.packageManager
+        for ((pkg, sec) in rows.take(15)) {
+            val label = try {
+                pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+            } catch (e: Exception) {
+                pkg
+            }
+            val r = LinearLayout(a)
+            r.gravity = Gravity.CENTER_VERTICAL
+            r.setPadding(0, a.dp(6), 0, a.dp(6))
+            r.addView(a.tv(label, 14f, C.text, 1), lp(0, WRAP, weight = 1f))
+            r.addView(a.tv(fmtDur(sec * 1000L), 14f, C.text, 1))
+            usageLogBody.addView(r)
+        }
+        if (rows.size > 15) {
+            usageLogBody.addView(
+                a.tv(L.num(L.t("and ${rows.size - 15} more apps", "আরও ${rows.size - 15}টি অ্যাপ")), 12f, C.muted),
+                lp(MATCH, WRAP, t = a.dp(4))
+            )
+        }
+        val total = day.values.sum()
+        usageLogBody.addView(
+            a.tv(L.t("Total: ", "মোট: ") + fmtDur(total * 1000L), 13f, C.mint, 1),
+            lp(MATCH, WRAP, t = a.dp(8))
+        )
+    }
+
+    /** Refreshes the focus-score card from today's data. */
+    private fun refreshFocusScore() {
+        if (!::focusScoreValue.isInitialized) return
+        val fs = Extra.focusScore(a)
+        focusScoreValue.text = L.num(fs.score.toString()) + " / " + L.num("100")
+        val done = if (fs.completedToday) L.t(" · lock completed today", " · আজ লক সম্পন্ন") else ""
+        focusScoreDetail.text = L.num(
+            L.t(
+                "Focus ${fs.focusMinToday}m of ${fs.goalMin}m goal · ${fs.blocksToday} blocks resisted · ${fs.streak}-day streak$done",
+                "ফোকাস ${fs.focusMinToday} মিনিট / ${fs.goalMin} মিনিট লক্ষ্য · ${fs.blocksToday}টি ব্লক প্রতিহত · ${fs.streak} দিনের স্ট্রিক$done"
+            )
+        )
+    }
+
+    /** (Re)builds the record board from stored history: longest single lock,
+     * most locks in one day, most blocks in one day, longest streak. Because
+     * the values are computed live, a broken record shows up at once. */
+    private fun buildRecordBoardBody() {
+        recordCard.removeAllViews()
+        recordCard.addView(a.section(L.t("Record board", "রেকর্ড বোর্ড")))
+        val all = Store.sessions(a)
+        val longest = all.maxOfOrNull { it.dur } ?: 0L
+        val locksPerDay = HashMap<String, Int>()
+        for (s in all) {
+            if (!s.ok) continue
+            val k = Store.dayKeyFor(s.start)
+            locksPerDay[k] = (locksPerDay[k] ?: 0) + 1
+        }
+        val mostLocks = locksPerDay.values.maxOrNull() ?: 0
+        val blocksPerDay = HashMap<String, Int>()
+        for ((t, _) in Extra.attempts(a)) {
+            val k = Store.dayKeyFor(t)
+            blocksPerDay[k] = (blocksPerDay[k] ?: 0) + 1
+        }
+        val mostBlocks = blocksPerDay.values.maxOrNull() ?: 0
+        // longest streak: walk the stored focus days oldest-first, count the
+        // longest run of consecutive days with a completed lock
+        val focus = Store.focusDayMap(a)
+        var longestStreak = 0
+        var run = 0
+        for (i in 89 downTo 0) {
+            if ((focus[Store.dayKey(i)] ?: 0) > 0) {
+                run++
+                if (run > longestStreak) longestStreak = run
+            } else {
+                run = 0
+            }
+        }
+        fun recordRow(label: String, value: String) {
+            val r = LinearLayout(a)
+            r.gravity = Gravity.CENTER_VERTICAL
+            r.setPadding(0, a.dp(8), 0, a.dp(8))
+            r.addView(a.tv(label, 14f, C.text, 1), lp(0, WRAP, weight = 1f))
+            r.addView(a.tv(value, 15f, C.mint, 1))
+            recordCard.addView(r)
+        }
+        recordRow(L.t("Longest single lock", "সবচেয়ে লম্বা একক লক"), fmtDur(longest))
+        recordRow(L.t("Most locks in a day", "একদিনে সর্বোচ্চ লক"), L.num(mostLocks.toString()))
+        recordRow(L.t("Most blocks in a day", "একদিনে সর্বোচ্চ ব্লক"), L.num(mostBlocks.toString()))
+        recordRow(L.t("Longest streak", "সবচেয়ে লম্বা স্ট্রিক"), L.num(longestStreak.toString()) + L.t(" days", " দিন"))
     }
 
     /** Rebuilds the month grid for the current [calOffset]. */

@@ -138,6 +138,7 @@ class PowerBlockService : AccessibilityService() {
     private var blockedPkg: String? = null
     private var lastBlockPkg: String? = null
     private var lastBlockAt = 0L
+    private var lastHomeFallbackAt = 0L // throttles the HOME fallback on add failure
     private val appLabelCache = HashMap<String, String>()
 
 
@@ -267,9 +268,9 @@ class PowerBlockService : AccessibilityService() {
             // or once a real window change shows another app in front. Our own package
             // is excluded: taps on the overlay itself must not dismiss it. A daily-limit
             // block stays up without a lock — only leaving the app dismisses it.
-            if (blockOverlayAttached && !protecting() && !limitBlockActive) {
+            if (isBlockOverlayAttached() && !protecting() && !limitBlockActive) {
                 hideBlockOverlay()
-            } else if (blockOverlayAttached && e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+            } else if (isBlockOverlayAttached() && e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
                 !pkg.contains("systemui") && pkg != packageName && pkg != blockedPkg
             ) {
                 hideBlockOverlay()
@@ -352,6 +353,7 @@ class PowerBlockService : AccessibilityService() {
         val root = rootInActiveWindow ?: return
         if (root.findAccessibilityNodeInfosByText("PowerLock").isNotEmpty() && now - lastAction >= 300) {
             lastAction = now
+            Extra.logAttempt(this, "settings")
             performGlobalAction(GLOBAL_ACTION_HOME)
         }
     }
@@ -410,9 +412,11 @@ class PowerBlockService : AccessibilityService() {
 
     /**
      * Called on every window-state change: closes the previous app's time slice
-     * (persisted only for apps that have a limit) and opens one for the new app.
-     * System UI, the permission screen, our own package and the keyboard never
-     * switch the slice. At midnight the counters reset.
+     * (persisted for every app, so the Stats screen shows full screen time)
+     * and opens one for the new app. System UI, the permission screen, our own
+     * package and the keyboard never switch the slice. At midnight the counters
+     * reset. Daily limits still read from the same counters — only limited apps
+     * are ever blocked, but every app's time is now recorded.
      */
     private fun trackUsage(pkg: String) {
         try {
@@ -428,7 +432,7 @@ class PowerBlockService : AccessibilityService() {
             val prev = usagePkg
             if (prev != null && prev != pkg) {
                 val secs = (now - usageSince) / 1000
-                if (secs > 0 && limitMap.containsKey(prev)) {
+                if (secs > 0) {
                     Extra.addUsage(this, prev, secs)
                     usageToday[prev] = (usageToday[prev] ?: 0L) + secs
                 }
@@ -509,11 +513,27 @@ class PowerBlockService : AccessibilityService() {
         return root
     }
 
+    /**
+     * The block screen is attached when the flag says so OR the view itself
+     * reports attached. The flag alone can lie: if a removal fails, the flag
+     * would say "detached" while a stale view still covers the screen, and
+     * re-adding that view throws — the old code then pressed HOME on every
+     * event (kick-out) while the stale view stayed up (black screen).
+     */
+    private fun isBlockOverlayAttached(): Boolean =
+        blockOverlayAttached || (blockOverlay?.isAttachedToWindow == true)
+
+    /** Same reconciliation for the power-menu shield. */
+    private fun isShieldAttached(): Boolean =
+        overlayAttached || (overlay?.isAttachedToWindow == true)
+
     private fun showBlockOverlay(pkg: String, sub: String? = null) {
         hideOverlay() // never stack the power-menu shield under the block screen
         blockedPkg = pkg
         val subText = sub ?: L.t("This app is blocked while the lock runs", "লক চলাকালীন এই অ্যাপ ব্লক করা আছে")
-        if (blockOverlayAttached) {
+        if (isBlockOverlayAttached()) {
+            // already up: refresh the text instead of re-adding (re-adding an
+            // attached view throws IllegalStateException)
             blockOverlayTitle?.text = appLabel(pkg)
             blockOverlaySub?.text = subText
             blockOverlayMsg?.text = blockMsg
@@ -554,25 +574,49 @@ class PowerBlockService : AccessibilityService() {
         } catch (ex: Exception) {
             Log.e(TAG, "showBlockOverlay failed", ex)
             blockOverlayAttached = false
-            // fall back to the old behaviour: leave the app at once
-            performGlobalAction(GLOBAL_ACTION_HOME)
+            // fall back to the old behaviour — leave the app at once — but at
+            // most once per 3 s, or a stuck overlay failure kicks the user
+            // out on every single accessibility event
+            val now = SystemClock.uptimeMillis()
+            if (now - lastHomeFallbackAt >= 3000) {
+                lastHomeFallbackAt = now
+                performGlobalAction(GLOBAL_ACTION_HOME)
+            }
         }
     }
 
     private fun hideBlockOverlay() {
-        limitBlockActive = false
-        if (!blockOverlayAttached) {
+        val v = blockOverlay
+        if (v == null || !isBlockOverlayAttached()) {
+            // nothing is really up: clear the state without touching WindowManager
+            blockOverlayAttached = false
             blockedPkg = null
+            limitBlockActive = false
             return
         }
-        blockOverlayAttached = false
-        blockedPkg = null
         try {
-            val v = blockOverlay ?: return
+            // stop the entrance animation and reset the view so the next show
+            // starts from a clean state
+            v.animate().cancel()
+            v.alpha = 1f
+            v.scaleX = 1f
+            v.scaleY = 1f
+            blockOverlayIcon?.animate()?.cancel()
+            blockOverlayIcon?.let {
+                it.scaleX = 1f
+                it.scaleY = 1f
+            }
             val wm = getSystemService(WINDOW_SERVICE) as WindowManager
             wm.removeViewImmediate(v)
+            // only now is the screen really gone: clear the state
+            blockOverlayAttached = false
+            blockedPkg = null
+            limitBlockActive = false
         } catch (ex: Exception) {
             Log.e(TAG, "hideBlockOverlay failed", ex)
+            // removal failed: the view may still be up, so keep the block
+            // state — isBlockOverlayAttached() reconciles the flag with the
+            // view on the next check instead of trusting a stale flag
         }
     }
 
@@ -1198,6 +1242,7 @@ class PowerBlockService : AccessibilityService() {
     // ---------- blocking ----------
 
     private fun block() {
+        Extra.logAttempt(this, "power")
         showOverlay() // shield first: from this moment the slider cannot be touched
         val now = SystemClock.uptimeMillis()
         if (now - lastAction >= 100) {
@@ -1234,7 +1279,7 @@ class PowerBlockService : AccessibilityService() {
     private fun showOverlay() {
         handler.removeCallbacks(hideTask)
         handler.postDelayed(hideTask, 1400)
-        if (overlayAttached) return // never more than one shield
+        if (isShieldAttached()) return // never more than one shield
         try {
             val v = ensureOverlay()
             val sessionOn = active && System.currentTimeMillis() < endAt
@@ -1264,14 +1309,23 @@ class PowerBlockService : AccessibilityService() {
     }
 
     private fun hideOverlay() {
-        if (!overlayAttached) return
-        overlayAttached = false
+        val v = overlay
+        if (v == null || !isShieldAttached()) {
+            // nothing is really up: clear the flag without touching WindowManager
+            overlayAttached = false
+            return
+        }
         try {
-            val v = overlay ?: return
+            v.animate().cancel()
+            v.alpha = 1f
             val wm = getSystemService(WINDOW_SERVICE) as WindowManager
             wm.removeViewImmediate(v)
+            // only now is the shield really gone
+            overlayAttached = false
         } catch (ex: Exception) {
             Log.e(TAG, "hideOverlay failed", ex)
+            // removal failed: the view may still be up — isShieldAttached()
+            // reconciles the flag with the view on the next check
         }
     }
 

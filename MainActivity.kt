@@ -34,6 +34,7 @@ class MainActivity : Activity() {
     private var tab = 0
     private var lastNavTab = -1
     private var home: HomeScreen? = null
+    private var stats: StatsScreen? = null
 
     /** Selected quick-timer duration in minutes (persisted). */
     var selectedMin: Int
@@ -47,6 +48,7 @@ class MainActivity : Activity() {
             try {
                 Store.finalizeIfExpired(this@MainActivity)
                 home?.tick()
+                stats?.tick() // StatsScreen throttles itself to every 5 s
                 // widget countdown: every 30 s is enough (the service heartbeat
                 // updates it every 60 s while the app is closed)
                 if (System.currentTimeMillis() - lastWidgetRefresh >= 30_000) {
@@ -175,6 +177,7 @@ class MainActivity : Activity() {
         tab = i
         content.removeAllViews()
         home = null
+        stats = null
         val v: View = when (i) {
             0 -> {
                 val h = HomeScreen(this)
@@ -182,7 +185,11 @@ class MainActivity : Activity() {
                 h.build()
             }
             1 -> ScheduleScreen(this).build()
-            2 -> StatsScreen(this).build()
+            2 -> {
+                val s = StatsScreen(this)
+                stats = s
+                s.build()
+            }
             3 -> SettingsScreen(this).build()
             else -> ProtectionScreen(this).build()
         }

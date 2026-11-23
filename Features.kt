@@ -72,7 +72,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "52"
+    const val BUILD_ID = "53"
 
     // ---------- extend time (never reduce) ----------
 
@@ -94,7 +94,7 @@ object Extra {
 
     private val lastLog = HashMap<String, Long>()
 
-    /** kind: "power", "settings", "focus", "appblock", "reels", "msgsearch", "limit" or "image". At most one entry per kind every 3 seconds. */
+    /** kind: "power", "settings", "focus", "appblock", "reels", "msgsearch" or "limit". At most one entry per kind every 3 seconds. */
     @Synchronized
     fun logAttempt(ctx: Context, kind: String) {
         try {
@@ -233,7 +233,7 @@ object Extra {
 
     private fun usagePrefs(ctx: Context) = ctx.getSharedPreferences("usage", Context.MODE_PRIVATE)
 
-    /** Add foreground seconds for one app today (prunes days older than 7). */
+    /** Add foreground seconds for one app today (prunes days older than 30). */
     fun addUsage(ctx: Context, pkg: String, seconds: Long) {
         if (seconds <= 0) return
         try {
@@ -242,7 +242,7 @@ object Extra {
             val obj = JSONObject(p.getString("u_$day", "{}"))
             obj.put(pkg, obj.optLong(pkg, 0) + seconds)
             val e = p.edit().putString("u_$day", obj.toString())
-            val keep = (0 until 7).map { "u_" + Store.dayKey(it) }.toSet()
+            val keep = (0 until 30).map { "u_" + Store.dayKey(it) }.toSet()
             for (k in p.all.keys) if (k.startsWith("u_") && k !in keep) e.remove(k)
             e.apply()
         } catch (e: Exception) {
@@ -303,6 +303,41 @@ object Extra {
         val lim = dailyLimit(ctx, pkg)
         if (lim <= 0) return null
         return (lim * 60L - usageTodaySec(ctx, pkg)).coerceAtLeast(0L)
+    }
+
+    // ---------- daily focus score (0–100) ----------
+
+    /** Today's focus score and the numbers behind it, so the UI can explain it.
+     *
+     * Formula (fixed, so the score means the same thing every day):
+     *  - up to 50 pts: today's completed-lock minutes vs a 60-minute daily goal
+     *    (proportional — 30 minutes earns 25)
+     *  - up to 20 pts: blocks resisted today (2 pts each, capped at 10 blocks)
+     *  - up to 20 pts: current streak (2 pts per day, capped at 10 days)
+     *  - 10 pts: completed at least one lock today
+     * Total 100. A day with no lock and no blocks scores 0 + streak points. */
+    data class FocusScore(
+        val score: Int,
+        val focusMinToday: Int,
+        val goalMin: Int,
+        val blocksToday: Int,
+        val streak: Int,
+        val completedToday: Boolean
+    )
+
+    fun focusScore(ctx: Context): FocusScore {
+        val goalMin = 60
+        val focusMinToday = Store.focusDayMap(ctx)[Store.dayKey(0)] ?: 0
+        val todayStart = Store.dayStart(System.currentTimeMillis(), 0)
+        val blocksToday = attempts(ctx).count { it.first >= todayStart }
+        val streak = Store.focusStats(ctx).streak
+        val completedToday = focusMinToday > 0
+        val focusPts = (focusMinToday * 50 / goalMin).coerceIn(0, 50)
+        val blockPts = (blocksToday.coerceAtMost(10) * 2)
+        val streakPts = (streak.coerceAtMost(10) * 2)
+        val donePts = if (completedToday) 10 else 0
+        val score = (focusPts + blockPts + streakPts + donePts).coerceIn(0, 100)
+        return FocusScore(score, focusMinToday, goalMin, blocksToday, streak, completedToday)
     }
 
     // ---------- custom block-screen message ----------
@@ -2280,7 +2315,6 @@ fun MainActivity.attemptsCard(): View {
     var nReels = 0
     var nMsgSearch = 0
     var nLimit = 0
-    var nImage = 0
     for ((t, k) in list) {
         if (t >= today) nToday++
         if (t >= week) nWeek++
@@ -2291,7 +2325,6 @@ fun MainActivity.attemptsCard(): View {
             "reels" -> nReels++
             "msgsearch" -> nMsgSearch++
             "limit" -> nLimit++
-            "image" -> nImage++
             else -> nFocus++
         }
     }
@@ -2329,8 +2362,8 @@ fun MainActivity.attemptsCard(): View {
     c.addView(
         tv(
             L.t(
-                "Power menu: $nPower · App settings: $nSettings · Focus apps: $nFocus · App block: $nAppBlock · Reels block: $nReels · Search block: $nMsgSearch · Daily limit: $nLimit · Image guard: $nImage",
-                "পাওয়ার মেনু: $nPower · অ্যাপ সেটিংস: $nSettings · ফোকাস অ্যাপ: $nFocus · অ্যাপ ব্লক: $nAppBlock · রিলস ব্লক: $nReels · সার্চ ব্লক: $nMsgSearch · দৈনিক লিমিট: $nLimit · ছবি সুরক্ষা: $nImage"
+                "Power menu: $nPower · App settings: $nSettings · Focus apps: $nFocus · App block: $nAppBlock · Reels block: $nReels · Search block: $nMsgSearch · Daily limit: $nLimit",
+                "পাওয়ার মেনু: $nPower · অ্যাপ সেটিংস: $nSettings · ফোকাস অ্যাপ: $nFocus · অ্যাপ ব্লক: $nAppBlock · রিলস ব্লক: $nReels · সার্চ ব্লক: $nMsgSearch · দৈনিক লিমিট: $nLimit"
             ),
             12f, C.muted
         ),

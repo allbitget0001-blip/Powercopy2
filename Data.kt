@@ -18,7 +18,7 @@ import org.json.JSONObject
 import java.util.Calendar
 import java.util.Locale
 
-const val APP_VERSION = "2.0 Premium"
+const val APP_VERSION = "3.0"
 const val TAG = "PowerLock"
 
 /** Longest allowed session: 15 days, in minutes. */
