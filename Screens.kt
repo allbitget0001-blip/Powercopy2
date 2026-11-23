@@ -41,24 +41,12 @@ class HomeScreen(private val a: MainActivity) {
     private lateinit var lastSummaryText: TextView
     private var summaryShown = false
     private var lastSummarySig = ""
-    private val detoxDots = ArrayList<TextView>()
-    private lateinit var detoxLabel: TextView
-    private lateinit var detoxBtn: TextView
-    private var detoxSig = ""
-    private lateinit var pomLabel: TextView
-    private lateinit var pomStartBtn: TextView
-    private lateinit var pomStopBtn: TextView
-    private var pomSig = ""
-    private var lastPom: Boolean? = null
-    private lateinit var habitBox: LinearLayout
-    private var habitSig = ""
     private var badgeShown = false
     private lateinit var startBtn: LinearLayout
     private lateinit var stopBtn: LinearLayout
     private lateinit var extendBtn: LinearLayout
     private lateinit var warnBox: LinearLayout
     private val chips = ArrayList<TextView>()
-    private val tplChips = ArrayList<TextView>()
     private val quick = listOf(5, 10, 15, 30, 60)
     private val modeChips = ArrayList<TextView>()
     private val modes = listOf(UNLOCK_TIME, UNLOCK_LOC, UNLOCK_EITHER)
@@ -127,79 +115,6 @@ class HomeScreen(private val a: MainActivity) {
         sc.addView(extendBtn, lp(MATCH, a.dp(60), t = a.dp(12)))
         col.addView(sc, lp(MATCH, WRAP, t = a.dp(16)))
 
-        // ---- 7-day detox challenge: one completed lock a day, 7 days in a row ----
-        val detox = a.card(20)
-        detox.addView(a.tv(L.t("Detox challenge — 7 days", "ডিটক্স চ্যালেঞ্জ — ৭ দিন"), 18f, C.text, 1))
-        detoxLabel = a.tv("", 13f, C.muted)
-        detox.addView(detoxLabel, lp(MATCH, WRAP, t = a.dp(6)))
-        val dotsRow = LinearLayout(a)
-        dotsRow.gravity = Gravity.CENTER_VERTICAL
-        for (i in 0 until 7) {
-            val d = a.tv("○", 22f, C.muted, 1)
-            dotsRow.addView(d, lp(WRAP, WRAP, r = a.dp(8)))
-            detoxDots.add(d)
-        }
-        detox.addView(dotsRow, lp(MATCH, WRAP, t = a.dp(10)))
-        detoxBtn = a.outlineBtn("", C.primary)
-        detoxBtn.setOnClickListener {
-            Store.startDetox(a)
-            updateDetox()
-            tick()
-        }
-        detox.addView(detoxBtn, lp(MATCH, a.dp(48), t = a.dp(12)))
-        col.addView(detox, lp(MATCH, WRAP, t = a.dp(16)))
-
-        // ---- Pomodoro: 25 min focus + 5 min break, 4 rounds, then a long break ----
-        val pom = a.card(20)
-        pom.addView(a.tv(L.t("Pomodoro", "পোমোডোরো"), 18f, C.text, 1))
-        pomLabel = a.tv("", 13f, C.muted)
-        pom.addView(pomLabel, lp(MATCH, WRAP, t = a.dp(6)))
-        pomStartBtn = a.outlineBtn(L.t("Start Pomodoro", "পোমোডোরো শুরু করুন"), C.primary)
-        pomStartBtn.setOnClickListener { startPomodoro() }
-        pom.addView(pomStartBtn, lp(MATCH, a.dp(48), t = a.dp(12)))
-        pomStopBtn = a.outlineBtn(L.t("Stop Pomodoro", "পোমোডোরো বন্ধ করুন"), C.danger)
-        pomStopBtn.setOnClickListener {
-            if (Pomodoro.cancel(a)) {
-                a.toast(L.t("Pomodoro stopped", "পোমোডোরো বন্ধ হয়েছে"))
-                tick()
-            } else {
-                a.toast(L.t("Strict mode: the focus round cannot be stopped early", "স্ট্রিক্ট মোড: ফোকাস রাউন্ড আগেই বন্ধ করা যাবে না"))
-            }
-        }
-        pom.addView(pomStopBtn, lp(MATCH, a.dp(48), t = a.dp(12)))
-        col.addView(pom, lp(MATCH, WRAP, t = a.dp(16)))
-
-        // ---- habit tracker: check off today's habits, build a streak ----
-        val hab = a.card(20)
-        hab.addView(a.tv(L.t("Habit tracker", "অভ্যাস ট্র্যাকার"), 18f, C.text, 1))
-        habitBox = LinearLayout(a)
-        habitBox.orientation = LinearLayout.VERTICAL
-        hab.addView(habitBox, lp(MATCH, WRAP, t = a.dp(6)))
-        val habAdd = a.outlineBtn(L.t("+ Add a habit", "+ অভ্যাস যোগ করুন"), C.primary)
-        habAdd.setOnClickListener { addHabitDialog() }
-        hab.addView(habAdd, lp(MATCH, a.dp(48), t = a.dp(12)))
-        col.addView(hab, lp(MATCH, WRAP, t = a.dp(16)))
-
-        // ---- lock templates: one tap starts a lock with that duration ----
-        col.addView(a.heading(L.t("Lock templates", "লক টেমপ্লেট")), lp(MATCH, WRAP, t = a.dp(26), b = a.dp(4)))
-        val templates = listOf(
-            25 to L.t("Focus 25 min", "ফোকাস ২৫ মিনিট"),
-            120 to L.t("Study 2 h", "পড়াশোনা ২ ঘণ্টা"),
-            60 to L.t("Work 1 h", "কাজ ১ ঘণ্টা"),
-            480 to L.t("Sleep 8 h", "ঘুম ৮ ঘণ্টা")
-        )
-        val tplRow1 = LinearLayout(a)
-        val tplRow2 = LinearLayout(a)
-        for ((i, t) in templates.withIndex()) {
-            val c = a.chip(t.second, false)
-            c.setOnClickListener { startTemplate(t.first) }
-            tplChips.add(c)
-            val target = if (i < 2) tplRow1 else tplRow2
-            target.addView(c, lp(0, a.dp(56), r = if (i % 2 == 0) a.dp(10) else 0, t = a.dp(10), weight = 1f))
-        }
-        col.addView(tplRow1)
-        col.addView(tplRow2)
-
         // ---- duration ----
         col.addView(a.heading(L.t("Select Lock Duration", "লক সময় বাছুন")), lp(MATCH, WRAP, t = a.dp(26), b = a.dp(4)))
         val row1 = LinearLayout(a)
@@ -258,9 +173,6 @@ class HomeScreen(private val a: MainActivity) {
         destRow.pressFeedback()
         col.addView(destRow, lp(MATCH, WRAP, t = a.dp(10)))
 
-        // ---- presets ----
-        col.addView(a.presetsCard { refreshChips(true); tick() })
-
         // ---- schedule card ----
         val scd = a.card(20)
         scd.addView(a.tv(L.t("Schedule", "সময়সূচি"), 22f, C.text, 1))
@@ -294,39 +206,21 @@ class HomeScreen(private val a: MainActivity) {
 
     private fun refreshChips(animate: Boolean = false) {
         val active = Store.isActive(a)
-        val pom = Pomodoro.state(a).active
         // location-only mode has no duration: the chips stay visible but dimmed
         val locOnly = unlockMode() == UNLOCK_LOC
         for ((i, c) in chips.withIndex()) {
             val sel = if (i < quick.size) quick[i] == a.selectedMin else !quick.contains(a.selectedMin)
             if (animate) a.animateChip(c, sel) else a.styleChip(c, sel)
-            c.alpha = if (active || locOnly || pom) 0.4f else 1f
+            c.alpha = if (active || locOnly) 0.4f else 1f
         }
-        for (c in tplChips) c.alpha = if (active || pom) 0.4f else 1f
     }
 
     private fun pick(m: Int) {
         if (Store.isActive(a)) return
-        if (Pomodoro.state(a).active) return
         if (unlockMode() == UNLOCK_LOC) return
         a.selectedMin = m
         refreshChips(true)
         tick()
-    }
-
-    /** A template is a time-only lock: set the duration + mode, then use the normal start flow. */
-    private fun startTemplate(min: Int) {
-        if (Store.isActive(a)) return
-        if (Pomodoro.state(a).active) return
-        if (!Perm.accessibilityOn(a)) {
-            a.toast(L.t("Enable Accessibility first", "আগে Accessibility চালু করুন"))
-            return
-        }
-        setUnlockMode(UNLOCK_TIME)
-        a.selectedMin = min
-        refreshChips(true)
-        refreshModeChips()
-        startTimeSession()
     }
 
     // ---------- unlock condition (time / location / either) ----------
@@ -533,7 +427,6 @@ class HomeScreen(private val a: MainActivity) {
         val now = System.currentTimeMillis()
         // backup arrival check (the service listener is the main path)
         if (Store.unlockTarget(a) != null) PlaceWatcher.checkUnlockLastKnown(a)
-        Pomodoro.sync(a) // advance the Pomodoro set when a phase is over
         val active = Store.isActive(a)
         val st = statusOf(a, active, now)
         applyStatus(st)
@@ -543,32 +436,7 @@ class HomeScreen(private val a: MainActivity) {
         var total = p.getLong("total", 1)
         if (total < 1) total = 1
         val strict = active && p.getBoolean("s_strict", false)
-        val pom = Pomodoro.state(a)
-        val pomBreak = pom.active && pom.phase != Pomodoro.PHASE_FOCUS
-        if (pomBreak) {
-            // Pomodoro break: no lock session, the ring counts the break down
-            val left = pom.phaseEnd - now
-            val phaseTotal = if (pom.phaseTotal > 0) pom.phaseTotal else 1L
-            val long = pom.phase == Pomodoro.PHASE_LONG
-            ring.active = true
-            ring.icon = Ic.CLOCK
-            ring.main = fmtHms(left)
-            ring.mainColor = C.mint
-            ring.sub = if (long) L.t("Long break", "লম্বা বিরতি") else L.t("Break", "বিরতি")
-            var frac = left.toFloat() / phaseTotal.toFloat()
-            if (frac < 0f) frac = 0f
-            if (frac > 1f) frac = 1f
-            ring.animateTo(frac)
-            titleText.setTextAnimated(
-                if (long) L.t("Long break", "লম্বা বিরতি চলছে") else L.t("Break time", "বিরতি চলছে")
-            )
-            subText.setTextAnimated(
-                if (long) L.t("Pomodoro · the set ends after this break", "Pomodoro · এই বিরতির পর সেট শেষ")
-                else L.t("Pomodoro · next: focus ${pom.round + 1}/4", "Pomodoro · পরের ফোকাস ${L.num((pom.round + 1).toString())}/৪")
-            )
-            previewText.text = L.t("Session in progress · ", "সেশন চলছে · ") +
-                L.t("Pomodoro break", "Pomodoro বিরতি")
-        } else if (active) {
+        if (active) {
             val mode = Store.unlockMode(a)
             val target = Store.unlockTarget(a)
             if (mode == UNLOCK_LOC && target != null) {
@@ -610,13 +478,6 @@ class HomeScreen(private val a: MainActivity) {
                     )
                     previewText.text = L.t("Session in progress · ", "সেশন চলছে · ") + fmtDur(total)
                 }
-                if (pom.active && pom.phase == Pomodoro.PHASE_FOCUS) {
-                    subText.setTextAnimated(
-                        L.t("Pomodoro · Focus ${pom.round}/4", "Pomodoro · ফোকাস ${L.num(pom.round.toString())}/৪")
-                    )
-                    previewText.text = L.t("Session in progress · ", "সেশন চলছে · ") +
-                        L.t("Pomodoro focus ${pom.round}/4", "Pomodoro ফোকাস ${L.num(pom.round.toString())}/৪")
-                }
             }
         } else {
             val sel = a.selectedMin * 60_000L
@@ -647,21 +508,17 @@ class HomeScreen(private val a: MainActivity) {
             }
         }
         ring.invalidate()
-        showView(startBtn, !active && !pom.active)
+        showView(startBtn, !active)
         showView(stopBtn, active && !strict)
-        // location-only sessions have no timer to extend; a Pomodoro phase must not be extended
-        showView(extendBtn, active && Store.unlockMode(a) != UNLOCK_LOC && !pom.active)
-        if (lastActive != active || lastPom != pom.active) {
+        // location-only sessions have no timer to extend
+        showView(extendBtn, active && Store.unlockMode(a) != UNLOCK_LOC)
+        if (lastActive != active) {
             lastActive = active
-            lastPom = pom.active
             refreshChips()
             refreshModeChips()
         }
         updateWarnings()
         updateLastSummary()
-        updateDetox()
-        updatePomodoro()
-        updateHabits()
         maybeShowSummary()
         maybeShowBadge()
     }
@@ -705,246 +562,6 @@ class HomeScreen(private val a: MainActivity) {
                 L.t("Focus time: ", "ফোকাস সময়: ") + fmtDur(s.durMs) + "\n" + blocksTxt
             )
             .setPositiveButton(L.t("Great!", "ভালো হয়েছে!"), null)
-            .show()
-    }
-
-    /** Detox challenge dots + label + button. Re-renders only when the state changes. */
-    private fun updateDetox() {
-        val st = Store.detoxState(a)
-        val sig = st.mode + ":" + st.checked + ":" + st.startKey
-        if (sig == detoxSig) return
-        detoxSig = sig
-        val today = Store.dayKey(0)
-        for (i in detoxDots.indices) {
-            val d = detoxDots[i]
-            val done = st.dots.getOrNull(i) == true
-            val dayKey = st.days.getOrNull(i) ?: ""
-            when {
-                done -> {
-                    d.text = "●"
-                    d.setTextColor(C.mint)
-                }
-                st.mode != "none" && dayKey.isNotEmpty() && dayKey < today -> {
-                    d.text = "●"
-                    d.setTextColor(C.danger)
-                }
-                else -> {
-                    d.text = "○"
-                    d.setTextColor(C.muted)
-                }
-            }
-        }
-        when (st.mode) {
-            "done" -> {
-                detoxLabel.text = L.t("Challenge complete — 7 out of 7 days!", "চ্যালেঞ্জ সম্পন্ন — ৭ দিনের ৭ দিনই!")
-                detoxBtn.text = L.t("Start a new challenge", "নতুন চ্যালেঞ্জ শুরু করুন")
-                detoxBtn.visibility = View.VISIBLE
-                if (!Store.detoxCelebrated(a)) {
-                    Store.markDetoxCelebrated(a)
-                    a.dlg()
-                        .setTitle(L.t("Challenge complete!", "চ্যালেঞ্জ সম্পন্ন!"))
-                        .setMessage(L.t("You completed a lock every day for 7 days straight. Well done!", "টানা ৭ দিন প্রতিদিন লক সম্পন্ন করেছেন। অভিনন্দন!"))
-                        .setPositiveButton(L.t("Thank you!", "ধন্যবাদ!"), null)
-                        .show()
-                }
-            }
-            "broken" -> {
-                detoxLabel.text = L.t("Day missed — the challenge broke. Start again!", "এক দিন মিস হয়েছে — চ্যালেঞ্জ ভেঙে গেছে। আবার শুরু করুন!")
-                detoxBtn.text = L.t("Restart challenge", "চ্যালেঞ্জ আবার শুরু করুন")
-                detoxBtn.visibility = View.VISIBLE
-            }
-            "active" -> {
-                detoxLabel.text = L.t("Complete a lock every day", "প্রতিদিন একটা লক সম্পন্ন করুন") +
-                    " · " + L.num(st.checked.toString()) + "/7"
-                detoxBtn.text = L.t("Restart challenge", "চ্যালেঞ্জ আবার শুরু করুন")
-                detoxBtn.visibility = View.VISIBLE
-            }
-            else -> {
-                detoxLabel.text = L.t("One completed lock a day, for 7 days in a row.", "টানা ৭ দিন, প্রতিদিন একটা লক সম্পন্ন করুন।")
-                detoxBtn.text = L.t("Start challenge", "চ্যালেঞ্জ শুরু করুন")
-                detoxBtn.visibility = View.VISIBLE
-            }
-        }
-    }
-
-    /** Pomodoro card: status label + start/stop buttons. Re-renders only when the phase changes. */
-    private fun updatePomodoro() {
-        val st = Pomodoro.state(a)
-        val sig = "${st.active}:${st.phase}:${st.round}"
-        if (sig == pomSig) return
-        pomSig = sig
-        when {
-            !st.active -> {
-                pomLabel.text = L.t(
-                    "25 min focus + 5 min break, 4 rounds, then a 15 min long break.",
-                    "২৫ মিনিট ফোকাস + ৫ মিনিট বিরতি, ৪ রাউন্ড, তারপর ১৫ মিনিটের লম্বা বিরতি।"
-                )
-                pomStartBtn.visibility = View.VISIBLE
-                pomStopBtn.visibility = View.GONE
-            }
-            st.phase == Pomodoro.PHASE_FOCUS -> {
-                pomLabel.text = L.t("Focus round ${st.round}/4 is running.", "ফোকাস রাউন্ড ${L.num(st.round.toString())}/৪ চলছে।")
-                pomStartBtn.visibility = View.GONE
-                pomStopBtn.visibility = View.GONE // use the main Stop button (with the code)
-            }
-            st.phase == Pomodoro.PHASE_LONG -> {
-                pomLabel.text = L.t("Long break — the set ends after this.", "লম্বা বিরতি চলছে — এর পর সেট শেষ।")
-                pomStartBtn.visibility = View.GONE
-                pomStopBtn.visibility = View.VISIBLE
-            }
-            else -> {
-                pomLabel.text = L.t(
-                    "Break — next: focus round ${st.round + 1}/4.",
-                    "বিরতি চলছে — পরের ফোকাস রাউন্ড ${L.num((st.round + 1).toString())}/৪।"
-                )
-                pomStartBtn.visibility = View.GONE
-                pomStopBtn.visibility = View.VISIBLE
-            }
-        }
-    }
-
-    private fun startPomodoro() {
-        if (Store.isActive(a) || Pomodoro.state(a).active) return
-        if (!Perm.accessibilityOn(a)) {
-            a.toast(L.t("Enable Accessibility first", "আগে Accessibility চালু করুন"))
-            return
-        }
-        a.dlg()
-            .setTitle(L.t("Start Pomodoro?", "পোমোডোরো শুরু করবেন?"))
-            .setMessage(
-                L.t(
-                    "4 focus rounds of 25 minutes with 5-minute breaks, then a 15-minute long break. Protection is on during focus rounds.",
-                    "২৫ মিনিটের ৪টা ফোকাস রাউন্ড, মাঝে ৫ মিনিটের বিরতি, শেষে ১৫ মিনিটের লম্বা বিরতি। ফোকাসের সময় প্রটেকশন চালু থাকবে।"
-                )
-            )
-            .setPositiveButton(L.t("Start", "শুরু করুন")) { _, _ ->
-                if (Pomodoro.start(a)) {
-                    a.toast(L.t("Pomodoro started — focus round 1", "পোমোডোরো শুরু — ফোকাস রাউন্ড ১"))
-                    tick()
-                }
-            }
-            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
-            .show()
-    }
-
-    /** Habit checklist. Rebuilds only when the habits or today's checks change. */
-    private fun updateHabits() {
-        val habits = Store.habits(a)
-        val checks = Store.habitChecks(a)
-        val today = Store.dayKey(0)
-        val sig = habits.joinToString("|") { "${it.id}:${it.name}" } + "#" +
-            habits.joinToString("|") { if (today in (checks[it.id] ?: emptySet())) "1" else "0" }
-        if (sig == habitSig) return
-        habitSig = sig
-        habitBox.removeAllViews()
-        if (habits.isEmpty()) {
-            habitBox.addView(
-                a.tv(L.t("No habits yet. Add one below — e.g. drinking water, reading, exercise.", "এখনো কোনো অভ্যাস নেই। নিচে যোগ করুন — যেমন পানি খাওয়া, পড়া, ব্যায়াম।"), 13f, C.muted),
-                lp(MATCH, WRAP, t = a.dp(4))
-            )
-            return
-        }
-        for (h in habits) {
-            val done = today in (checks[h.id] ?: emptySet())
-            val streak = Store.habitStreak(a, h.id)
-            val r = LinearLayout(a)
-            r.gravity = Gravity.CENTER_VERTICAL
-            r.setPadding(0, a.dp(8), 0, a.dp(8))
-            val box = a.tv(if (done) "☑" else "☐", 22f, if (done) C.mint else C.muted, 1)
-            r.addView(box, lp(WRAP, WRAP, r = a.dp(12)))
-            val name = a.tv(h.name, 15f, if (done) C.mint else C.text, 1)
-            r.addView(name, lp(0, WRAP, weight = 1f))
-            if (streak > 0) {
-                r.addView(a.tv(L.num(streak.toString()) + " " + L.t("day streak", "দিনের স্ট্রিক"), 12f, C.muted))
-            }
-            r.pressFeedback()
-            r.setOnClickListener {
-                Store.toggleHabit(a, h.id)
-                updateHabits()
-            }
-            r.setOnLongClickListener {
-                habitOptionsDialog(h)
-                true
-            }
-            habitBox.addView(r)
-        }
-    }
-
-    private fun addHabitDialog() {
-        val et = a.edit(L.t("Habit name (e.g. Drink water)", "অভ্যাসের নাম (যেমন পানি খাওয়া)"), false)
-        val box = LinearLayout(a)
-        box.orientation = LinearLayout.VERTICAL
-        box.setPadding(a.dp(24), a.dp(8), a.dp(24), 0)
-        box.addView(et)
-        val d = a.dlg()
-            .setTitle(L.t("Add a habit", "অভ্যাস যোগ করুন"))
-            .setView(box)
-            .setPositiveButton(L.t("Add", "যোগ করুন"), null)
-            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
-            .create()
-        d.show()
-        d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-            val name = et.text.toString().trim()
-            if (name.isEmpty()) {
-                et.error = L.t("Write a name", "নাম লিখুন")
-            } else {
-                Store.addHabit(a, name.take(40))
-                d.dismiss()
-                updateHabits()
-            }
-        }
-    }
-
-    private fun habitOptionsDialog(h: Habit) {
-        a.dlg()
-            .setTitle(h.name)
-            .setItems(
-                arrayOf(
-                    L.t("Rename", "নাম বদলান"),
-                    L.t("Delete", "মুছে ফেলুন")
-                )
-            ) { _, which ->
-                if (which == 0) renameHabitDialog(h) else deleteHabit(h)
-            }
-            .show()
-    }
-
-    private fun renameHabitDialog(h: Habit) {
-        val et = a.edit(L.t("Habit name", "অভ্যাসের নাম"), false)
-        et.setText(h.name)
-        val box = LinearLayout(a)
-        box.orientation = LinearLayout.VERTICAL
-        box.setPadding(a.dp(24), a.dp(8), a.dp(24), 0)
-        box.addView(et)
-        val d = a.dlg()
-            .setTitle(L.t("Rename habit", "অভ্যাসের নাম বদলান"))
-            .setView(box)
-            .setPositiveButton(L.t("Save", "সেভ করুন"), null)
-            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
-            .create()
-        d.show()
-        d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-            val name = et.text.toString().trim()
-            if (name.isEmpty()) {
-                et.error = L.t("Write a name", "নাম লিখুন")
-            } else {
-                val list = Store.habits(a).map { if (it.id == h.id) it.copy(name = name.take(40)) else it }
-                Store.saveHabits(a, list)
-                d.dismiss()
-                updateHabits()
-            }
-        }
-    }
-
-    private fun deleteHabit(h: Habit) {
-        a.dlg()
-            .setTitle(L.t("Delete this habit?", "এই অভ্যাস মুছে ফেলবেন?"))
-            .setMessage(h.name)
-            .setPositiveButton(L.t("Delete", "মুছে ফেলুন")) { _, _ ->
-                Store.saveHabits(a, Store.habits(a).filter { it.id != h.id })
-                updateHabits()
-            }
-            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
             .show()
     }
 
@@ -1016,7 +633,6 @@ class HomeScreen(private val a: MainActivity) {
 
     private fun onStart() {
         if (Store.isActive(a)) return
-        if (Pomodoro.state(a).active) return
         if (!Perm.accessibilityOn(a)) {
             a.toast(L.t("Enable Accessibility first", "আগে Accessibility চালু করুন"))
             return
@@ -1174,7 +790,6 @@ class HomeScreen(private val a: MainActivity) {
 
     private fun customDialog() {
         if (Store.isActive(a)) return
-        if (Pomodoro.state(a).active) return
         if (unlockMode() == UNLOCK_LOC) return
         val box = LinearLayout(a)
         box.orientation = LinearLayout.VERTICAL
