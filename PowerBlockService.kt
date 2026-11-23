@@ -115,6 +115,16 @@ class PowerBlockService : AccessibilityService() {
     private var usageSince = 0L
     private var usageDay = ""
     private val usageToday = HashMap<String, Long>()
+    // Usage history: the session currently being timed (wall clock for display,
+    // uptime for the duration so a wall-clock change can't stretch it).
+    private var histPkg: String? = null
+    private var histOpenWall = 0L
+    private var histOpenUptime = 0L
+    // Last closed session, for the 30 s merge rule (a quick re-open resumes it).
+    private var lastClosedPkg: String? = null
+    private var lastClosedUptime = 0L
+    private var lastClosedOpenWall = 0L
+    private var lastClosedOpenUptime = 0L
     private var imePkg: String? = null
     private var imeCheckedAt = 0L
     private var limitBlockActive = false // the overlay is up for a daily limit (no lock needed)
@@ -420,6 +430,7 @@ class PowerBlockService : AccessibilityService() {
             usageDay = Store.dayKey(0)
             usageToday.clear()
             usageToday.putAll(Extra.usageTodayAll(this))
+            flushRestartHistorySession()
         } catch (e: Exception) {
             Log.e(TAG, "loadUsage failed", e)
         }
@@ -464,14 +475,80 @@ class PowerBlockService : AccessibilityService() {
                     Extra.addUsage(this, prev, secs)
                     usageToday[prev] = (usageToday[prev] ?: 0L) + secs
                 }
+                closeHistorySession(now)
             }
             if (prev != pkg) {
                 usagePkg = pkg
                 usageSince = now
                 Extra.setLiveSlice(this, pkg, now, day)
+                openHistorySession(pkg, now)
             }
         } catch (e: Exception) {
             Log.e(TAG, "trackUsage failed", e)
+        }
+    }
+
+    /**
+     * Close the history session being timed (if any) and log it. The close
+     * time is derived from the uptime delta so a wall-clock change mid-session
+     * can't stretch or shrink the entry.
+     */
+    private fun closeHistorySession(nowUptime: Long) {
+        val pkg = histPkg ?: return
+        try {
+            val closeWall = histOpenWall + (nowUptime - histOpenUptime)
+            Extra.addHistoryEntry(this, pkg, histOpenWall, closeWall)
+            lastClosedPkg = pkg
+            lastClosedUptime = nowUptime
+            lastClosedOpenWall = histOpenWall
+            lastClosedOpenUptime = histOpenUptime
+        } catch (e: Exception) {
+            Log.e(TAG, "closeHistorySession failed", e)
+        }
+        histPkg = null
+        Extra.setOpenHistory(this, null, 0L, 0L)
+    }
+
+    /**
+     * Start timing a history session for [pkg]. If the same app closed less
+     * than 30 s ago, the closed entry is removed and the session resumes from
+     * its original open time (rapid switching doesn't spam the log).
+     */
+    private fun openHistorySession(pkg: String, nowUptime: Long) {
+        val nowWall = System.currentTimeMillis()
+        val lastPkg = lastClosedPkg
+        if (lastPkg != null && lastPkg == pkg && nowUptime - lastClosedUptime < 30_000L) {
+            if (Extra.removeLastHistoryEntry(this, pkg, lastClosedOpenWall)) {
+                histPkg = pkg
+                histOpenWall = lastClosedOpenWall
+                histOpenUptime = lastClosedOpenUptime
+                Extra.setOpenHistory(this, pkg, histOpenWall, histOpenUptime)
+                return
+            }
+        }
+        histPkg = pkg
+        histOpenWall = nowWall
+        histOpenUptime = nowUptime
+        Extra.setOpenHistory(this, pkg, nowWall, nowUptime)
+    }
+
+    /**
+     * A previous service instance may have died mid-session: flush its
+     * persisted open session with the restart time as the close time. A
+     * session older than 12 h is stale (the screen would have gone off) and
+     * is dropped instead of logged.
+     */
+    private fun flushRestartHistorySession() {
+        try {
+            val (pkg, openWall, _) = Extra.openHistory(this)
+            if (pkg == null) return
+            val nowWall = System.currentTimeMillis()
+            if (nowWall > openWall && nowWall - openWall < 12L * 60 * 60 * 1000) {
+                Extra.addHistoryEntry(this, pkg, openWall, nowWall)
+            }
+            Extra.setOpenHistory(this, null, 0L, 0L)
+        } catch (e: Exception) {
+            Log.e(TAG, "flushRestartHistorySession failed", e)
         }
     }
 
@@ -486,6 +563,7 @@ class PowerBlockService : AccessibilityService() {
             }
             usagePkg = null
             Extra.setLiveSlice(this, null, 0L, "")
+            closeHistorySession(SystemClock.uptimeMillis())
         } catch (e: Exception) {
             Log.e(TAG, "screen-off usage flush failed", e)
         }
@@ -1325,6 +1403,7 @@ class PowerBlockService : AccessibilityService() {
     }
 
     private fun cleanup() {
+        closeHistorySession(SystemClock.uptimeMillis())
         handler.removeCallbacksAndMessages(null)
         hideOverlay()
         hideBlockOverlay()

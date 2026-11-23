@@ -78,7 +78,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "55"
+    const val BUILD_ID = "56"
 
     // ---------- presets ----------
 
@@ -392,6 +392,99 @@ object Extra {
             Triple(p.getString("live_pkg", null), p.getLong("live_since", 0L), p.getString("live_day", "") ?: "")
         } catch (e: Exception) {
             Triple(null, 0L, "")
+        }
+    }
+
+    // ---------- usage history (per-session open/close times, kept 7 days) ----------
+
+    private const val HIST_MAX = 1000
+
+    /** Append one closed session (open/close are wall-clock ms). Prunes entries older than 7 days. */
+    fun addHistoryEntry(ctx: Context, pkg: String, openWall: Long, closeWall: Long) {
+        if (closeWall <= openWall) return
+        try {
+            val p = usagePrefs(ctx)
+            val old = try {
+                JSONArray(p.getString("hist", "[]"))
+            } catch (e: Exception) {
+                JSONArray()
+            }
+            val cutoff = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000
+            val out = JSONArray()
+            for (i in 0 until old.length()) {
+                val o = old.getJSONObject(i)
+                if (o.optLong("o", 0) >= cutoff) out.put(o)
+            }
+            // cap at 1000 entries (drop the oldest)
+            val trimmed = JSONArray()
+            val from = if (out.length() >= HIST_MAX) out.length() - (HIST_MAX - 1) else 0
+            for (i in from until out.length()) trimmed.put(out.get(i))
+            val o = JSONObject()
+            o.put("p", pkg)
+            o.put("o", openWall)
+            o.put("c", closeWall)
+            trimmed.put(o)
+            p.edit().putString("hist", trimmed.toString()).apply()
+        } catch (e: Exception) {
+            Log.e(TAG, "history save failed", e)
+        }
+    }
+
+    /** All stored sessions, newest first. */
+    fun historyEntries(ctx: Context): List<UsageSession> {
+        val out = ArrayList<UsageSession>()
+        try {
+            val arr = JSONArray(usagePrefs(ctx).getString("hist", "[]"))
+            for (i in arr.length() - 1 downTo 0) {
+                val o = arr.getJSONObject(i)
+                out.add(UsageSession(o.optString("p", ""), o.optLong("o", 0), o.optLong("c", 0)))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "history read failed", e)
+        }
+        return out
+    }
+
+    /** Remove the newest entry if it matches pkg + open time (used to merge a quick re-open). */
+    fun removeLastHistoryEntry(ctx: Context, pkg: String, openWall: Long): Boolean {
+        try {
+            val p = usagePrefs(ctx)
+            val old = JSONArray(p.getString("hist", "[]"))
+            if (old.length() == 0) return false
+            val last = old.getJSONObject(old.length() - 1)
+            if (last.optString("p", "") != pkg || last.optLong("o", 0) != openWall) return false
+            val out = JSONArray()
+            for (i in 0 until old.length() - 1) out.put(old.get(i))
+            p.edit().putString("hist", out.toString()).apply()
+            return true
+        } catch (e: Exception) {
+            Log.e(TAG, "history remove failed", e)
+        }
+        return false
+    }
+
+    /** The session the service is currently timing: persisted so a restart can flush it. */
+    fun setOpenHistory(ctx: Context, pkg: String?, openWall: Long, openUptime: Long) {
+        try {
+            val e = usagePrefs(ctx).edit()
+            if (pkg == null) {
+                e.remove("h_open_pkg").remove("h_open_wall").remove("h_open_up")
+            } else {
+                e.putString("h_open_pkg", pkg).putLong("h_open_wall", openWall).putLong("h_open_up", openUptime)
+            }
+            e.apply()
+        } catch (e: Exception) {
+            Log.e(TAG, "open history save failed", e)
+        }
+    }
+
+    /** (package, open wall ms, open uptime ms) of the session being timed, or (null, 0, 0). */
+    fun openHistory(ctx: Context): Triple<String?, Long, Long> {
+        return try {
+            val p = usagePrefs(ctx)
+            Triple(p.getString("h_open_pkg", null), p.getLong("h_open_wall", 0L), p.getLong("h_open_up", 0L))
+        } catch (e: Exception) {
+            Triple(null, 0L, 0L)
         }
     }
 

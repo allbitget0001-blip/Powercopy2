@@ -2235,6 +2235,80 @@ class StatsScreen(private val a: MainActivity) {
         }
         col.addView(usageCard, lp(MATCH, WRAP, b = a.dp(14)))
 
+        // usage history: per-session open/close times, grouped by day, newest first.
+        val histCard = a.card()
+        histCard.addView(a.section(L.t("Usage history", "ব্যবহারের হিস্ট্রি")))
+        val hist = Extra.historyEntries(a)
+        if (hist.isEmpty()) {
+            histCard.addView(
+                a.tv(L.t("No history yet — recording starts from this version. Accessibility must be on to track app time.", "এখনো কোনো হিস্ট্রি নেই — এই ভার্সন থেকে রেকর্ড শুরু হয়েছে। অ্যাপের সময় ট্র্যাক করতে Accessibility চালু থাকতে হবে।"), 13f, C.muted),
+                lp(MATCH, WRAP, t = a.dp(6))
+            )
+        } else {
+            val pm = a.packageManager
+            val labelCache = HashMap<String, String>()
+            val iconCache = HashMap<String, Drawable?>()
+            val byDay = LinkedHashMap<String, ArrayList<UsageSession>>()
+            for (s in hist.take(200)) {
+                byDay.getOrPut(Store.dayKeyFor(s.open)) { ArrayList() }.add(s)
+            }
+            val todayKey = Store.dayKey(0)
+            val yestKey = Store.dayKey(1)
+            for ((dayKey, sessions) in byDay) {
+                val dayLabel = when (dayKey) {
+                    todayKey -> L.t("Today", "আজ")
+                    yestKey -> L.t("Yesterday", "গতকাল")
+                    else -> fmtDate(sessions.first().open)
+                }
+                val dayTotalMs = sessions.sumOf { (it.close - it.open).coerceAtLeast(0L) }
+                val header = LinearLayout(a)
+                header.gravity = Gravity.CENTER_VERTICAL
+                header.addView(a.tv(dayLabel, 14f, C.text, 1), lp(0, WRAP, weight = 1f))
+                header.addView(a.tv(fmtDur(dayTotalMs), 13f, C.muted))
+                histCard.addView(header, lp(MATCH, WRAP, t = a.dp(12)))
+                for (s in sessions) {
+                    val r = LinearLayout(a)
+                    r.gravity = Gravity.CENTER_VERTICAL
+                    r.setPadding(0, a.dp(6), 0, a.dp(6))
+                    val icon = iconCache.getOrPut(s.pkg) {
+                        try {
+                            pm.getApplicationIcon(pm.getApplicationInfo(s.pkg, 0))
+                        } catch (e: Exception) {
+                            null
+                        }
+                    }
+                    if (icon != null) {
+                        val iv = ImageView(a)
+                        iv.setImageDrawable(icon)
+                        r.addView(iv, lp(a.dp(32), a.dp(32), r = a.dp(10)))
+                    } else {
+                        r.addView(View(a), lp(a.dp(32), a.dp(32), r = a.dp(10)))
+                    }
+                    val label = labelCache.getOrPut(s.pkg) {
+                        try {
+                            pm.getApplicationLabel(pm.getApplicationInfo(s.pkg, 0)).toString()
+                        } catch (e: Exception) {
+                            s.pkg
+                        }
+                    }
+                    val labelCol = LinearLayout(a)
+                    labelCol.orientation = LinearLayout.VERTICAL
+                    labelCol.addView(a.tv(label, 14f, C.text))
+                    labelCol.addView(a.tv(fmtClock(s.open) + " – " + fmtClock(s.close), 12f, C.muted))
+                    r.addView(labelCol, lp(0, WRAP, weight = 1f))
+                    r.addView(a.tv(fmtDur(s.close - s.open), 13f, C.text, 1))
+                    histCard.addView(r, lp(MATCH, WRAP))
+                }
+            }
+            if (hist.size > 200) {
+                histCard.addView(
+                    a.tv(L.t("Showing the latest 200 sessions", "সর্বশেষ ২০০টি সেশন দেখানো হচ্ছে"), 12f, C.muted),
+                    lp(MATCH, WRAP, t = a.dp(8))
+                )
+            }
+        }
+        col.addView(histCard, lp(MATCH, WRAP, b = a.dp(14)))
+
         // temptation counter: blocked/limited apps the user tried to open
         col.addView(a.attemptsCard(), lp(MATCH, WRAP, b = a.dp(14)))
 

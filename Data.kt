@@ -103,6 +103,9 @@ data class FocusNote(val id: Long, val text: String, val time: Long, val duringL
 /** One task in today's plan: optional reminder time in minutes since midnight (-1 = none). */
 data class PlanTask(val id: Long, val title: String, val timeMin: Int, val done: Boolean)
 
+/** One usage-history session: which app, opened when, closed when (wall-clock ms). */
+data class UsageSession(val pkg: String, val open: Long, val close: Long)
+
 // ---------- formatting helpers ----------
 
 fun dayIdx(c: Calendar): Int = (c.get(Calendar.DAY_OF_WEEK) + 5) % 7
