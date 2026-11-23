@@ -38,7 +38,6 @@ class KeepAliveService : Service() {
             Store.lock(this).edit().putLong("kas_heartbeat", System.currentTimeMillis()).apply()
             // backup arrival check for a location-unlock session (cheap, last known fix only)
             PlaceWatcher.checkUnlockLastKnown(this)
-            Pomodoro.sync(this) // advance the Pomodoro set when a phase is over
             Routine.sweep(this) // a routine task may have become overdue while the app is closed
             Scheduler.onAlarm(this) // a schedule window may have opened (e.g. missed while another lock ran)
             PlaceWatcher.sync(this) // retry the watcher if it never registered (location was off)
@@ -199,7 +198,6 @@ class KeepAliveService : Service() {
             PlaceWatcher.sync(this) // resume location watching after a restart/reboot
             PlaceWatcher.checkNow(this) // already at a saved place? lock right away
             PlaceWatcher.checkUnlockNow(this) // location-unlock session? check arrival right away
-            Pomodoro.sync(this) // a Pomodoro phase may have ended while the service was dead
             Watchdog.enqueue(this) // safety net: restart the service every 15 min if it dies
         } catch (e: Exception) {
             Log.e(TAG, "KeepAliveService start failed", e)

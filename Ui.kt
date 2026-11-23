@@ -85,7 +85,7 @@ object C {
         Pair("Ice", "বরফ")
     )
 
-    /** Progress-locked accents: same shape as ACCENTS, unlocked by level/streak (see ThemeUnlocks). */
+    /** Progress-locked accents: same shape as ACCENTS, unlocked by streak (see ThemeUnlocks); the first two are open outright. */
     val UNLOCK_ACCENTS = listOf(
         arrayOf("#E53935", "#FFCDD2", "#3B0A0A", "#7D1F1F", "#6B2A2A"), // crimson
         arrayOf("#7CB342", "#DCEDC8", "#1E2E0A", "#558B2F", "#4A5D23"), // lime

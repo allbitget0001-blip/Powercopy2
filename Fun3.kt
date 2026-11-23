@@ -276,8 +276,9 @@ object Records {
 /**
  * Theme unlocks: 4 more accent colours in the Settings picker that unlock by
  * progress (indices 8..11 in C.allAccents(), after the 5 base + 3 wheel-only
- * accents). Conditions are checked live from XP level + focus streak — no
- * stored unlock flags.
+ * accents). Conditions are checked live from the focus streak — no stored
+ * unlock flags. The first two (crimson, lime) were level-gated; levels were
+ * removed in build 66, so they are unlocked outright.
  */
 object ThemeUnlocks {
     /** The first unlock-accent index (base 0..4, wheel 5..7, unlock 8..11). */
@@ -286,25 +287,25 @@ object ThemeUnlocks {
     fun isUnlocked(ctx: Context, idx: Int): Boolean {
         if (idx < FIRST) return LuckyWheel.isThemeUnlocked(ctx, idx)
         return when (idx) {
-            8 -> Xp.levelFor(Xp.total(ctx)) >= 3
-            9 -> Xp.levelFor(Xp.total(ctx)) >= 5
+            8 -> true // was level 3: levels removed in build 66
+            9 -> true // was level 5: levels removed in build 66
             10 -> Store.focusStats(ctx).streak >= 7
             11 -> Store.focusStats(ctx).streak >= 30
             else -> false
         }
     }
 
-    /** The unlock condition for one accent ("Unlocks at level 5"). */
+    /** The unlock condition for one accent ("" when already unlocked). */
     fun condition(idx: Int): String = when (idx) {
-        8 -> L.t("Unlocks at level 3", "লেভেল ৩-এ খুলবে")
-        9 -> L.t("Unlocks at level 5", "লেভেল ৫-এ খুলবে")
+        8 -> ""
+        9 -> ""
         10 -> L.t("Unlocks at a 7-day focus streak", "৭ দিনের ফোকাস স্ট্রিকে খুলবে")
         11 -> L.t("Unlocks at a 30-day focus streak", "৩০ দিনের ফোকাস স্ট্রিকে খুলবে")
         else -> ""
     }
 
-    /** All four conditions in picker order, for the hint line under the swatches. */
-    fun hintLine(): String = (FIRST..11).joinToString(" · ") { condition(it) }
+    /** The still-locked conditions in picker order, for the hint line under the swatches. */
+    fun hintLine(): String = (FIRST..11).map { condition(it) }.filter { it.isNotEmpty() }.joinToString(" · ")
 }
 
 // =====================================================================

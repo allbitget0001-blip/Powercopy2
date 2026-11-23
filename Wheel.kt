@@ -147,14 +147,12 @@ data class RewardDef(
 /**
  * Lucky wheel: +1 spin per completed lock, +1 bonus spin when the day's
  * routine is fully complete. Rewards are FUN things only — never break
- * minutes. Each reward actually applies when won (XP added, unlock stored,
- * badge shown). Exhausted rewards drop out of the wheel; XP segments always
- * remain, so the wheel is never empty.
+ * minutes. Each reward actually applies when won (unlock stored, token
+ * added, badge shown). Exhausted rewards drop out of the wheel; the token
+ * segment always remains, so the wheel is never empty.
  */
 object LuckyWheel {
     private val REWARDS = listOf(
-        RewardDef("xp25", 30, "25 XP", "২৫ XP", "#1FCB85"),
-        RewardDef("xp50", 15, "50 XP", "৫০ XP", "#43A047"),
         RewardDef("species", 12, "Tree", "গাছ", "#8A5A3B"),
         RewardDef("animal", 12, "Animal", "প্রাণী", "#FF9F43"),
         RewardDef("theme", 10, "Colour", "রঙ", "#B07CFF"),
@@ -220,7 +218,7 @@ object LuckyWheel {
         "theme" -> (C.ACCENTS.size until C.ACCENTS.size + C.WHEEL_ACCENTS.size).any { !isThemeUnlocked(ctx, it) }
         "badge" -> !Badges.earned(ctx).containsKey("wheel_lucky")
         "ocean" -> !isOceanUnlocked(ctx)
-        else -> true // xp25, xp50, token are always available
+        else -> true // token is always available
     }
 
     fun available(ctx: Context): List<RewardDef> = REWARDS.filter { isAvailable(ctx, it.id) }
@@ -246,14 +244,6 @@ object LuckyWheel {
         p.edit().putInt("wheel_wins", wins + 1).apply()
         if (wins == 0) Badges.award(ctx, "wheel_first")
         val text = when (id) {
-            "xp25" -> {
-                Xp.addBonus(ctx, 25)
-                L.t("+25 XP added!", "+২৫ XP যোগ হয়েছে!")
-            }
-            "xp50" -> {
-                Xp.addBonus(ctx, 50)
-                L.t("+50 XP added!", "+৫০ XP যোগ হয়েছে!")
-            }
             "species" -> {
                 val sp = TreeSpecies.unlockFromWheel(ctx)
                 if (sp != null) {
@@ -264,9 +254,9 @@ object LuckyWheel {
                         "নতুন গাছের প্রজাতি: ${sp.nameBn}! বাছতে গাছের কার্ডে চাপুন।"
                     )
                 } else {
-                    // exhausted after all (race-proof fallback): XP instead
-                    Xp.addBonus(ctx, 25)
-                    L.t("+25 XP (all species already owned)", "+২৫ XP (সব প্রজাতি আগেই আছে)")
+                    // exhausted after all (race-proof fallback): a token instead
+                    StreakProtection.addToken(ctx)
+                    L.t("Streak protection +1 instead (all species already owned)", "এর বদলে স্ট্রিক সুরক্ষা +১ (সব প্রজাতি আগেই আছে)")
                 }
             }
             "animal" -> {
@@ -279,8 +269,8 @@ object LuckyWheel {
                         "বাগানে নতুন বন্ধু এসেছে: ${an.nameBn}!"
                     )
                 } else {
-                    Xp.addBonus(ctx, 25)
-                    L.t("+25 XP (all animals already owned)", "+২৫ XP (সব প্রাণী আগেই আছে)")
+                    StreakProtection.addToken(ctx)
+                    L.t("Streak protection +1 instead (all animals already owned)", "এর বদলে স্ট্রিক সুরক্ষা +১ (সব প্রাণী আগেই আছে)")
                 }
             }
             "theme" -> {
@@ -292,8 +282,8 @@ object LuckyWheel {
                         "নতুন অ্যাকসেন্ট রঙ খুলেছে: ${name.second}! সেটিংস → থিম থেকে বাছুন।"
                     )
                 } else {
-                    Xp.addBonus(ctx, 25)
-                    L.t("+25 XP (all colours already owned)", "+২৫ XP (সব রঙ আগেই আছে)")
+                    StreakProtection.addToken(ctx)
+                    L.t("Streak protection +1 instead (all colours already owned)", "এর বদলে স্ট্রিক সুরক্ষা +১ (সব রঙ আগেই আছে)")
                 }
             }
             "token" -> {

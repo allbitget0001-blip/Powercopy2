@@ -16,8 +16,7 @@ data class GardenTree(val endMs: Long, val durMin: Int, val stage: Int, val aliv
 /**
  * Focus tree: a seed is planted when a normal lock starts; it grows as the
  * lock progresses and survives if the lock completes, or withers if the lock
- * is stopped early. Pomodoro focus rounds never plant trees. Location-unlock
- * locks grow trees too (they are normal locks).
+ * is stopped early. Location-unlock locks grow trees too (they are normal locks).
  */
 object FocusTree {
     const val STAGES = 5
