@@ -1254,6 +1254,25 @@ class HomeScreen(private val a: MainActivity) {
                 )
             }
         } else ""
+        val newMiles = FocusJourney.newMilestones(a)
+        val journeyLine = if (newMiles > 0) {
+            val latest = FocusJourney.milestoneAt(FocusJourney.passedCount(a) - 1)
+            FocusJourney.markSeen(a)
+            if (latest.km == FocusJourney.ROUTE_KM) {
+                val (journeysDone, _, _) = FocusJourney.progress(a)
+                "\n\n" + L.t(
+                    "Journey complete! Dhaka to Cox's Bazar — $journeysDone journey(s) done!",
+                    "যাত্রা সম্পূর্ণ! ঢাকা থেকে কক্সবাজার পৌঁছে গেছো — ${L.num(journeysDone.toString())}টি যাত্রা শেষ!"
+                )
+            } else if (newMiles == 1) {
+                "\n\n" + L.t("Milestone reached: ", "মাইলফলক: ") + L.t(latest.nameEn, latest.nameBn)
+            } else {
+                "\n\n" + L.t(
+                    "$newMiles milestones passed! Latest: ",
+                    "${L.num(newMiles.toString())}টি মাইলফলক পার করেছো! সর্বশেষ: "
+                ) + L.t(latest.nameEn, latest.nameBn)
+            }
+        } else ""
         val blocksTxt = if (s.blocks > 0) {
             L.num(s.blocks.toString()) + " " + L.t("times an app was blocked", "বার অ্যাপ ব্লক হয়েছে")
         } else {
@@ -1263,7 +1282,8 @@ class HomeScreen(private val a: MainActivity) {
             .setTitle(L.t("Session completed!", "সেশন সম্পন্ন!"))
             .setMessage(
                 L.t("Focus time: ", "ফোকাস সময়: ") + fmtDur(s.durMs) + "\n" + blocksTxt +
-                    treeLine + petLine + storyLine + "\n\n" + Quotes.random()
+                    treeLine + petLine + storyLine + journeyLine + "\n\n" + Quotes.random() +
+                    "\n\n" + L.t("Fun fact: ", "মজার তথ্য: ") + FunFacts.random(a)
             )
         if (LuckyWheel.spins(a) > 0) {
             builder.setNeutralButton(L.t("Spin the wheel", "চাকা ঘোরাও")) { _, _ ->
@@ -2629,6 +2649,50 @@ class StatsScreen(private val a: MainActivity) {
         )
         col.addView(xpCard, lp(MATCH, WRAP, b = a.dp(14)))
 
+        // focus journey: lifetime focus minutes walk Dhaka → Cox's Bazar (1 min = 1 km)
+        val (journeys, journeyKm, _) = FocusJourney.progress(a)
+        val journeyCard = a.card()
+        journeyCard.addView(a.section(L.t("Focus journey", "ফোকাস যাত্রা")))
+        val journeyView = JourneyView(a)
+        journeyView.km = journeyKm
+        journeyCard.addView(journeyView, lp(MATCH, a.dp(84), t = a.dp(8)))
+        val nextMs = FocusJourney.nextMilestone(a)
+        val journeyText = StringBuilder()
+        journeyText.append(L.num(journeyKm.toString()))
+        journeyText.append(" / ")
+        journeyText.append(L.num(FocusJourney.ROUTE_KM.toString()))
+        journeyText.append(" " + L.t("km", "কিমি"))
+        if (nextMs != null) {
+            val toGo = nextMs.km - journeyKm
+            journeyText.append(" · " + L.t("next: ", "পরের মাইলফলক: "))
+            journeyText.append(L.t(nextMs.nameEn, nextMs.nameBn))
+            journeyText.append(" (" + L.num(toGo.toString()) + " " + L.t("km to go", "কিমি বাকি") + ")")
+        }
+        if (journeys > 0) {
+            journeyText.append("\n" + L.t("Journeys completed: ", "সম্পন্ন যাত্রা: ") + L.num(journeys.toString()))
+        }
+        journeyCard.addView(a.tv(journeyText.toString(), 14f, C.text), lp(MATCH, WRAP, t = a.dp(8)))
+        col.addView(journeyCard, lp(MATCH, WRAP, b = a.dp(14)))
+
+        // record board: personal bests, recomputed from stored data on every build
+        val recordCard = a.card()
+        recordCard.addView(a.section(L.t("Records", "রেকর্ড")))
+        for (rec in Records.all(a)) {
+            val r = LinearLayout(a)
+            r.gravity = Gravity.CENTER_VERTICAL
+            r.setPadding(0, a.dp(6), 0, a.dp(6))
+            r.addView(a.tv(L.t(rec.labelEn, rec.labelBn), 14f, C.text, 1), lp(0, WRAP, weight = 1f))
+            r.addView(a.tv(rec.value, 14f, if (rec.dateMs != null) C.mint else C.muted, 1))
+            recordCard.addView(r)
+            if (rec.dateMs != null) {
+                recordCard.addView(
+                    a.tv(fmtDate(rec.dateMs), 12f, C.muted),
+                    lp(MATCH, WRAP, b = a.dp(2))
+                )
+            }
+        }
+        col.addView(recordCard, lp(MATCH, WRAP, b = a.dp(14)))
+
         // routine: streak + today's progress + the last 7 days
         val (rDone, rTotal) = Routine.todaySummary(a)
         val rStreak = Routine.streak(a)
@@ -3298,7 +3362,7 @@ class SettingsScreen(private val a: MainActivity) {
         tr.addView(t0, lp(0, WRAP, r = a.dp(8), t = a.dp(10), weight = 1f))
         tr.addView(t1, lp(0, WRAP, t = a.dp(10), weight = 1f))
         theme.addView(tr)
-        // accent colour: 5 base swatches + 3 wheel-only ones (locked until won)
+        // accent colour: 5 base swatches + 3 wheel-only + 4 progress-locked ones
         val acLabel = a.tv(L.t("Accent colour", "অ্যাকসেন্ট রঙ"), 13f, C.muted, 1)
         theme.addView(acLabel, lp(MATCH, WRAP, t = a.dp(16)))
         val allAccents = C.allAccents()
@@ -3306,6 +3370,8 @@ class SettingsScreen(private val a: MainActivity) {
         acRow1.gravity = Gravity.CENTER_VERTICAL
         val acRow2 = LinearLayout(a)
         acRow2.gravity = Gravity.CENTER_VERTICAL
+        val acRow3 = LinearLayout(a)
+        acRow3.gravity = Gravity.CENTER_VERTICAL
         val swatches = ArrayList<View>()
         fun styleSwatches() {
             val sel = Store.settings(a).getInt("accent", 0)
@@ -3313,12 +3379,17 @@ class SettingsScreen(private val a: MainActivity) {
                 val col = Color.parseColor(allAccents[i][0])
                 sw.background = if (i == sel) rounded(col, a.dp(20).toFloat(), C.text, a.dp(2))
                 else rounded(col, a.dp(20).toFloat())
-                sw.alpha = if (LuckyWheel.isThemeUnlocked(a, i)) 1f else 0.35f
+                sw.alpha = if (ThemeUnlocks.isUnlocked(a, i)) 1f else 0.35f
             }
         }
         fun pickAccent(i: Int) {
-            if (!LuckyWheel.isThemeUnlocked(a, i)) {
-                a.toast(L.t("Win this colour from the lucky wheel", "এই রঙ লাকি হুইল থেকে জিতুন"))
+            if (!ThemeUnlocks.isUnlocked(a, i)) {
+                if (i >= ThemeUnlocks.FIRST) {
+                    val name = C.UNLOCK_ACCENT_NAMES[i - ThemeUnlocks.FIRST]
+                    a.toast(L.t(name.first, name.second) + " — " + ThemeUnlocks.condition(i))
+                } else {
+                    a.toast(L.t("Win this colour from the lucky wheel", "এই রঙ লাকি হুইল থেকে জিতুন"))
+                }
                 return
             }
             if (Store.settings(a).getInt("accent", 0) == i) return
@@ -3331,13 +3402,26 @@ class SettingsScreen(private val a: MainActivity) {
             sw.setOnClickListener { pickAccent(i) }
             sw.pressFeedback()
             swatches.add(sw)
-            val row = if (i < C.ACCENTS.size) acRow1 else acRow2
-            val last = if (i < C.ACCENTS.size) i == C.ACCENTS.size - 1 else i == allAccents.size - 1
+            val row = when {
+                i < C.ACCENTS.size -> acRow1
+                i < C.ACCENTS.size + C.WHEEL_ACCENTS.size -> acRow2
+                else -> acRow3
+            }
+            val last = when {
+                i < C.ACCENTS.size -> i == C.ACCENTS.size - 1
+                i < C.ACCENTS.size + C.WHEEL_ACCENTS.size -> i == C.ACCENTS.size + C.WHEEL_ACCENTS.size - 1
+                else -> i == allAccents.size - 1
+            }
             row.addView(sw, lp(a.dp(40), a.dp(40), r = if (last) 0 else a.dp(12), t = a.dp(10)))
         }
         styleSwatches()
         theme.addView(acRow1)
         theme.addView(acRow2)
+        theme.addView(acRow3)
+        theme.addView(
+            a.tv(ThemeUnlocks.hintLine(), 12f, C.muted),
+            lp(MATCH, WRAP, t = a.dp(8))
+        )
         col.addView(theme, lp(MATCH, WRAP, b = a.dp(12)))
 
         // morning reminder: a daily notification to start the first lock

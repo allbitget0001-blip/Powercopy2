@@ -192,7 +192,7 @@ object LuckyWheel {
     }
 
     private fun unlockTheme(ctx: Context): Int? {
-        val locked = (C.ACCENTS.size until C.allAccents().size).filter { !isThemeUnlocked(ctx, it) }
+        val locked = (C.ACCENTS.size until C.ACCENTS.size + C.WHEEL_ACCENTS.size).filter { !isThemeUnlocked(ctx, it) }
         if (locked.isEmpty()) return null
         val pick = locked[Random.nextInt(locked.size)]
         val raw = Store.lock(ctx).getString("wheel_themes", "") ?: ""
@@ -214,7 +214,7 @@ object LuckyWheel {
     private fun isAvailable(ctx: Context, id: String): Boolean = when (id) {
         "species" -> TreeSpecies.locked(ctx).isNotEmpty()
         "animal" -> GardenAnimals.locked(ctx).isNotEmpty()
-        "theme" -> (C.ACCENTS.size until C.allAccents().size).any { !isThemeUnlocked(ctx, it) }
+        "theme" -> (C.ACCENTS.size until C.ACCENTS.size + C.WHEEL_ACCENTS.size).any { !isThemeUnlocked(ctx, it) }
         "badge" -> !Badges.earned(ctx).containsKey("wheel_lucky")
         "ocean" -> !isOceanUnlocked(ctx)
         else -> true // xp25, xp50, token are always available

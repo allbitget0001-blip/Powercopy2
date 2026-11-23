@@ -1389,7 +1389,8 @@ object Badges {
         BadgeDef("blocks_1000", Ic.BARS, "1000 blocks", "১০০০ বার ব্লক", "1000 blocked attempts", "১০০০ বার ব্লক হয়েছে"),
         BadgeDef("wheel_first", Ic.CHECK, "First spin", "প্রথম স্পিন", "Win your first lucky wheel reward", "লাকি হুইল থেকে প্রথম পুরস্কার জিতুন"),
         BadgeDef("wheel_lucky", Ic.SHIELD, "Lucky!", "ভাগ্যবান!", "Win a badge from the lucky wheel", "লাকি হুইল থেকে ব্যাজ জিতুন"),
-        BadgeDef("wheel_collector", Ic.BARS, "Collector", "সংগ্রাহক", "Win a tree species and an animal from the wheel", "হুইল থেকে গাছের প্রজাতি ও প্রাণী দুটোই জিতুন")
+        BadgeDef("wheel_collector", Ic.BARS, "Collector", "সংগ্রাহক", "Win a tree species and an animal from the wheel", "হুইল থেকে গাছের প্রজাতি ও প্রাণী দুটোই জিতুন"),
+        BadgeDef("journey_done", Ic.PIN, "Journey complete", "যাত্রা সম্পূর্ণ", "Walk from Dhaka to Cox's Bazar", "ঢাকা থেকে কক্সবাজার হাঁটুন")
     )
 
     fun byId(id: String): BadgeDef? = ALL.firstOrNull { it.id == id }
@@ -1435,6 +1436,7 @@ object Badges {
             if (fs.completed >= 10) award(ctx, "locks_10")
             if (fs.completed >= 50) award(ctx, "locks_50")
             if (fs.totalMin >= 6000) award(ctx, "focus_100h")
+            if (FocusJourney.progress(ctx).first >= 1) award(ctx, "journey_done")
             if (Store.detoxState(ctx).mode == "done") award(ctx, "detox_done")
             if (Store.totalBlocks(ctx) >= 1000) award(ctx, "blocks_1000")
         } catch (e: Exception) {

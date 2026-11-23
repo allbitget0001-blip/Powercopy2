@@ -83,8 +83,22 @@ object C {
         Pair("Ice", "বরফ")
     )
 
-    /** All accents, base first then wheel-only (indices 5+ need a wheel unlock). */
-    fun allAccents(): List<Array<String>> = ACCENTS + WHEEL_ACCENTS
+    /** Progress-locked accents: same shape as ACCENTS, unlocked by level/streak (see ThemeUnlocks). */
+    val UNLOCK_ACCENTS = listOf(
+        arrayOf("#E53935", "#FFCDD2", "#3B0A0A", "#7D1F1F", "#6B2A2A"), // crimson
+        arrayOf("#7CB342", "#DCEDC8", "#1E2E0A", "#558B2F", "#4A5D23"), // lime
+        arrayOf("#29B6F6", "#B3E5FC", "#082A3B", "#0277BD", "#1E4A6B"), // sky
+        arrayOf("#7C4DFF", "#D1C4E9", "#1A0A3B", "#4527A0", "#3A2A6B") // violet
+    )
+    val UNLOCK_ACCENT_NAMES = listOf(
+        Pair("Crimson", "গাঢ় লাল"),
+        Pair("Lime", "লেবু সবুজ"),
+        Pair("Sky", "আকাশি"),
+        Pair("Violet", "বেগুনি")
+    )
+
+    /** All accents: base 0..4, wheel-only 5..7, progress-locked 8..11. */
+    fun allAccents(): List<Array<String>> = ACCENTS + WHEEL_ACCENTS + UNLOCK_ACCENTS
 
     fun load(ctx: Context) {
         val amoled = Store.settings(ctx).getInt("theme", 0) == 1
