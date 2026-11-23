@@ -74,6 +74,7 @@ object Reminders {
         rescheduleMorning(ctx)
         Plan.rescheduleAlarms(ctx)
         Routine.rescheduleAlarms(ctx)
+        TimeCapsules.rescheduleAlarms(ctx)
     }
 
     /** Fires at the morning time: a lock reminder + today's task summary (if any). */
@@ -153,6 +154,7 @@ class ReminderReceiver : BroadcastReceiver() {
                     intent.getStringExtra("day") ?: ""
                 )
                 ACTION_ROUTINE_REPORT -> Routine.onReport(context)
+                ACTION_CAPSULE_DUE -> TimeCapsules.checkDue(context)
             }
         } catch (e: Exception) {
             Log.e(TAG, "ReminderReceiver failed", e)
@@ -210,7 +212,7 @@ object Plan {
 
     fun addTask(ctx: Context, title: String, timeMin: Int) {
         val list = tasksToday(ctx).toMutableList()
-        list.add(PlanTask(System.currentTimeMillis(), title, timeMin, false))
+        list.add(PlanTask(Store.newId(), title, timeMin, false))
         saveTasks(ctx, Store.dayKey(0), list)
         rescheduleAlarms(ctx)
     }
@@ -237,9 +239,8 @@ object Plan {
         val undone = yesterdayUndone(ctx)
         if (undone.isEmpty()) return
         val list = tasksToday(ctx).toMutableList()
-        val now = System.currentTimeMillis()
-        for ((i, t) in undone.withIndex()) {
-            list.add(PlanTask(now + i, t.title, t.timeMin, false))
+        for (t in undone) {
+            list.add(PlanTask(Store.newId(), t.title, t.timeMin, false))
         }
         saveTasks(ctx, Store.dayKey(0), list)
         // clear yesterday's copied tasks so a repeat tap has nothing to copy

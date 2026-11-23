@@ -14,6 +14,8 @@ import java.io.FileOutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 
 /**
@@ -128,7 +130,10 @@ class SiteBlockService : VpnService() {
     @Volatile
     private var running = false
     private var worker: Thread? = null
-    private var upstream: DatagramSocket? = null
+    // DNS forwarding runs on a small pool: one slow upstream query must not
+    // stall every other lookup (forwarding used to run on the single reader
+    // thread with a 2.5 s timeout).
+    private var dnsPool: ExecutorService? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -166,7 +171,9 @@ class SiteBlockService : VpnService() {
                 return
             }
             tun = fd
-            upstream = DatagramSocket().apply { soTimeout = 2500 }
+            dnsPool = Executors.newFixedThreadPool(4) { r ->
+                Thread(r, "siteblock-fwd").apply { isDaemon = true }
+            }
             running = true
             worker = thread(name = "siteblock-dns", isDaemon = true) { loop() }
         } catch (e: Exception) {
@@ -178,10 +185,10 @@ class SiteBlockService : VpnService() {
     private fun stopVpn() {
         running = false
         try {
-            upstream?.close()
+            dnsPool?.shutdownNow()
         } catch (_: Exception) {
         }
-        upstream = null
+        dnsPool = null
         try {
             tun?.close()
         } catch (_: Exception) {
@@ -203,9 +210,10 @@ class SiteBlockService : VpnService() {
     override fun onDestroy() {
         running = false
         try {
-            upstream?.close()
+            dnsPool?.shutdownNow()
         } catch (_: Exception) {
         }
+        dnsPool = null
         try {
             tun?.close()
         } catch (_: Exception) {
@@ -213,7 +221,9 @@ class SiteBlockService : VpnService() {
         super.onDestroy()
     }
 
-    /** Reads IP packets from the tunnel; answers DNS, ignores everything else. */
+    /** Reads IP packets from the tunnel; answers DNS, ignores everything else.
+     * Each packet is handled on the pool: a slow upstream query stalls only
+     * its own thread, never the reader or the other queries. */
     private fun loop() {
         val fd = tun ?: return
         val input = FileInputStream(fd.fileDescriptor)
@@ -223,8 +233,17 @@ class SiteBlockService : VpnService() {
             try {
                 val len = input.read(packet)
                 if (len <= 0) continue
-                val response = handlePacket(packet, len) ?: continue
-                output.write(response)
+                val copy = packet.copyOf(len) // the pool must not see the reused buffer
+                val pool = dnsPool
+                if (pool == null || pool.isShutdown) continue
+                pool.execute {
+                    try {
+                        val response = handlePacket(copy, copy.size) ?: return@execute
+                        synchronized(output) { output.write(response) }
+                    } catch (e: Exception) {
+                        if (running) Log.e(TAG, "SiteBlock dns error", e)
+                    }
+                }
             } catch (e: Exception) {
                 if (running) Log.e(TAG, "SiteBlock loop error", e)
                 break
@@ -319,16 +338,22 @@ class SiteBlockService : VpnService() {
         return out
     }
 
-    /** Forwards one DNS query to the upstream resolver and returns its answer (or null on timeout). */
+    /** Forwards one DNS query to the upstream resolver and returns its answer
+     * (or null on timeout). Each query gets its own socket: with several pool
+     * threads forwarding at once, a shared socket could hand a reply to the
+     * wrong thread. The 4096-byte buffer fits EDNS-sized answers, so the
+     * TC-bit TCP retry is rarely needed (TCP is not carried by the tunnel). */
     private fun forwardDns(dns: ByteArray): ByteArray? {
-        val sock = upstream ?: return null
         return try {
-            val addr = InetAddress.getByName(UPSTREAM)
-            sock.send(DatagramPacket(dns, dns.size, addr, UPSTREAM_PORT))
-            val buf = ByteArray(2048)
-            val reply = DatagramPacket(buf, buf.size)
-            sock.receive(reply)
-            buf.copyOfRange(0, reply.length)
+            DatagramSocket().use { sock ->
+                sock.soTimeout = 2500
+                val addr = InetAddress.getByName(UPSTREAM)
+                sock.send(DatagramPacket(dns, dns.size, addr, UPSTREAM_PORT))
+                val buf = ByteArray(4096)
+                val reply = DatagramPacket(buf, buf.size)
+                sock.receive(reply)
+                buf.copyOfRange(0, reply.length)
+            }
         } catch (e: Exception) {
             null
         }

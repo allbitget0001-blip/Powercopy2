@@ -45,6 +45,9 @@ class KeepAliveService : Service() {
             // re-sync the site-block VPN while a lock runs: if it died mid-lock
             // (revoked, another VPN), it comes back within a minute
             if (SiteBlock.isOn(this) && Store.isActive(this)) SiteBlock.sync(this)
+            // a DND restore that failed earlier (permission revoked mid-lock)
+            // is retried while no lock runs
+            if (!Store.isActive(this)) Dnd.restore(this)
             LockWidget.refresh(this) // keep the widget countdown fresh while the app is closed
         } catch (e: Exception) {
             Log.e(TAG, "heartbeat failed", e)

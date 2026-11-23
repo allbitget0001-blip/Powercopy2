@@ -1,8 +1,12 @@
 package com.powerlock.app
 
+import android.app.AlarmManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.os.Build
 import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.view.View
@@ -11,6 +15,8 @@ import org.json.JSONObject
 import java.util.Calendar
 import java.util.Locale
 import kotlin.math.ceil
+
+const val ACTION_CAPSULE_DUE = "com.powerlock.app.CAPSULE_DUE"
 
 // =====================================================================
 // TIME CAPSULE
@@ -85,17 +91,66 @@ object TimeCapsules {
         if (clean.isEmpty()) return false
         val now = System.currentTimeMillis()
         val list = all(ctx).toMutableList()
-        list.add(TimeCapsule(now, clean.take(MAX_TEXT), now, openMs, false, false))
+        list.add(TimeCapsule(Store.newId(), clean.take(MAX_TEXT), now, openMs, false, false))
         save(ctx, list)
+        rescheduleAlarms(ctx)
         return true
     }
 
     fun markOpened(ctx: Context, id: Long) {
         save(ctx, all(ctx).map { if (it.id == id) it.copy(opened = true) else it })
+        rescheduleAlarms(ctx)
     }
 
     fun delete(ctx: Context, id: Long) {
+        // cancel this capsule's alarm first: once deleted it is no longer
+        // in the list, so rescheduleAlarms could not cancel it afterwards
+        val c = all(ctx).find { it.id == id }
+        if (c != null) {
+            try {
+                (ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager).cancel(capsulePending(ctx, c))
+            } catch (_: Exception) {
+            }
+        }
         save(ctx, all(ctx).filter { it.id != id })
+        rescheduleAlarms(ctx)
+    }
+
+    private fun capsulePending(ctx: Context, c: TimeCapsule): PendingIntent {
+        val i = Intent(ctx, ReminderReceiver::class.java).setAction(ACTION_CAPSULE_DUE)
+            .putExtra("capsule_id", c.id)
+        return PendingIntent.getBroadcast(
+            ctx, (c.id % Int.MAX_VALUE).toInt(), i,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+    }
+
+    /** Arms one alarm per sealed capsule for its open date (re-armed on boot,
+     * app open and every capsule change, so the notification fires even when
+     * the app is never opened on the day). Idempotent. */
+    fun rescheduleAlarms(ctx: Context) {
+        try {
+            val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val now = System.currentTimeMillis()
+            var dueNow = false
+            for (c in all(ctx)) {
+                val pi = capsulePending(ctx, c)
+                am.cancel(pi)
+                if (c.opened || c.notified) continue
+                if (c.open <= now) {
+                    dueNow = true
+                    continue
+                }
+                if (Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()) {
+                    am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, c.open, pi)
+                } else {
+                    am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, c.open, pi)
+                }
+            }
+            if (dueNow) checkDue(ctx)
+        } catch (e: Exception) {
+            Log.e(TAG, "capsule reschedule failed", e)
+        }
     }
 
     fun isDue(c: TimeCapsule, now: Long = System.currentTimeMillis()): Boolean = now >= c.open
@@ -108,7 +163,8 @@ object TimeCapsules {
         else L.num(days.toString()) + " " + L.t("days left", "দিন বাকি")
     }
 
-    /** Notifies once per capsule when its date arrives. Called on app open, boot, and the Home tick. */
+    /** Notifies once per capsule when its date arrives. Called from the open-date
+     * alarm, and on app open, boot, and the Home tick as a backstop. */
     fun checkDue(ctx: Context) {
         try {
             val now = System.currentTimeMillis()

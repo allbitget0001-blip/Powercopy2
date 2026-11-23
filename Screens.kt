@@ -2555,7 +2555,7 @@ class ScheduleScreen(private val a: MainActivity) {
             } else {
                 val all = Routine.tasksForDay(a, routineDay)
                 val updated = if (existing == null) {
-                    all + RoutineTask(System.currentTimeMillis(), title.take(40), timeMin, grace, "manual")
+                    all + RoutineTask(Store.newId(), title.take(40), timeMin, grace, "manual")
                 } else {
                     all.map { if (it.id == existing.id) it.copy(title = title.take(40), timeMin = timeMin, graceMin = grace) else it }
                 }
@@ -2724,7 +2724,7 @@ class ScheduleScreen(private val a: MainActivity) {
                 a.toast(L.t("This schedule already exists", "এই সময়সূচি আগেই আছে"))
             } else {
                 val updated: List<Schedule> = if (existing == null) {
-                    all + Schedule(System.currentTimeMillis(), days, sMin, eMin, true)
+                    all + Schedule(Store.newId(), days, sMin, eMin, true)
                 } else {
                     all.map { if (it.id == existing.id) Schedule(it.id, days, sMin, eMin, it.enabled) else it }
                 }
@@ -4037,7 +4037,15 @@ class SettingsScreen(private val a: MainActivity) {
         }
         permRow(L.t("Notifications", "নোটিফিকেশন"), Perm.notificationsOn(a)) {
             if (Build.VERSION.SDK_INT >= 33) {
-                a.requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 1)
+                if (!Store.settings(a).getBoolean("notif_asked", false)) {
+                    // never asked: ask directly (the system prompt still works)
+                    Store.settings(a).edit().putBoolean("notif_asked", true).apply()
+                    a.requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 1)
+                } else {
+                    // already denied: the system prompt is gone for good, so
+                    // the user must turn notifications on in system settings
+                    launch(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, a.packageName))
+                }
             }
         }
         permRow(L.t("Battery optimization off", "ব্যাটারি অপটিমাইজেশন বন্ধ"), Perm.batteryOk(a)) {
@@ -4047,6 +4055,15 @@ class SettingsScreen(private val a: MainActivity) {
             if (Build.VERSION.SDK_INT >= 31) {
                 launch(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:" + a.packageName)))
             }
+        }
+        if (!Perm.notificationsOn(a)) {
+            perm.addView(
+                a.tv(
+                    L.t("Notifications are off — reminders and lock-end alerts won't appear. Tap the Notifications row above to turn them on.", "নোটিফিকেশন বন্ধ — রিমাইন্ডার আর লক শেষের সতর্কতা দেখা যাবে না। চালু করতে উপরের নোটিফিকেশন লাইনে চাপুন।"),
+                    13f, C.muted
+                ),
+                lp(MATCH, WRAP, t = a.dp(8))
+            )
         }
         col.addView(perm, lp(MATCH, WRAP, b = a.dp(12)))
 
