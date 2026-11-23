@@ -258,6 +258,154 @@ object Dnd {
     }
 }
 
+// ---------- focus score (0–100, one day) ----------
+
+/** One day's focus score with its visible breakdown. */
+data class ScoreBreakdown(
+    val total: Int,
+    val focusPts: Int,
+    val locksPts: Int,
+    val streakPts: Int,
+    val calmPts: Int,
+    val focusMin: Int,
+    val locks: Int,
+    val streak: Int,
+    val attempts: Int
+)
+
+/**
+ * Daily focus score, 0–100, computed transparently from existing data:
+ *  - focus minutes: up to 40 pts against a 120-minute daily goal
+ *  - completed locks: up to 20 pts (10 per lock)
+ *  - streak: up to 20 pts (2 per streak day)
+ *  - low temptation: up to 20 pts (20 minus 1 per blocked-open attempt, min 0)
+ * Today's score includes the running lock's elapsed minutes, so it moves
+ * live; past days are rebuilt from focus_days / sessions / attempts.
+ * Each day's score is stored date-keyed ("focus_scores") so the 7-day
+ * list stays stable even as the attempts list is pruned.
+ */
+object FocusScore {
+    const val GOAL_MIN = 120
+
+    private fun build(focusMin: Int, locks: Int, streak: Int, attempts: Int): ScoreBreakdown {
+        val focusPts = (focusMin * 40 / GOAL_MIN).coerceIn(0, 40)
+        val locksPts = (locks * 10).coerceIn(0, 20)
+        val streakPts = (streak * 2).coerceIn(0, 20)
+        val calmPts = (20 - attempts).coerceIn(0, 20)
+        val total = (focusPts + locksPts + streakPts + calmPts).coerceIn(0, 100)
+        return ScoreBreakdown(total, focusPts, locksPts, streakPts, calmPts, focusMin, locks, streak, attempts)
+    }
+
+    /** Streak ending on the day N days ago (today: ending today or yesterday). */
+    private fun streakFor(focusMap: Map<String, Int>, daysAgo: Int): Int {
+        fun hasDay(ago: Int) = (focusMap[Store.dayKey(ago)] ?: 0) > 0
+        val startAgo = if (daysAgo == 0) {
+            if (hasDay(0)) 0 else if (hasDay(1)) 1 else -1
+        } else if (hasDay(daysAgo)) daysAgo else -1
+        if (startAgo < 0) return 0
+        var streak = 0
+        var i = startAgo
+        while (hasDay(i)) {
+            streak++
+            i++
+        }
+        return streak
+    }
+
+    /** Elapsed minutes of the lock running right now (0 when idle). */
+    private fun liveMin(ctx: Context): Int {
+        if (!Store.isActive(ctx)) return 0
+        val start = Store.lock(ctx).getLong("start", 0L)
+        if (start <= 0) return 0
+        return ((System.currentTimeMillis() - start) / 60000L).toInt().coerceAtLeast(0)
+    }
+
+    fun forDay(ctx: Context, daysAgo: Int): ScoreBreakdown {
+        val key = Store.dayKey(daysAgo)
+        val focusMap = Store.focusDayMap(ctx)
+        var focusMin = focusMap[key] ?: 0
+        if (daysAgo == 0) focusMin += liveMin(ctx)
+        val locks = Store.sessions(ctx).count { it.ok && Store.dayKeyFor(it.end) == key }
+        val now = System.currentTimeMillis()
+        val from = Store.dayStart(now, -daysAgo)
+        val to = Store.dayStart(now, -daysAgo + 1)
+        val attempts = Extra.attempts(ctx).count { it.first >= from && it.first < to }
+        return build(focusMin, locks, streakFor(focusMap, daysAgo), attempts)
+    }
+
+    fun today(ctx: Context): ScoreBreakdown = forDay(ctx, 0)
+
+    /** Scores for the last 7 days, oldest first — one pass over the stored data. */
+    fun week(ctx: Context): List<ScoreBreakdown> {
+        val focusMap = Store.focusDayMap(ctx)
+        val locksByDay = HashMap<String, Int>()
+        for (s in Store.sessions(ctx)) {
+            if (!s.ok) continue
+            val k = Store.dayKeyFor(s.end)
+            locksByDay[k] = (locksByDay[k] ?: 0) + 1
+        }
+        val attemptsByDay = HashMap<String, Int>()
+        for ((t, _) in Extra.attempts(ctx)) {
+            val k = Store.dayKeyFor(t)
+            attemptsByDay[k] = (attemptsByDay[k] ?: 0) + 1
+        }
+        val live = liveMin(ctx)
+        val out = ArrayList<ScoreBreakdown>()
+        for (ago in 6 downTo 0) {
+            val key = Store.dayKey(ago)
+            var focusMin = focusMap[key] ?: 0
+            if (ago == 0) focusMin += live
+            out.add(build(focusMin, locksByDay[key] ?: 0, streakFor(focusMap, ago), attemptsByDay[key] ?: 0))
+        }
+        return out
+    }
+
+    /** Persist today's score date-keyed (only when the total changed). */
+    fun recordToday(ctx: Context, b: ScoreBreakdown = today(ctx)) {
+        try {
+            val p = Store.lock(ctx)
+            val obj = try {
+                JSONObject(p.getString("focus_scores", "{}"))
+            } catch (e: Exception) {
+                JSONObject()
+            }
+            val key = Store.dayKey(0)
+            val prev = obj.optJSONObject(key)?.optInt("t", -1) ?: -1
+            if (prev == b.total) return
+            val o = JSONObject()
+            o.put("t", b.total)
+            o.put("f", b.focusPts)
+            o.put("l", b.locksPts)
+            o.put("s", b.streakPts)
+            o.put("c", b.calmPts)
+            obj.put(key, o)
+            // keep 90 days, like focus_days
+            val keep = (0 until 90).map { Store.dayKey(it) }.toSet()
+            val keys = obj.keys()
+            val drop = ArrayList<String>()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                if (k !in keep) drop.add(k)
+            }
+            for (k in drop) obj.remove(k)
+            p.edit().putString("focus_scores", obj.toString()).apply()
+        } catch (e: Exception) {
+            Log.e(TAG, "focus score record failed", e)
+        }
+    }
+
+    /** Stored total for a day, or null when it was never recorded. */
+    fun storedTotal(ctx: Context, daysAgo: Int): Int? {
+        return try {
+            val obj = JSONObject(Store.lock(ctx).getString("focus_scores", "{}"))
+            val o = obj.optJSONObject(Store.dayKey(daysAgo)) ?: return null
+            o.optInt("t", -1).takeIf { it >= 0 }
+        } catch (e: Exception) {
+            null
+        }
+    }
+}
+
 // ---------- persistent storage ----------
 
 object Store {
@@ -647,6 +795,7 @@ object Store {
         if (s.ok) recordFocus(ctx, s)
         if (s.ok) saveSessionSummary(ctx, s)
         if (s.ok) Badges.check(ctx)
+        if (s.ok) FocusScore.recordToday(ctx)
     }
 
     /** The last completed lock's summary (duration + blocks fired in its window),

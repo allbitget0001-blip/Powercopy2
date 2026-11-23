@@ -49,6 +49,9 @@ class HomeScreen(private val a: MainActivity) {
     private var cachedUsageSec = -1L
     private var cachedUsageAt = 0L
     private var cachedUsageDay = ""
+    private lateinit var scoreText: TextView
+    private var cachedScore: ScoreBreakdown? = null
+    private var cachedScoreAt = 0L
     private lateinit var profileRow: LinearLayout
     private lateinit var profileNameText: TextView
     private lateinit var profileSubText: TextView
@@ -258,6 +261,11 @@ class HomeScreen(private val a: MainActivity) {
         // live screen time today: stored totals + the app open right now
         screenTimeText = a.tv("", 13f, C.muted)
         col.addView(screenTimeText, lp(MATCH, WRAP, t = a.dp(4)))
+        // focus score today (0–100): tap to see the breakdown in Statistics
+        scoreText = a.tv("", 13f, C.primary, 1)
+        scoreText.setOnClickListener { a.go(2) }
+        scoreText.pressFeedback()
+        col.addView(scoreText, lp(MATCH, WRAP, t = a.dp(4)))
 
         // ---- unlock condition: time only, location only, or either one ----
         col.addView(a.heading(L.t("When does the lock open?", "লক খুলবে কখন?")), lp(MATCH, WRAP, t = a.dp(26), b = a.dp(4)))
@@ -732,6 +740,7 @@ class HomeScreen(private val a: MainActivity) {
         updateWarnings()
         updateLastSummary()
         updateScreenTime()
+        updateFocusScore()
         updateDetox()
         updatePomodoro()
         updateHabits()
@@ -763,6 +772,18 @@ class HomeScreen(private val a: MainActivity) {
             }
         }
         screenTimeText.text = L.t("Screen time today: ", "আজকের স্ক্রিন টাইম: ") + fmtDur(total * 1000L)
+    }
+
+    /** Today's focus score (0–100), recomputed at most every 10 s. */
+    private fun updateFocusScore() {
+        val now = System.currentTimeMillis()
+        if (cachedScore == null || now - cachedScoreAt > 10_000) {
+            cachedScore = FocusScore.today(a)
+            cachedScoreAt = now
+            FocusScore.recordToday(a, cachedScore!!)
+        }
+        val b = cachedScore ?: return
+        scoreText.text = L.t("Focus score today: ", "আজকের ফোকাস স্কোর: ") + L.num("${b.total}/100")
     }
 
     // ---------- lock profile (extra apps for this session) ----------
@@ -1214,7 +1235,12 @@ class HomeScreen(private val a: MainActivity) {
     private fun updateWarnings() {
         val acc = Perm.accessibilityOn(a)
         val bat = Perm.batteryOk(a)
-        val sig = "$acc|$bat|${L.bn}"
+        val adminActive = DeviceAdmin.isActive(a)
+        if (adminActive) DeviceAdmin.noteActive(a)
+        // warn only while a lock runs: the admin was on, now it is off, so
+        // the app could be uninstalled mid-lock
+        val adminOff = Store.isActive(a) && DeviceAdmin.wasActive(a) && !adminActive
+        val sig = "$acc|$bat|$adminOff|${L.bn}"
         if (sig == warnSig) return
         warnSig = sig
         warnBox.removeAllViews()
@@ -1239,6 +1265,22 @@ class HomeScreen(private val a: MainActivity) {
                         a.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
                     } catch (e: Exception) {
                         Log.e(TAG, "battery settings", e)
+                    }
+                },
+                lp(MATCH, WRAP, b = a.dp(8))
+            )
+        }
+        if (adminOff) {
+            warnBox.addView(
+                warnCard(
+                    "!",
+                    L.t("Device admin is off", "ডিভাইস অ্যাডমিন বন্ধ হয়ে গেছে"),
+                    L.t("Uninstall protection is off — the app can now be uninstalled during this lock. Tap to turn it back on.", "আনইনস্টল সুরক্ষা বন্ধ — এই লক চলাকালীন অ্যাপ আনইনস্টল করা যাবে। আবার চালু করতে চাপুন।")
+                ) {
+                    try {
+                        a.startActivity(DeviceAdmin.enableIntent(a))
+                    } catch (e: Exception) {
+                        Log.e(TAG, "admin enable", e)
                     }
                 },
                 lp(MATCH, WRAP, b = a.dp(8))
@@ -1736,6 +1778,58 @@ class StatsScreen(private val a: MainActivity) {
             focus7.addView(r)
         }
         col.addView(focus7, lp(MATCH, WRAP, b = a.dp(14)))
+
+        // focus score: today's total with the visible breakdown + 7-day list
+        val scoreWeek = FocusScore.week(a)
+        val scoreToday = scoreWeek[6]
+        FocusScore.recordToday(a, scoreToday)
+        val scoreCard = a.card()
+        scoreCard.addView(a.section(L.t("Focus score", "ফোকাস স্কোর")))
+        val scoreBig = LinearLayout(a)
+        scoreBig.gravity = Gravity.CENTER_VERTICAL
+        scoreBig.addView(a.tv(L.num(scoreToday.total.toString()), 34f, C.mint, 1))
+        scoreBig.addView(a.tv(L.t(" / 100 today", " / ১০০ আজ"), 16f, C.muted), lp(WRAP, WRAP, l = a.dp(4)))
+        scoreCard.addView(scoreBig, lp(MATCH, WRAP, t = a.dp(8)))
+        fun scoreRow(label: String, pts: Int, max: Int) {
+            val r = LinearLayout(a)
+            r.gravity = Gravity.CENTER_VERTICAL
+            r.setPadding(0, a.dp(6), 0, a.dp(6))
+            r.addView(a.tv(label, 14f, C.text, 1), lp(0, WRAP, weight = 1f))
+            r.addView(a.tv(L.num("$pts/$max"), 14f, C.mint, 1))
+            scoreCard.addView(r)
+        }
+        scoreRow(
+            L.t("Focus ${scoreToday.focusMin} min (goal ${FocusScore.GOAL_MIN})", "ফোকাস ${L.num(scoreToday.focusMin.toString())} মিনিট (লক্ষ্য ${L.num(FocusScore.GOAL_MIN.toString())})"),
+            scoreToday.focusPts, 40
+        )
+        scoreRow(
+            L.t("Completed locks: ${scoreToday.locks}", "সম্পন্ন লক: ${L.num(scoreToday.locks.toString())}টি"),
+            scoreToday.locksPts, 20
+        )
+        scoreRow(
+            L.t("Streak: ${scoreToday.streak} days", "স্ট্রিক: ${L.num(scoreToday.streak.toString())} দিন"),
+            scoreToday.streakPts, 20
+        )
+        scoreRow(
+            L.t("Temptation attempts: ${scoreToday.attempts}", "প্রলোভন: ${L.num(scoreToday.attempts.toString())} বার"),
+            scoreToday.calmPts, 20
+        )
+        // 7-day scores: stored totals when recorded, else rebuilt from data
+        scoreCard.addView(a.tv(L.t("Last 7 days", "গত ৭ দিন"), 13f, C.muted, 1), lp(MATCH, WRAP, t = a.dp(12)))
+        for (i in 6 downTo 0) {
+            val c = Calendar.getInstance()
+            c.add(Calendar.DAY_OF_YEAR, -i)
+            val label = if (i == 0) L.t("Today", "আজ") else L.dayLong(dayIdx(c))
+            val total = if (i == 0) scoreToday.total
+                else FocusScore.storedTotal(a, i) ?: scoreWeek[6 - i].total
+            val r = LinearLayout(a)
+            r.gravity = Gravity.CENTER_VERTICAL
+            r.setPadding(0, a.dp(6), 0, a.dp(6))
+            r.addView(a.tv(label, 14f, C.text, 1), lp(0, WRAP, weight = 1f))
+            r.addView(a.tv(L.num(total.toString()), 14f, if (total > 0) C.mint else C.muted, 1))
+            scoreCard.addView(r)
+        }
+        col.addView(scoreCard, lp(MATCH, WRAP, b = a.dp(14)))
 
         // this week vs last week: focus minutes + completed locks (focus_days, 90 days kept)
         val cmpCard = a.card()
@@ -2278,6 +2372,65 @@ class SettingsScreen(private val a: MainActivity) {
         else L.t("Changes apply from the next session.", "পরিবর্তন পরের সেশন থেকে কার্যকর হবে।")
         strictCard.addView(a.tv(note, 12f, if (locked) C.warn else C.muted), lp(MATCH, WRAP, t = a.dp(8)))
         col.addView(strictCard, lp(MATCH, WRAP, b = a.dp(12)))
+
+        // device admin: while active, Android blocks uninstalling the app
+        if (DeviceAdmin.isActive(a)) DeviceAdmin.noteActive(a)
+        val adminCard = a.card()
+        adminCard.addView(a.section(L.t("Device admin", "ডিভাইস অ্যাডমিন")))
+        val adminOn = DeviceAdmin.isActive(a)
+        if (adminOn) {
+            adminCard.addView(
+                a.tv(L.t("✔ Active — PowerLock 2 cannot be uninstalled right now.", "✔ চালু আছে — এখন PowerLock 2 আনইনস্টল করা যাবে না।"), 14f, C.mint, 1),
+                lp(MATCH, WRAP, t = a.dp(8))
+            )
+            adminCard.addView(
+                a.tv(
+                    L.t("To turn it off: system Settings → Security → Device admin apps. That deliberate step is the whole point — it stops impulsive uninstalls during a lock.", "বন্ধ করতে: সিস্টেম সেটিংস → নিরাপত্তা → ডিভাইস অ্যাডমিন অ্যাপ। এই ভেবেচিন্তে করা ধাপটাই সুরক্ষা — লক চলাকালীন হঠাৎ আনইনস্টল ঠেকায়।"),
+                    13f, C.muted
+                ),
+                lp(MATCH, WRAP, t = a.dp(8))
+            )
+            adminCard.addView(
+                a.row(L.t("Open security settings", "নিরাপত্তা সেটিংস খুলুন"), null, a.tv("›", 22f, C.muted)) {
+                    launch(Intent(Settings.ACTION_SECURITY_SETTINGS))
+                }
+            )
+        } else {
+            adminCard.addView(
+                a.tv(
+                    L.t("While active, Android blocks uninstalling PowerLock 2 — you must first turn the admin off in system Settings. It stops impulsive uninstalls during a lock.", "চালু থাকলে Android PowerLock 2 আনইনস্টল আটকাবে — আগে সিস্টেম সেটিংসে অ্যাডমিন বন্ধ করতে হবে। লক চলাকালীন হঠাৎ আনইনস্টল ঠেকায়।"),
+                    13f, C.muted
+                ),
+                lp(MATCH, WRAP, t = a.dp(8))
+            )
+            val offAt = DeviceAdmin.deactivatedAt(a)
+            if (offAt > 0) {
+                adminCard.addView(
+                    a.tv(
+                        L.t("Turned off: ", "বন্ধ করা হয়েছিল: ") + fmtDate(offAt) + " " + fmtClock(offAt),
+                        13f, C.warn
+                    ),
+                    lp(MATCH, WRAP, t = a.dp(8))
+                )
+            }
+            val enableBtn = a.outlineBtn(L.t("Enable device admin", "ডিভাইস অ্যাডমিন চালু করুন"), C.primary)
+            enableBtn.setOnClickListener {
+                try {
+                    a.startActivity(DeviceAdmin.enableIntent(a))
+                } catch (e: Exception) {
+                    Log.e(TAG, "admin enable failed", e)
+                }
+            }
+            adminCard.addView(enableBtn, lp(MATCH, a.dp(48), t = a.dp(12)))
+        }
+        adminCard.addView(
+            a.tv(
+                L.t("Honest note: turning the admin off always allows uninstalling — this only makes it a deliberate two-step action, not a one-tap impulse.", "সত্যি কথা: অ্যাডমিন বন্ধ করলেই আনইনস্টল করা যাবে — এটা শুধু এক চাপের বদলে ভেবেচিন্তে দুই ধাপে করতে হয়।"),
+                12f, C.muted
+            ),
+            lp(MATCH, WRAP, t = a.dp(10))
+        )
+        col.addView(adminCard, lp(MATCH, WRAP, b = a.dp(12)))
 
         // location lock first, then focus mode (defined in Features.kt)
         col.addView(a.locationCard(), lp(MATCH, WRAP, b = a.dp(12)))
