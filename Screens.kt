@@ -714,6 +714,9 @@ class HomeScreen(private val a: MainActivity) {
         }
         a.toast(L.t("Finding your location…", "আপনার অবস্থান খোঁজা হচ্ছে…"))
         Extra.currentLocation(a) { loc ->
+            // the fix can take up to 20 s: if the user pressed Back meanwhile,
+            // the activity is dead and tick() must not show dialogs on it
+            if (a.isFinishing || a.isDestroyed) return@currentLocation
             if (loc == null) {
                 a.toast(L.t("Could not get the location. Turn on GPS and try again outside.", "অবস্থান পাওয়া যায়নি। GPS চালু করে বাইরে আবার চেষ্টা করুন।"))
             } else {
@@ -831,7 +834,6 @@ class HomeScreen(private val a: MainActivity) {
         applyStatus(st)
         updateSchedPill()
         val p = Store.lock(a)
-        val end = p.getLong("end", 0)
         var total = p.getLong("total", 1)
         if (total < 1) total = 1
         val strict = active && p.getBoolean("s_strict", false)
@@ -839,7 +841,7 @@ class HomeScreen(private val a: MainActivity) {
         val pomBreak = pom.active && pom.phase != Pomodoro.PHASE_FOCUS
         if (pomBreak) {
             // Pomodoro break: no lock session, the ring counts the break down
-            val left = pom.phaseEnd - now
+            val left = Pomodoro.remainingMs(a)
             val phaseTotal = if (pom.phaseTotal > 0) pom.phaseTotal else 1L
             val long = pom.phase == Pomodoro.PHASE_LONG
             ring.active = true
@@ -876,7 +878,7 @@ class HomeScreen(private val a: MainActivity) {
                 previewText.text = L.t("Session in progress · ", "সেশন চলছে · ") +
                     L.t("opens at ${target.name}", "${target.name} পৌঁছালে খুলবে")
             } else {
-                val left = end - now
+                val left = Store.remainingMs(a)
                 ring.active = true
                 ring.icon = Ic.LOCK
                 ring.main = fmtHms(left)
@@ -887,7 +889,7 @@ class HomeScreen(private val a: MainActivity) {
                 if (frac > 1f) frac = 1f
                 ring.animateTo(frac)
                 titleText.setTextAnimated(L.t("Protection is Active", "প্রটেকশন সক্রিয়"))
-                val endAt = fmtClock(end)
+                val endAt = fmtClock(now + left)
                 if (mode == UNLOCK_EITHER && target != null) {
                     subText.setTextAnimated(
                         if (strict) L.t("Strict mode · locked until $endAt or arrival at ${target.name}", "স্ট্রিক্ট মোড · $endAt পর্যন্ত অথবা ${target.name} পৌঁছালে")
@@ -2204,6 +2206,9 @@ class HomeScreen(private val a: MainActivity) {
         }
         // already at the destination? warn in the confirm dialog (the lock would open at once)
         Extra.currentLocation(a) { loc ->
+            // the fix can take up to 20 s: if the user pressed Back meanwhile,
+            // the activity is dead and the confirm dialog must not be shown
+            if (a.isFinishing || a.isDestroyed) return@currentLocation
             var alreadyThere = false
             if (loc != null) {
                 val res = FloatArray(1)

@@ -41,13 +41,17 @@ object TimeCapsules {
         try {
             val arr = JSONArray(Store.settings(ctx).getString(KEY, "[]"))
             for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                out.add(
-                    TimeCapsule(
-                        o.getLong("id"), o.getString("t"), o.optLong("c", 0),
-                        o.getLong("o"), o.optBoolean("d", false), o.optBoolean("n", false)
+                try {
+                    val o = arr.getJSONObject(i)
+                    out.add(
+                        TimeCapsule(
+                            o.getLong("id"), o.getString("t"), o.optLong("c", 0),
+                            o.getLong("o"), o.optBoolean("d", false), o.optBoolean("n", false)
+                        )
                     )
-                )
+                } catch (_: Exception) {
+                    // one malformed entry: skip it, keep the rest
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "capsules read failed", e)
@@ -56,6 +60,11 @@ object TimeCapsules {
     }
 
     private fun save(ctx: Context, list: List<TimeCapsule>) {
+        // a corrupt stored list must never be overwritten with a fresh one
+        if (JsonGuard.isCorrupt(Store.settings(ctx), KEY)) {
+            Log.e(TAG, "capsules corrupt, keeping stored value")
+            return
+        }
         val arr = JSONArray()
         for (c in list.takeLast(MAX_CAPSULES)) {
             val o = JSONObject()
@@ -109,7 +118,7 @@ object TimeCapsules {
                 if (isDue(c, now) && !c.notified) {
                     changed = true
                     Reminders.show(
-                        ctx, 30 + (c.id % 50).toInt(),
+                        ctx, 30000 + (c.id % 50).toInt(), // capsule range 30000–30049
                         L.t("Your time capsule opened!", "তোমার টাইম ক্যাপসুল খুলে গেছে!"),
                         L.t("A letter from your past self is ready to read.", "তোমার অতীতের নিজের চিঠি পড়ার সময় হয়েছে।")
                     )

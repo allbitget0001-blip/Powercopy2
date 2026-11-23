@@ -76,12 +76,6 @@ class PowerBlockService : AccessibilityService() {
     private var overlayAttached = false
 
     @Volatile
-    private var active = false
-
-    @Volatile
-    private var endAt = 0L
-
-    @Volatile
     private var locProtecting = false // location lock: blocked while at a saved place, no session
 
     @Volatile
@@ -249,12 +243,11 @@ class PowerBlockService : AccessibilityService() {
 
     private fun readState() {
         val p = Store.lock(this)
-        active = p.getBoolean("active", false)
-        endAt = p.getLong("end", 0)
         locProtecting = p.getBoolean("loc_protecting", false)
         // the guard follows the session while one runs (locked at its start); otherwise it
-        // follows the live "App settings protection" switch in Settings
-        val sessionOn = active && System.currentTimeMillis() < endAt
+        // follows the live "App settings protection" switch in Settings.
+        // isActive is monotonic: the wall clock cannot fake a session on or off.
+        val sessionOn = Store.isActive(this)
         guardOn = if (sessionOn) p.getBoolean("s_guard", true)
         else Store.settings(this).getBoolean("guard", true)
         val st = Store.settings(this)
@@ -275,7 +268,7 @@ class PowerBlockService : AccessibilityService() {
         C.load(this) // the chosen accent colour also colours the block overlay
     }
 
-    private fun protecting(): Boolean = (active && System.currentTimeMillis() < endAt) || locProtecting
+    private fun protecting(): Boolean = Store.isActive(this) || locProtecting
 
     /**
      * The system re-binds this service after the process dies, so it is the one
@@ -1394,11 +1387,11 @@ class PowerBlockService : AccessibilityService() {
         if (overlayAttached) return // never more than one shield
         try {
             val v = ensureOverlay()
-            val sessionOn = active && System.currentTimeMillis() < endAt
+            val sessionOn = Store.isActive(this)
             overlaySub?.text = if (locProtecting && !sessionOn) {
                 L.t("Location lock is active", "লোকেশন লক সক্রিয়")
             } else {
-                val at = fmtClock(endAt)
+                val at = fmtClock(System.currentTimeMillis() + Store.remainingMs(this))
                 L.t("Power menu is blocked until $at", "$at পর্যন্ত পাওয়ার মেনু ব্লক করা আছে")
             }
             val wm = getSystemService(WINDOW_SERVICE) as WindowManager

@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.os.SystemClock
 import android.util.Log
 import android.view.View
 import org.json.JSONArray
@@ -49,10 +50,24 @@ object FocusTree {
         return fractionFor(ctx, now)
     }
 
+    /** Monotonic elapsed time (ms) of the running session: the wall clock
+     * cannot distort the tree's growth. Falls back to wall elapsed for
+     * sessions started before the monotonic timer existed. */
+    private fun elapsedMs(ctx: Context, atMs: Long): Long {
+        val p = Store.lock(ctx)
+        return if ((p.getString("u_mode", UNLOCK_TIME) ?: UNLOCK_TIME) == UNLOCK_LOC) {
+            val mark = p.getLong("start_mono", -1L)
+            if (mark >= 0) (SystemClock.elapsedRealtime() - mark).coerceAtLeast(0L)
+            else (atMs - p.getLong("start", atMs)).coerceAtLeast(0L)
+        } else {
+            val total = p.getLong("total", 0L)
+            if (total <= 0L) 0L else (total - Store.remainingMs(ctx)).coerceIn(0L, total)
+        }
+    }
+
     private fun fractionFor(ctx: Context, atMs: Long): Float {
         val p = Store.lock(ctx)
-        val start = p.getLong("start", atMs)
-        val elapsed = (atMs - start).coerceAtLeast(0L)
+        val elapsed = elapsedMs(ctx, atMs)
         return if ((p.getString("u_mode", UNLOCK_TIME) ?: UNLOCK_TIME) == UNLOCK_LOC) {
             (elapsed.toFloat() / LOC_FULL_MS.toFloat()).coerceIn(0f, 1f)
         } else {
@@ -71,8 +86,17 @@ object FocusTree {
         if (!p.getBoolean("tree_planted", false)) return
         val frac = fractionFor(ctx, endMs)
         val stage = stageFor(frac)
-        val start = p.getLong("start", endMs)
-        val durMin = ((endMs - start) / 60000L).toInt().coerceAtLeast(0)
+        val durMin = (elapsedMs(ctx, endMs) / 60000L).toInt().coerceAtLeast(0)
+        val e = p.edit()
+            .remove("tree_planted")
+            .putString("tree_outcome", if (alive) "alive" else "dead")
+        // a corrupt stored garden must never be overwritten with a fresh one —
+        // the tree is lost, but the garden and the outcome flag survive
+        if (JsonGuard.isCorrupt(p, "garden")) {
+            Log.e(TAG, "garden corrupt, keeping stored value")
+            e.apply()
+            return
+        }
         val list = garden(ctx).toMutableList()
         list.add(0, GardenTree(endMs, durMin, stage, alive, TreeSpecies.selected(ctx)))
         val trimmed = if (list.size > MAX_GARDEN) list.subList(0, MAX_GARDEN) else list
@@ -86,11 +110,7 @@ object FocusTree {
             o.put("sp", t.species)
             arr.put(o)
         }
-        p.edit()
-            .putString("garden", arr.toString())
-            .remove("tree_planted")
-            .putString("tree_outcome", if (alive) "alive" else "dead")
-            .apply()
+        e.putString("garden", arr.toString()).apply()
     }
 
     /** Saved trees, newest first (max 30). */
@@ -99,8 +119,12 @@ object FocusTree {
         try {
             val arr = JSONArray(Store.lock(ctx).getString("garden", "[]"))
             for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                out.add(GardenTree(o.getLong("e"), o.getInt("d"), o.getInt("s"), o.getBoolean("a"), o.optString("sp", "classic")))
+                try {
+                    val o = arr.getJSONObject(i)
+                    out.add(GardenTree(o.getLong("e"), o.getInt("d"), o.getInt("s"), o.getBoolean("a"), o.optString("sp", "classic")))
+                } catch (_: Exception) {
+                    // one malformed entry: skip it, keep the rest
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "garden read failed", e)

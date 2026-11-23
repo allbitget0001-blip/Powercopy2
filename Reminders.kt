@@ -102,7 +102,7 @@ object Reminders {
             L.load(ctx)
             val t = Plan.tasks(ctx, dayKey).find { it.id == taskId } ?: return
             if (t.done) return
-            show(ctx, 20 + (taskId % 1000).toInt(), L.t("Reminder", "রিমাইন্ডার"), t.title)
+            show(ctx, 10000 + (taskId % 1000).toInt(), L.t("Reminder", "রিমাইন্ডার"), t.title) // plan range 10000–10999
         } catch (e: Exception) {
             Log.e(TAG, "plan reminder failed", e)
         }
@@ -172,8 +172,12 @@ object Plan {
         try {
             val arr = JSONArray(Store.settings(ctx).getString("plan_$dayKey", "[]"))
             for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                out.add(PlanTask(o.getLong("id"), o.getString("t"), o.optInt("m", -1), o.optBoolean("d", false)))
+                try {
+                    val o = arr.getJSONObject(i)
+                    out.add(PlanTask(o.getLong("id"), o.getString("t"), o.optInt("m", -1), o.optBoolean("d", false)))
+                } catch (_: Exception) {
+                    // one malformed entry: skip it, keep the rest
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "plan read failed", e)
@@ -184,6 +188,11 @@ object Plan {
     fun tasksToday(ctx: Context): List<PlanTask> = tasks(ctx, Store.dayKey(0))
 
     fun saveTasks(ctx: Context, dayKey: String, list: List<PlanTask>) {
+        // a corrupt stored list must never be overwritten with a fresh one
+        if (JsonGuard.isCorrupt(Store.settings(ctx), "plan_$dayKey")) {
+            Log.e(TAG, "plan corrupt, keeping stored value")
+            return
+        }
         val arr = JSONArray()
         for (t in list) {
             val o = JSONObject()

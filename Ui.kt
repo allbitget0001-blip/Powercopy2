@@ -6,6 +6,7 @@ import android.graphics.PixelFormat
 import android.graphics.ColorFilter
 import android.animation.ArgbEvaluator
 import android.animation.ValueAnimator
+import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
 import android.content.res.ColorStateList
@@ -35,6 +36,7 @@ import android.view.animation.LinearInterpolator
 import android.view.animation.PathInterpolator
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Switch
@@ -324,8 +326,38 @@ fun Context.edit(hint: String, number: Boolean): EditText {
     return e
 }
 
-fun Context.dlg(): AlertDialog.Builder =
-    AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+/** A dialog that can never attach to a window: used when the host activity is
+ * already finishing or destroyed, so an async callback can never crash with
+ * BadTokenException. show()/dismiss() are no-ops; getButton returns a dummy
+ * button so callers chaining setOnClickListener do not hit null. */
+private class DeadAlertDialog(ctx: Context) : AlertDialog(ctx) {
+    override fun show() {}
+    override fun dismiss() {}
+    override fun getButton(whichButton: Int): Button = Button(context)
+}
+
+/** A builder that never shows anything: the chained setters still work, but
+ * show()/create() return a dead dialog instead of a live one. */
+private class DeadDlgBuilder(private val appCtx: Context) :
+    AlertDialog.Builder(appCtx, android.R.style.Theme_DeviceDefault_Dialog_Alert) {
+    override fun show(): AlertDialog = DeadAlertDialog(appCtx)
+    override fun create(): AlertDialog = DeadAlertDialog(appCtx)
+}
+
+/**
+ * The app's dialog builder. When the host activity is finishing or destroyed
+ * (an async callback firing after Back), it returns a dead builder whose
+ * show()/create() never touch a window — every .show() site is protected
+ * at once, and chained setters still compile and run harmlessly.
+ */
+fun Context.dlg(): AlertDialog.Builder {
+    val a = this as? Activity
+    return if (a != null && (a.isFinishing || a.isDestroyed)) {
+        DeadDlgBuilder(applicationContext)
+    } else {
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+    }
+}
 
 fun Context.page(): Pair<ScrollView, LinearLayout> {
     val sv = ScrollView(this)

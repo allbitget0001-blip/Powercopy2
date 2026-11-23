@@ -78,7 +78,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "62"
+    const val BUILD_ID = "63"
 
     // ---------- presets ----------
 
@@ -97,8 +97,12 @@ object Extra {
         try {
             val arr = JSONArray(p.getString("presets", "[]"))
             for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                out.add(Preset(o.getLong("id"), o.getString("n"), o.getInt("m"), o.getBoolean("s")))
+                try {
+                    val o = arr.getJSONObject(i)
+                    out.add(Preset(o.getLong("id"), o.getString("n"), o.getInt("m"), o.getBoolean("s")))
+                } catch (_: Exception) {
+                    // one malformed entry: skip it, keep the rest
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "presets read failed", e)
@@ -107,6 +111,11 @@ object Extra {
     }
 
     fun savePresets(ctx: Context, list: List<Preset>) {
+        // a corrupt stored list must never be overwritten with a fresh one
+        if (JsonGuard.isCorrupt(Store.settings(ctx), "presets")) {
+            Log.e(TAG, "presets corrupt, keeping stored value")
+            return
+        }
         val arr = JSONArray()
         for (x in list) {
             val o = JSONObject()
@@ -130,7 +139,14 @@ object Extra {
         val end = p.getLong("end", 0)
         val newEnd = end + addMs
         if (newEnd - start > MAX_MIN * 60_000L) return 2
-        p.edit().putLong("end", newEnd).putLong("total", newEnd - start).apply()
+        val e = p.edit().putLong("end", newEnd).putLong("total", newEnd - start)
+        // the monotonic deadline moves with the wall deadline (and the
+        // smallest-remaining floor rises too, so a later reboot keeps the extension)
+        val monoEnd = p.getLong("end_mono", -1L)
+        if (monoEnd >= 0) e.putLong("end_mono", monoEnd + addMs)
+        val remMin = p.getLong("rem_min", -1L)
+        if (remMin >= 0) e.putLong("rem_min", remMin + addMs)
+        e.apply()
         Store.kickService(ctx)
         return 0
     }
@@ -149,6 +165,16 @@ object Extra {
             if (now - last < 3000L) return
             lastLog[key] = now
             val p = Store.lock(ctx)
+            // a corrupt stored list must never be overwritten with a fresh
+            // one — the block still counts toward the lifetime total, but the
+            // stored attempts stay untouched
+            if (JsonGuard.isCorrupt(p, "attempts")) {
+                Log.e(TAG, "attempts corrupt, keeping stored value")
+                val total = p.getLong("blocks_total", 0)
+                p.edit().putLong("blocks_total", total + 1).apply()
+                if (total + 1 == 1000L) Badges.award(ctx, "blocks_1000")
+                return
+            }
             val old = try {
                 JSONArray(p.getString("attempts", "[]"))
             } catch (e: Exception) {
@@ -176,8 +202,12 @@ object Extra {
         try {
             val arr = JSONArray(Store.lock(ctx).getString("attempts", "[]"))
             for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                out.add(Pair(o.getLong("t"), o.getString("k")))
+                try {
+                    val o = arr.getJSONObject(i)
+                    out.add(Pair(o.getLong("t"), o.getString("k")))
+                } catch (_: Exception) {
+                    // one malformed entry: skip it, keep the rest
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "attempts read failed", e)
@@ -192,8 +222,12 @@ object Extra {
         try {
             val arr = JSONArray(Store.lock(ctx).getString("attempts", "[]"))
             for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                out.add(Triple(o.getLong("t"), o.getString("k"), o.optString("p", "")))
+                try {
+                    val o = arr.getJSONObject(i)
+                    out.add(Triple(o.getLong("t"), o.getString("k"), o.optString("p", "")))
+                } catch (_: Exception) {
+                    // one malformed entry: skip it, keep the rest
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "attempts read failed", e)
@@ -404,6 +438,11 @@ object Extra {
         if (closeWall <= openWall) return
         try {
             val p = usagePrefs(ctx)
+            // a corrupt stored list must never be overwritten with a fresh one
+            if (JsonGuard.isCorrupt(p, "hist")) {
+                Log.e(TAG, "usage history corrupt, keeping stored value")
+                return
+            }
             val old = try {
                 JSONArray(p.getString("hist", "[]"))
             } catch (e: Exception) {
@@ -412,8 +451,12 @@ object Extra {
             val cutoff = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000
             val out = JSONArray()
             for (i in 0 until old.length()) {
-                val o = old.getJSONObject(i)
-                if (o.optLong("o", 0) >= cutoff) out.put(o)
+                try {
+                    val o = old.getJSONObject(i)
+                    if (o.optLong("o", 0) >= cutoff) out.put(o)
+                } catch (_: Exception) {
+                    // one malformed entry: skip it — the history must keep growing
+                }
             }
             // cap at 1000 entries (drop the oldest)
             val trimmed = JSONArray()
@@ -436,8 +479,12 @@ object Extra {
         try {
             val arr = JSONArray(usagePrefs(ctx).getString("hist", "[]"))
             for (i in arr.length() - 1 downTo 0) {
-                val o = arr.getJSONObject(i)
-                out.add(UsageSession(o.optString("p", ""), o.optLong("o", 0), o.optLong("c", 0)))
+                try {
+                    val o = arr.getJSONObject(i)
+                    out.add(UsageSession(o.optString("p", ""), o.optLong("o", 0), o.optLong("c", 0)))
+                } catch (_: Exception) {
+                    // one malformed entry: skip it, keep the rest
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "history read failed", e)
@@ -513,11 +560,15 @@ object Extra {
         try {
             val arr = JSONArray(raw)
             for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                val pkgs = ArrayList<String>()
-                val pa = o.optJSONArray("pkgs")
-                if (pa != null) for (j in 0 until pa.length()) pkgs.add(pa.getString(j))
-                out.add(AppGroup(o.getLong("id"), o.getString("name"), pkgs))
+                try {
+                    val o = arr.getJSONObject(i)
+                    val pkgs = ArrayList<String>()
+                    val pa = o.optJSONArray("pkgs")
+                    if (pa != null) for (j in 0 until pa.length()) pkgs.add(pa.getString(j))
+                    out.add(AppGroup(o.getLong("id"), o.getString("name"), pkgs))
+                } catch (_: Exception) {
+                    // one malformed entry: skip it, keep the rest
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "app groups read failed", e)
@@ -526,6 +577,11 @@ object Extra {
     }
 
     fun saveAppGroups(ctx: Context, list: List<AppGroup>) {
+        // a corrupt stored list must never be overwritten with a fresh one
+        if (JsonGuard.isCorrupt(Store.settings(ctx), "app_groups")) {
+            Log.e(TAG, "app groups corrupt, keeping stored value")
+            return
+        }
         try {
             val arr = JSONArray()
             for (g in list) {
@@ -568,11 +624,15 @@ object Extra {
         try {
             val arr = JSONArray(raw)
             for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                val pkgs = ArrayList<String>()
-                val pa = o.optJSONArray("pkgs")
-                if (pa != null) for (j in 0 until pa.length()) pkgs.add(pa.getString(j))
-                out.add(LockProfile(o.getLong("id"), o.getString("name"), pkgs))
+                try {
+                    val o = arr.getJSONObject(i)
+                    val pkgs = ArrayList<String>()
+                    val pa = o.optJSONArray("pkgs")
+                    if (pa != null) for (j in 0 until pa.length()) pkgs.add(pa.getString(j))
+                    out.add(LockProfile(o.getLong("id"), o.getString("name"), pkgs))
+                } catch (_: Exception) {
+                    // one malformed entry: skip it, keep the rest
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "lock profiles read failed", e)
@@ -581,6 +641,11 @@ object Extra {
     }
 
     fun saveLockProfiles(ctx: Context, list: List<LockProfile>) {
+        // a corrupt stored list must never be overwritten with a fresh one
+        if (JsonGuard.isCorrupt(Store.settings(ctx), "lock_profiles")) {
+            Log.e(TAG, "lock profiles corrupt, keeping stored value")
+            return
+        }
         try {
             val arr = JSONArray()
             for (g in list) {
@@ -675,14 +740,18 @@ object Extra {
         try {
             val arr = JSONArray(Store.settings(ctx).getString("places", "[]"))
             for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                out.add(
-                    Place(
-                        o.getLong("id"), o.getString("n"), o.getDouble("la"), o.getDouble("lo"),
-                        o.getInt("r"), o.getInt("m"), o.getBoolean("on"),
-                        o.optInt("md", PLACE_MODE_INSIDE)
+                try {
+                    val o = arr.getJSONObject(i)
+                    out.add(
+                        Place(
+                            o.getLong("id"), o.getString("n"), o.getDouble("la"), o.getDouble("lo"),
+                            o.getInt("r"), o.getInt("m"), o.getBoolean("on"),
+                            o.optInt("md", PLACE_MODE_INSIDE)
+                        )
                     )
-                )
+                } catch (_: Exception) {
+                    // one malformed entry: skip it, keep the rest
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "places read failed", e)
@@ -691,6 +760,11 @@ object Extra {
     }
 
     fun savePlaces(ctx: Context, list: List<Place>) {
+        // a corrupt stored list must never be overwritten with a fresh one
+        if (JsonGuard.isCorrupt(Store.settings(ctx), "places")) {
+            Log.e(TAG, "places corrupt, keeping stored value")
+            return
+        }
         val arr = JSONArray()
         for (x in list) {
             val o = JSONObject()
@@ -918,13 +992,20 @@ object PlaceWatcher {
         try {
             val m = app.getSystemService(Context.LOCATION_SERVICE) as LocationManager
             lm = m
+            var registered = false
             if (m.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
                 m.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 30_000L, 20f, listener, Looper.getMainLooper())
+                registered = true
             }
             if (m.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
                 m.requestLocationUpdates(LocationManager.GPS_PROVIDER, 60_000L, 30f, listener, Looper.getMainLooper())
+                registered = true
             }
-            on = true
+            // only "on" when a provider is actually registered: with no
+            // provider the watcher must stay off so sync() retries later
+            // (e.g. after the user turns device location on)
+            on = registered
+            if (!registered) Log.w(TAG, "place watcher: no location provider enabled, will retry")
         } catch (e: Exception) {
             Log.e(TAG, "place watcher start failed", e)
             on = false
@@ -1046,7 +1127,7 @@ object PlaceWatcher {
                 .setContentText(L.num(text))
                 .setAutoCancel(true)
                 .setContentIntent(openApp)
-            nm.notify(2000 + (pl.id % 1000).toInt(), nb.build())
+            nm.notify(40000 + (pl.id % 1000).toInt(), nb.build()) // boundary range 40000–40999
         } catch (e: Exception) {
             Log.e(TAG, "boundary notify failed", e)
         }
@@ -1074,7 +1155,9 @@ fun MainActivity.extendFlow(done: () -> Unit) {
 }
 
 private fun MainActivity.confirmExtend(min: Int, done: () -> Unit) {
-    val newEnd = Store.lock(this).getLong("end", 0) + min * 60_000L
+    // the real end: monotonic remaining + the added minutes (the wall-clock
+    // "end" is stale after a date/time change)
+    val newEnd = System.currentTimeMillis() + Store.remainingMs(this) + min * 60_000L
     val at = fmtClock(newEnd)
     dlg()
         .setTitle(addLabel(min))

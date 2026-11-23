@@ -50,16 +50,20 @@ object Routine {
         try {
             val arr = tasksObj(ctx).optJSONArray(day.toString()) ?: return out
             for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                out.add(
-                    RoutineTask(
-                        o.getLong("id"),
-                        o.getString("t"),
-                        o.getInt("m"),
-                        o.optInt("g", 30),
-                        o.optString("v", "manual")
+                try {
+                    val o = arr.getJSONObject(i)
+                    out.add(
+                        RoutineTask(
+                            o.getLong("id"),
+                            o.getString("t"),
+                            o.getInt("m"),
+                            o.optInt("g", 30),
+                            o.optString("v", "manual")
+                        )
                     )
-                )
+                } catch (_: Exception) {
+                    // one malformed entry: skip it, keep the rest
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "routine read failed", e)
@@ -85,6 +89,12 @@ object Routine {
         }
 
     private fun putTasks(ctx: Context, day: Int, list: List<RoutineTask>) {
+        // a corrupt stored object must never be overwritten with a fresh one
+        // — that would wipe every weekday's tasks at once
+        if (JsonGuard.isCorrupt(Store.settings(ctx), "routine_tasks")) {
+            Log.e(TAG, "routine tasks corrupt, keeping stored value")
+            return
+        }
         val obj = tasksObj(ctx)
         val arr = JSONArray()
         for (t in list.sortedBy { it.timeMin }) {
@@ -128,7 +138,13 @@ object Routine {
         val out = HashSet<Long>()
         try {
             val arr = idMap(ctx, key).optJSONArray(dayKey) ?: return out
-            for (i in 0 until arr.length()) out.add(arr.getLong(i))
+            for (i in 0 until arr.length()) {
+                try {
+                    out.add(arr.getLong(i))
+                } catch (_: Exception) {
+                    // one malformed entry: skip it, keep the rest
+                }
+            }
         } catch (e: Exception) {
             Log.e(TAG, "routine ids read failed", e)
         }
@@ -136,6 +152,11 @@ object Routine {
     }
 
     private fun saveIds(ctx: Context, key: String, dayKey: String, ids: Set<Long>) {
+        // a corrupt stored map must never be overwritten with a fresh one
+        if (JsonGuard.isCorrupt(Store.settings(ctx), key)) {
+            Log.e(TAG, "routine $key corrupt, keeping stored value")
+            return
+        }
         val obj = idMap(ctx, key)
         if (ids.isEmpty()) {
             obj.remove(dayKey)
@@ -436,7 +457,7 @@ object Routine {
             val t = tasksForDayKey(ctx, dayKey).find { it.id == taskId } ?: return
             if (taskId in doneIds(ctx, dayKey)) return
             Reminders.show(
-                ctx, 200 + (taskId % 1000).toInt(),
+                ctx, 20000 + (taskId % 1000).toInt(), // routine range 20000–20999
                 L.t("Routine time", "রুটিনের সময়"),
                 t.title
             )
