@@ -97,6 +97,9 @@ data class BadgeDef(val id: String, val icon: Ic, val titleEn: String, val title
 /** A daily habit: checked off once a day, with a consecutive-day streak. */
 data class Habit(val id: Long, val name: String, val created: Long)
 
+/** One focus note: a quick thought jotted during (or outside) a lock. */
+data class FocusNote(val id: Long, val text: String, val time: Long, val duringLock: Boolean)
+
 /** One task in today's plan: optional reminder time in minutes since midnight (-1 = none). */
 data class PlanTask(val id: Long, val title: String, val timeMin: Int, val done: Boolean)
 
@@ -1053,6 +1056,50 @@ object Store {
             i++
         }
         return streak
+    }
+
+    // ----- focus notes: quick thoughts jotted during a lock -----
+
+    /** All notes, in creation order (oldest first). */
+    fun focusNotes(ctx: Context): List<FocusNote> {
+        val out = ArrayList<FocusNote>()
+        try {
+            val arr = JSONArray(settings(ctx).getString("focus_notes", "[]"))
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                out.add(FocusNote(o.getLong("id"), o.getString("t"), o.optLong("tm", 0), o.optBoolean("l", false)))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "focus notes read failed", e)
+        }
+        return out
+    }
+
+    fun saveFocusNotes(ctx: Context, list: List<FocusNote>) {
+        val arr = JSONArray()
+        for (n in list.takeLast(100)) {
+            val o = JSONObject()
+            o.put("id", n.id)
+            o.put("t", n.text)
+            o.put("tm", n.time)
+            o.put("l", n.duringLock)
+            arr.put(o)
+        }
+        settings(ctx).edit().putString("focus_notes", arr.toString()).apply()
+    }
+
+    /** Adds a note; capped at 100, the oldest are dropped. Empty text is ignored. */
+    fun addFocusNote(ctx: Context, text: String, duringLock: Boolean) {
+        val clean = text.trim()
+        if (clean.isEmpty()) return
+        val list = focusNotes(ctx).toMutableList()
+        val now = System.currentTimeMillis()
+        list.add(FocusNote(now, clean.take(500), now, duringLock))
+        saveFocusNotes(ctx, list)
+    }
+
+    fun deleteFocusNote(ctx: Context, id: Long) {
+        saveFocusNotes(ctx, focusNotes(ctx).filter { it.id != id })
     }
 
     /** Lifetime block count (the attempts list is capped at 1000): seeded once from the list. */

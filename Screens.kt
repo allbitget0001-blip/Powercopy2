@@ -21,9 +21,11 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -73,6 +75,9 @@ class HomeScreen(private val a: MainActivity) {
     private lateinit var planBox: LinearLayout
     private lateinit var planCarryBtn: TextView
     private var lastPlanDay = ""
+    private lateinit var noteBox: LinearLayout
+    private lateinit var noteEdit: EditText
+    private var noteSig = ""
     private var badgeShown = false
     private lateinit var startBtn: LinearLayout
     private lateinit var stopBtn: LinearLayout
@@ -228,6 +233,24 @@ class HomeScreen(private val a: MainActivity) {
         }
         plan.addView(planCarryBtn, lp(MATCH, a.dp(48), t = a.dp(8)))
         col.addView(plan, lp(MATCH, WRAP, t = a.dp(16)))
+
+        // ---- focus note: jot a thought during a lock without breaking it ----
+        val note = a.card(20)
+        note.addView(a.tv(L.t("Focus note", "ফোকাস নোট"), 18f, C.text, 1))
+        note.addView(a.tv(L.t("A thought during a lock? Write it down in seconds.", "লকের সময় কোনো চিন্তা? কয়েক সেকেন্ডে লিখে রাখুন।"), 13f, C.muted), lp(MATCH, WRAP, t = a.dp(4)))
+        val noteRow = LinearLayout(a)
+        noteRow.gravity = Gravity.CENTER_VERTICAL
+        noteEdit = a.edit(L.t("Write a note…", "নোট লিখুন…"), false)
+        noteEdit.gravity = Gravity.CENTER_VERTICAL or Gravity.START
+        noteRow.addView(noteEdit, lp(0, WRAP, weight = 1f, r = a.dp(10)))
+        val noteSave = a.outlineBtn(L.t("Save", "সেভ"), C.primary)
+        noteSave.setOnClickListener { saveNote() }
+        noteRow.addView(noteSave, lp(WRAP, a.dp(48)))
+        note.addView(noteRow, lp(MATCH, WRAP, t = a.dp(10)))
+        noteBox = LinearLayout(a)
+        noteBox.orientation = LinearLayout.VERTICAL
+        note.addView(noteBox, lp(MATCH, WRAP, t = a.dp(6)))
+        col.addView(note, lp(MATCH, WRAP, t = a.dp(16)))
 
         // ---- lock templates: one tap starts a lock with that duration ----
         col.addView(a.heading(L.t("Lock templates", "লক টেমপ্লেট")), lp(MATCH, WRAP, t = a.dp(26), b = a.dp(4)))
@@ -758,6 +781,7 @@ class HomeScreen(private val a: MainActivity) {
         updateDetox()
         updatePomodoro()
         updateHabits()
+        updateNotes()
         // midnight rollover: the plan card shows the new day's tasks
         if (Store.dayKey(0) != lastPlanDay) {
             lastPlanDay = Store.dayKey(0)
@@ -1198,6 +1222,72 @@ class HomeScreen(private val a: MainActivity) {
             .setPositiveButton(L.t("Delete", "মুছে ফেলুন")) { _, _ ->
                 Store.saveHabits(a, Store.habits(a).filter { it.id != h.id })
                 updateHabits()
+            }
+            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+            .show()
+    }
+
+    /** Focus notes, newest first. Rebuilds only when the notes change. */
+    private fun updateNotes() {
+        val notes = Store.focusNotes(a).asReversed()
+        val sig = notes.joinToString("|") { "${it.id}:${it.text.hashCode()}" }
+        if (sig == noteSig) return
+        noteSig = sig
+        noteBox.removeAllViews()
+        if (notes.isEmpty()) {
+            noteBox.addView(
+                a.tv(L.t("No notes yet. A thought during a lock goes here — it takes seconds.", "এখনো কোনো নোট নেই। লকের সময়ের চিন্তা এখানে লিখুন — কয়েক সেকেন্ড লাগে।"), 13f, C.muted),
+                lp(MATCH, WRAP, t = a.dp(4))
+            )
+            return
+        }
+        for (n in notes) {
+            val r = LinearLayout(a)
+            r.orientation = LinearLayout.VERTICAL
+            r.setPadding(0, a.dp(8), 0, a.dp(8))
+            val text = a.tv(n.text, 15f, C.text)
+            text.maxLines = 2
+            text.ellipsize = TextUtils.TruncateAt.END
+            r.addView(text)
+            val meta = fmtDate(n.time) + " · " + fmtClock(n.time) +
+                if (n.duringLock) "  ·  " + L.t("During lock", "লকের সময়") else ""
+            r.addView(a.tv(meta, 12f, if (n.duringLock) C.mint else C.muted), lp(MATCH, WRAP, t = a.dp(2)))
+            r.pressFeedback()
+            r.setOnClickListener { viewNoteDialog(n) }
+            r.setOnLongClickListener {
+                deleteNoteDialog(n)
+                true
+            }
+            noteBox.addView(r)
+        }
+    }
+
+    private fun saveNote() {
+        val text = noteEdit.text.toString().trim()
+        if (text.isEmpty()) {
+            a.toast(L.t("Write something first", "আগে কিছু লিখুন"))
+            return
+        }
+        Store.addFocusNote(a, text, Store.isActive(a))
+        noteEdit.setText("")
+        updateNotes()
+    }
+
+    private fun viewNoteDialog(n: FocusNote) {
+        a.dlg()
+            .setTitle(fmtDate(n.time) + " · " + fmtClock(n.time))
+            .setMessage(n.text)
+            .setPositiveButton(L.t("Close", "বন্ধ করুন"), null)
+            .show()
+    }
+
+    private fun deleteNoteDialog(n: FocusNote) {
+        a.dlg()
+            .setTitle(L.t("Delete this note?", "এই নোট মুছে ফেলবেন?"))
+            .setMessage(if (n.text.length > 80) n.text.take(77) + "…" else n.text)
+            .setPositiveButton(L.t("Delete", "মুছে ফেলুন")) { _, _ ->
+                Store.deleteFocusNote(a, n.id)
+                updateNotes()
             }
             .setNegativeButton(L.t("Cancel", "বাতিল"), null)
             .show()
