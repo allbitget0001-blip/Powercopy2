@@ -71,7 +71,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "44"
+    const val BUILD_ID = "45"
 
     // ---------- presets ----------
 
@@ -231,80 +231,6 @@ object Extra {
     fun setManualPackages(ctx: Context, apps: Set<String>) {
         Store.settings(ctx).edit().putString("ab_manual", apps.joinToString(",")).apply()
     }
-
-    // ---------- image guard (on-screen NSFW detection) ----------
-
-    /** Master switch for image guard. Off by default; only scans while a lock runs. */
-    fun imageGuardOn(ctx: Context): Boolean =
-        Store.settings(ctx).getBoolean("ig_on", false)
-
-    fun setImageGuardOn(ctx: Context, on: Boolean) {
-        Store.settings(ctx).edit().putBoolean("ig_on", on).apply()
-    }
-
-    /** Packages covered by the Image Guard lockdown: when the screen-capture
-     * grant ends mid-lock, only these apps get the protection screen until
-     * permission is given again — every other app opens normally. */
-    fun lockdownApps(ctx: Context): Set<String> {
-        val s = Store.settings(ctx).getString("ig_lockdown", "") ?: ""
-        return s.split(",").filter { it.isNotEmpty() }.toSet()
-    }
-
-    fun setLockdownApps(ctx: Context, apps: Set<String>) {
-        Store.settings(ctx).edit().putString("ig_lockdown", apps.joinToString(",")).apply()
-    }
-
-    /** Live score badge: while a lock runs, a small floating pill shows the
-     * foreground app and its latest NSFW score in percent. Off by default. */
-    fun liveScoreOn(ctx: Context): Boolean =
-        Store.settings(ctx).getBoolean("ig_live_score", false)
-
-    fun setLiveScoreOn(ctx: Context, on: Boolean) {
-        Store.settings(ctx).edit().putBoolean("ig_live_score", on).apply()
-    }
-
-    /** Live preview: while a lock runs, a small floating preview shows the
-     * exact frame the model is checking. Off by default. */
-    fun previewOn(ctx: Context): Boolean =
-        Store.settings(ctx).getBoolean("ig_live_preview", false)
-
-    fun setPreviewOn(ctx: Context, on: Boolean) {
-        Store.settings(ctx).edit().putBoolean("ig_live_preview", on).apply()
-    }
-
-    /** Image-guard model: XS, S, M or L (OwenElliott family), NUDE
-     * (NudeNet 320n detector), MOB (MobileNetV4 classifier) or YAHOO
-     * (Yahoo OpenNSFW). Default L (the original, most accurate). Unknown
-     * values fall back to L. */
-    fun igModel(ctx: Context): String {
-        val m = (Store.settings(ctx).getString("ig_model", "L") ?: "L").uppercase()
-        return if (m in setOf("XS", "S", "M", "L", "NUDE", "MOB", "YAHOO")) m else "L"
-    }
-
-    fun setIgModel(ctx: Context, model: String) {
-        val m = model.uppercase()
-        val v = if (m in setOf("XS", "S", "M", "L", "NUDE", "MOB", "YAHOO")) m else "L"
-        Store.settings(ctx).edit().putString("ig_model", v).apply()
-    }
-
-    /** Sensitivity: 0 = high (catches more), 1 = medium, 2 = low (fewer false alarms). */
-    fun igLevel(ctx: Context): Int =
-        Store.settings(ctx).getInt("ig_level", 1).coerceIn(0, 2)
-
-    fun setIgLevel(ctx: Context, level: Int) {
-        Store.settings(ctx).edit().putInt("ig_level", level.coerceIn(0, 2)).apply()
-    }
-
-    /** NSFW score (0..1) at which the screen is covered. */
-    fun igThreshold(ctx: Context): Float = when (igLevel(ctx)) {
-        0 -> 0.5f
-        2 -> 0.85f
-        else -> 0.7f
-    }
-
-    /** True when the downloaded model file failed to load (corrupt download). */
-    fun igModelError(ctx: Context): Boolean =
-        Store.settings(ctx).getBoolean("ig_model_err", false)
 
     /** All launchable apps (label + icon), loaded once per session: loading ~150 icons is slow. */
     var appListCache: List<Triple<String, String, Drawable>>? = null
@@ -995,7 +921,7 @@ fun MainActivity.appBlockModeCard(mode: String): View {
 }
 
 /** Add a package name by typing it — the app need not be installed yet, it is
- * blocked as soon as it is installed. [mode] is "full", "reels", "msg" or "lockdown". */
+ * blocked as soon as it is installed. [mode] is "full", "reels" or "msg". */
 private fun MainActivity.addPackageDialog(mode: String, done: () -> Unit) {
     val input = edit(L.t("Package name, e.g. com.facebook.katana", "প্যাকেজ নাম, যেমন com.facebook.katana"), false)
     val body = LinearLayout(this)
@@ -1020,14 +946,13 @@ private fun MainActivity.addPackageDialog(mode: String, done: () -> Unit) {
                 return@setPositiveButton
             }
             // an app can only be in one list: full block wins over reels block;
-            // the search list and the lockdown list are independent
+            // the search list is independent
             when (mode) {
                 "full" -> {
                     Extra.setAppBlockFull(this, Extra.appBlockFull(this) + pkg)
                     Extra.setAppBlockReels(this, Extra.appBlockReels(this) - pkg)
                 }
                 "msg" -> Extra.setAppBlockMsg(this, Extra.appBlockMsg(this) + pkg)
-                "lockdown" -> Extra.setLockdownApps(this, Extra.lockdownApps(this) + pkg)
                 else -> {
                     Extra.setAppBlockReels(this, Extra.appBlockReels(this) + pkg)
                     Extra.setAppBlockFull(this, Extra.appBlockFull(this) - pkg)
@@ -1110,7 +1035,6 @@ private fun MainActivity.showAppBlockPicker(
         when (mode) {
             "full" -> Extra.appBlockFull(this)
             "msg" -> Extra.appBlockMsg(this)
-            "lockdown" -> Extra.lockdownApps(this)
             else -> Extra.appBlockReels(this)
         }
     )
@@ -1288,7 +1212,6 @@ private fun MainActivity.showAppBlockPicker(
             when (mode) {
                 "full" -> L.t("Choose apps to block fully", "সম্পূর্ণ ব্লক করার অ্যাপ বাছুন")
                 "msg" -> L.t("Choose apps for search block", "সার্চ ব্লকের অ্যাপ বাছুন")
-                "lockdown" -> L.t("Choose apps for lockdown", "লকডাউন অ্যাপ বাছুন")
                 else -> L.t("Choose apps for Reels block", "রিলস ব্লকের অ্যাপ বাছুন")
             }
         )
@@ -1296,7 +1219,6 @@ private fun MainActivity.showAppBlockPicker(
         .setPositiveButton(L.t("Save", "সংরক্ষণ")) { _, _ ->
             // an app can only be in one list: full block wins over reels block;
             // the search list is independent (an app can block both its feed and its search),
-            // and so is the lockdown list (an app can be locked down as well as blocked).
             // manually added package names (not installed, so not in the picker)
             // are kept — saving must not wipe them
             val manual = Extra.manualPackages(this)
@@ -1310,10 +1232,6 @@ private fun MainActivity.showAppBlockPicker(
                     val keep = Extra.appBlockMsg(this).filter { it in manual }
                     Extra.setAppBlockMsg(this, chosen + keep)
                 }
-                "lockdown" -> {
-                    val keep = Extra.lockdownApps(this).filter { it in manual }
-                    Extra.setLockdownApps(this, chosen + keep)
-                }
                 else -> {
                     val keep = Extra.appBlockReels(this).filter { it in manual }
                     Extra.setAppBlockReels(this, chosen + keep)
@@ -1324,399 +1242,6 @@ private fun MainActivity.showAppBlockPicker(
         }
         .setNegativeButton(L.t("Cancel", "বাতিল"), null)
         .show()
-}
-
-// =====================================================================
-// UI: image guard (on-screen NSFW detection)
-// =====================================================================
-
-/** Image guard card: on-device AI watches the screen during a lock and covers
- * NSFW photos / videos. Experimental: it can be wrong and uses more battery. */
-fun MainActivity.imageGuardCard(): View {
-    val c = card()
-    c.addView(section(L.t("Image guard", "ছবি সুরক্ষা")))
-    c.addView(
-        tv(
-            L.t(
-                "While a lock runs, on-device AI watches the screen inside your chosen lockdown apps and covers nude photos or videos the moment they appear. Experimental — it can sometimes be wrong, and it uses more battery. No image ever leaves the phone. The powerful model downloads once (~106 MB — Wi-Fi recommended).",
-                "লক চলাকালীন ফোনের ভেতরেই AI শুধু লকডাউন তালিকার অ্যাপগুলোর স্ক্রিন দেখবে, আর নগ্ন ছবি বা ভিডিও আসলেই তা ঢেকে দেবে। পরীক্ষামূলক — মাঝে মাঝে ভুল হতে পারে, আর ব্যাটারি একটু বেশি খাবে। কোনো ছবি ফোনের বাইরে যাবে না। শক্তিশালী মডেল একবার ডাউনলোড হবে (~১০৬ MB — Wi-Fi দিয়ে করা ভালো)।"
-            ),
-            13f, C.muted
-        ),
-        lp(MATCH, WRAP, t = dp(6))
-    )
-    val locked = Store.isActive(this)
-    val on = Extra.imageGuardOn(this)
-    val sw = toggle(on) { v ->
-        if (v) enableImageGuard()
-        else {
-            Extra.setImageGuardOn(this, false)
-            ImageGuardService.sync(this)
-            // release the capture session too: a stopped projection kills
-            // its token, so keeping the grant would leave a dead one behind
-            ImageGuardService.releaseGrant()
-            go(4)
-        }
-    }
-    // only strengthening during a session: the guard cannot be turned off
-    if (locked && on) sw.isEnabled = false
-    c.addView(
-        row(
-            L.t("Watch the screen during a lock", "লক চলাকালীন স্ক্রিন পর্যবেক্ষণ"),
-            null,
-            sw
-        ),
-        lp(MATCH, WRAP, t = dp(6))
-    )
-    // sensitivity: high / medium / low
-    val level = Extra.igLevel(this)
-    val seg = SegmentedControl(
-        this,
-        listOf(L.t("High", "বেশি"), L.t("Medium", "মাঝারি"), L.t("Low", "কম")),
-        level,
-        onPick = { i ->
-            if (locked && i > level) {
-                // weakening during a session is not allowed
-                toast(L.t("Sensitivity can only be increased during a session", "সেশন চলাকালীন সংবেদনশীলতা শুধু বাড়ানো যাবে"))
-                go(4)
-            } else {
-                Extra.setIgLevel(this, i)
-            }
-        },
-        onDone = { go(4) }
-    )
-    c.addView(seg, lp(MATCH, WRAP, t = dp(10)))
-    c.addView(
-        tv(
-            L.t("High catches more, but may cover harmless photos too.", "বেশি সংবেদনশীল হলে বেশি ধরবে, তবে সাধারণ ছবিও ভুল করে ঢাকতে পারে।"),
-            12f, C.muted
-        ),
-        lp(MATCH, WRAP, t = dp(6))
-    )
-    // model switcher: XS / S / M / L / NUDE / MOB / YAHOO — compare which
-    // model scores best on the same content. Locked during a session:
-    // switching changes what the guard detects, so it is not allowed
-    // mid-lock.
-    val modelIds = listOf("XS", "S", "M", "L", "NUDE", "MOB", "YAHOO")
-    val modelIdx = modelIds.indexOf(Extra.igModel(this)).coerceAtLeast(0)
-    val modelSeg = SegmentedControl(
-        this,
-        modelIds,
-        modelIdx,
-        onPick = { i ->
-            val picked = modelIds[i]
-            if (locked) {
-                toast(L.t("The model cannot be changed during a session", "সেশন চলাকালীন মডেল বদলানো যাবে না"))
-                go(4)
-            } else if (picked == Extra.igModel(this)) {
-                // already selected (the control also ignores same-index taps)
-            } else if (ImageGuardModel.ready(this, picked)) {
-                Extra.setIgModel(this, picked)
-                ImageGuardService.noteModelSwitch(picked)
-                ImageGuardService.sync(this)
-                go(4)
-            } else {
-                downloadModel(picked)
-            }
-        },
-        onDone = { go(4) }
-    )
-    c.addView(modelSeg, lp(MATCH, WRAP, t = dp(10)))
-    c.addView(
-        tv(
-            L.t("Model XS/S/M/L — OwenElliott, bigger is more accurate (XS 97.8%, S 98.0%, M 98.1%, L 98.2%). NUDE = NudeNet detector (finds exposed body parts), MOB = MobileNetV4 classifier, YAHOO = Yahoo OpenNSFW. Downloaded models stay on the phone; a new one downloads on Wi-Fi, or on mobile data if you confirm.", "মডেল XS/S/M/L — OwenElliott, বড়টা বেশি নির্ভুল (XS ৯৭.৮%, S ৯৮.০%, M ৯৮.১%, L ৯৮.২%)। NUDE = NudeNet ডিটেক্টর (খোলা শরীরের অংশ খুঁজে পায়), MOB = MobileNetV4 ক্লাসিফায়ার, YAHOO = Yahoo OpenNSFW। ডাউনলোড করা মডেল ফোনেই থাকবে; নতুন মডেল Wi-Fi-তে ডাউনলোড হয়, মোবাইল ডেটায় চাইলে অনুমতি চাইবে।"),
-            12f, C.muted
-        ),
-        lp(MATCH, WRAP, t = dp(6))
-    )
-    // live score badge: a small floating pill with the current app's latest
-    // NSFW score, while a lock runs. Display only — it never changes what
-    // the guard blocks, so it can be toggled any time.
-    val liveSw = toggle(Extra.liveScoreOn(this)) { v ->
-        Extra.setLiveScoreOn(this, v)
-    }
-    c.addView(
-        row(
-            L.t("Show live score during a lock", "লক চলাকালীন লাইভ স্কোর দেখান"),
-            L.t("A small floating badge shows the current app and its latest bad-image score in percent.", "ছোট ভাসমান ব্যাজে এখনকার অ্যাপ আর তার সর্বশেষ খারাপ ছবির স্কোর শতাংশে দেখাবে।"),
-            liveSw
-        ),
-        lp(MATCH, WRAP, t = dp(6))
-    )
-    // live preview: the exact frame the model is checking, as a small
-    // floating thumbnail — display only, toggleable any time.
-    val prevSw = toggle(Extra.previewOn(this)) { v ->
-        Extra.setPreviewOn(this, v)
-    }
-    c.addView(
-        row(
-            L.t("Show what the model sees", "মডেল যা দেখছে তা দেখান"),
-            L.t("A small floating preview shows the exact frame the model is checking during a lock.", "লক চলাকালীন মডেল যে ছবিটা পরীক্ষা করছে তার ছোট প্রিভিউ ভাসবে।"),
-            prevSw
-        ),
-        lp(MATCH, WRAP, t = dp(6))
-    )
-    // status line
-    val modelErr = Extra.igModelError(this)
-    // the error flag is stale history (it survives app updates); the file
-    // check and the grant check are current truth, so they come first —
-    // otherwise a stale flag hides the re-grant prompt and the guard can
-    // never start again after an update (dead end: no grant, no service,
-    // no log, and the only offered way out re-downloads a good model)
-    val needsGrant = on && ImageGuardModel.ready(this) && !ImageGuardService.hasProjection()
-    val status = when {
-        !on -> L.t("Off", "বন্ধ")
-        !ImageGuardModel.ready(this) -> L.t("Model ${Extra.igModel(this)} not downloaded yet — tap here to download", "মডেল ${Extra.igModel(this)} এখনো ডাউনলোড হয়নি — ডাউনলোড করতে এখানে চাপুন")
-        needsGrant -> L.t("Tap here to allow screen capture", "স্ক্রিন দেখার অনুমতি দিতে এখানে চাপুন")
-        modelErr -> L.t("Model failed to load — turn it off and on again to re-download", "মডেল লোড হয়নি — আবার ডাউনলোড করতে বন্ধ করে চালু করুন")
-        Store.isActive(this) || Store.isLocProtecting(this) -> L.t("Lock running — watching the screen", "লক চলছে — স্ক্রিন পর্যবেক্ষণ চলছে")
-        else -> L.t("On — active while a lock runs", "চালু আছে — লক চললে সক্রিয় হবে")
-    }
-    val statusTv = tv(status, 12f, if (!on) C.muted else C.primary)
-    // the grant can be lost mid-session (revoked, or the service stopped);
-    // re-granting restores protection, so it is allowed even during a lock
-    if (needsGrant) {
-        statusTv.setOnClickListener { requestImageGuardPermission() }
-    } else if (on && !ImageGuardModel.ready(this)) {
-        // the selected model is missing (deleted, or its download failed):
-        // tapping re-downloads it (asks before using mobile data, like the switcher)
-        statusTv.setOnClickListener { downloadModel(Extra.igModel(this)) }
-    }
-    c.addView(statusTv, lp(MATCH, WRAP, t = dp(8)))
-    // diagnostic log: what the guard actually did on the phone — open it
-    // and copy it to find out why a photo was not blocked
-    val logRow = LinearLayout(this)
-    logRow.orientation = LinearLayout.HORIZONTAL
-    val viewLogBtn = outlineBtn(L.t("View log", "লগ দেখুন"), C.primary)
-    viewLogBtn.setOnClickListener {
-        val summary = ImageGuardService.debugSummary
-        val text = if (summary.isEmpty()) L.t("No log yet — start a lock with image guard on first.", "এখনো লগ নেই — আগে ছবি সুরক্ষা চালু করে লক চালু করুন।") else synchronized(summary) { summary.joinToString("\n") }
-        val detail = synchronized(ImageGuardService.debugLog) { ImageGuardService.debugLog.joinToString("\n") }
-        val copyText = if (detail.isEmpty()) text else text + "\n\n--- " + L.t("Details", "বিস্তারিত") + " ---\n" + detail
-        val tvLog = tv(text, 11f, C.text)
-        val svLog = ScrollView(this)
-        svLog.addView(tvLog)
-        val body = LinearLayout(this)
-        body.orientation = LinearLayout.VERTICAL
-        body.setPadding(dp(20), dp(12), dp(20), dp(4))
-        body.addView(svLog, lp(MATCH, dp(400)))
-        dlg()
-            .setTitle(L.t("Image guard log", "ছবি সুরক্ষা লগ"))
-            .setView(body)
-            .setPositiveButton(L.t("Copy", "কপি করুন")) { _, _ ->
-                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                cm.setPrimaryClip(ClipData.newPlainText("PowerLock image guard", copyText))
-                Toast.makeText(this, L.t("Copied", "কপি হয়েছে"), Toast.LENGTH_SHORT).show()
-            }
-            .setNegativeButton(L.t("Close", "বন্ধ"), null)
-            .show()
-    }
-    logRow.addView(viewLogBtn, lp(0, WRAP, r = dp(8), weight = 1f))
-    val clearLogBtn = outlineBtn(L.t("Clear", "মুছুন"), C.primary)
-    clearLogBtn.setOnClickListener {
-        ImageGuardService.clearDebug()
-        Toast.makeText(this, L.t("Log cleared", "লগ মুছে ফেলা হয়েছে"), Toast.LENGTH_SHORT).show()
-    }
-    logRow.addView(clearLogBtn, lp(0, WRAP, weight = 1f))
-    c.addView(logRow, lp(MATCH, WRAP, t = dp(10)))
-    // overlay permission: without it the cover cannot show (Home still works)
-    if (!Settings.canDrawOverlays(this)) {
-        val note = tv(
-            L.t("Overlay permission is off — allow it so the cover screen can appear. Tap here to open the setting.", "ওভারলে অনুমতি বন্ধ — কভার স্ক্রিন দেখাতে এটা চালু করুন। সেটিংস খুলতে এখানে চাপুন।"),
-            12f, C.warn
-        )
-        note.setOnClickListener {
-            try {
-                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
-            } catch (e: Exception) {
-                Log.e(TAG, "overlay settings failed", e)
-            }
-        }
-        c.addView(note, lp(MATCH, WRAP, t = dp(8)))
-    }
-    if (locked) {
-        c.addView(tv(L.t("While a session runs, the guard cannot be turned off, sensitivity can only be increased, and the model cannot be changed.", "সেশন চলাকালীন সুরক্ষা বন্ধ করা যাবে না, সংবেদনশীলতা শুধু বাড়ানো যাবে, আর মডেল বদলানো যাবে না।"), 12f, C.warn), lp(MATCH, WRAP, t = dp(8)))
-    }
-    return c
-}
-
-/** Lockdown app list: when the guard's screen-capture grant ends mid-lock
- * (screen lock, or revoked), only these apps are covered by the protection
- * screen until permission is given again — every other app opens normally. */
-fun MainActivity.lockdownAppsCard(): View {
-    val c = card()
-    c.addView(section(L.t("Lockdown apps", "লকডাউন অ্যাপ")))
-    c.addView(
-        tv(
-            L.t("If screen-capture permission ends while a lock runs, only the apps you choose here are blocked until you allow it again — and the guard only looks for bad images inside these apps. Other apps keep opening normally and are never scanned, which also saves battery. Choose the apps where bad content could appear — browsers, gallery, social apps.", "লক চলাকালীন স্ক্রিন দেখার অনুমতি শেষ হয়ে গেলে শুধু এখানে বাছা অ্যাপগুলো ব্লক হবে, আবার অনুমতি না দেওয়া পর্যন্ত — আর গার্ড শুধু এই অ্যাপগুলোতেই খারাপ ছবি খুঁজবে। বাকি অ্যাপগুলো স্বাভাবিকভাবে খুলবে আর সেগুলোতে স্ক্যান হবে না, তাই ব্যাটারিও কম খাবে। যেসব অ্যাপে খারাপ জিনিস আসতে পারে সেগুলো বাছুন — ব্রাউজার, গ্যালারি, সোশ্যাল অ্যাপ।"),
-            13f, C.muted
-        ),
-        lp(MATCH, WRAP, t = dp(6))
-    )
-    val count = Extra.lockdownApps(this).size
-    val locked = Store.isActive(this)
-    val pick = outlineBtn(L.t("Choose apps ($count selected)", "অ্যাপ বাছুন ($count টি নির্বাচিত)"), C.primary)
-    pick.setOnClickListener {
-        // adding only strengthens the lock, so it stays allowed during a
-        // session — the picker just won't let an already-chosen app be unchecked
-        appBlockPicker("lockdown", Store.isActive(this)) { go(4) }
-    }
-    c.addView(pick, lp(MATCH, dp(48), t = dp(10)))
-    val pkgBtn = outlineBtn(L.t("Add by package name", "প্যাকেজ নাম দিয়ে অ্যাড করুন"), C.primary)
-    pkgBtn.setOnClickListener { addPackageDialog("lockdown") { go(4) } }
-    c.addView(pkgBtn, lp(MATCH, dp(48), t = dp(8)))
-    if (count == 0) {
-        c.addView(tv(L.t("No apps chosen — if permission ends, nothing will be blocked, and the guard will scan nothing.", "কোনো অ্যাপ বাছা হয়নি — অনুমতি শেষ হলে কিছুই ব্লক হবে না, আর গার্ড কিছুই স্ক্যান করবে না।"), 12f, C.warn), lp(MATCH, WRAP, t = dp(8)))
-    }
-    if (locked) {
-        c.addView(tv(L.t("While a session runs, apps can only be added, not removed.", "সেশন চলাকালীন শুধু অ্যাপ যোগ করা যাবে, সরানো যাবে না।"), 12f, C.warn), lp(MATCH, WRAP, t = dp(8)))
-    }
-    return c
-}
-
-/** Enable flow: download the model first (once), then ask for screen-capture
- * permission. ig_on is only written when the permission is granted (see
- * MainActivity.onActivityResult) — a failed setup leaves the guard off. */
-private fun MainActivity.enableImageGuard() {
-    // only download when the file is genuinely missing or incomplete — a
-    // stale load-error flag must never delete a good model and spend
-    // another 106 MB; a complete file gets its load retried by the service
-    if (!ImageGuardModel.ready(this)) {
-        val prog = tv("0%", 18f, C.text, 1)
-        prog.gravity = Gravity.CENTER
-        val body = LinearLayout(this)
-        body.orientation = LinearLayout.VERTICAL
-        body.setPadding(dp(20), dp(12), dp(20), dp(4))
-        body.addView(
-            tv(L.t("Downloading the detection model (~106 MB, once only)…", "শনাক্তকরণের মডেল ডাউনলোড হচ্ছে (~১০৬ MB, শুধু একবার)…"), 14f, C.muted),
-            lp(MATCH, WRAP, b = dp(10))
-        )
-        body.addView(prog, lp(MATCH, WRAP))
-        val d = dlg()
-            .setTitle(L.t("Downloading model…", "মডেল ডাউনলোড হচ্ছে…"))
-            .setView(body)
-            .setCancelable(false)
-            .show()
-        Thread {
-            val result = ImageGuardModel.download(this) { pct ->
-                runOnUiThread {
-                    try {
-                        prog.text = L.num(pct.toString()) + "%"
-                    } catch (_: Exception) {
-                    }
-                }
-            }
-            runOnUiThread {
-                try {
-                    d.dismiss()
-                } catch (_: Exception) {
-                }
-                if (!result.ok) {
-                    val why = if (result.reason.isNotEmpty()) " (" + result.reason + ")" else ""
-                    toast(L.t("Model download failed — check your internet and try again", "মডেল ডাউনলোড হয়নি — ইন্টারনেট দেখে আবার চেষ্টা করুন") + why)
-                    go(4)
-                    return@runOnUiThread
-                }
-                requestImageGuardPermission()
-            }
-        }.start()
-    } else {
-        requestImageGuardPermission()
-    }
-}
-
-/** Downloads a model the user picked in the switcher, then selects it. The
- * current model keeps working until the new one is ready — the preference
- * only changes after a successful download, so a failed download never
- * leaves the guard without a model. On Wi-Fi the download starts at once;
- * on mobile data it asks first (showing the size) — the download is
- * resumable, so a dropped connection costs nothing extra. */
-private fun MainActivity.downloadModel(modelId: String) {
-    val meta = ImageGuardModel.info(modelId)
-    if (!ImageGuardModel.isWifi(this)) {
-        dlg()
-            .setTitle(L.t("No Wi-Fi", "Wi-Fi নেই"))
-            .setMessage(L.t("Model $modelId (${meta.sizeLabel}) will download on mobile data, once only. If the download drops, it resumes where it stopped instead of starting over. Download it?", "মডেল $modelId (${meta.sizeLabel}) মোবাইল ডেটা দিয়ে ডাউনলোড হবে, শুধু একবার। ডাউনলোড আটকে গেলে আবার শুরু থেকে হবে না — যেখানে থেমেছে সেখান থেকে চলবে। ডাউনলোড করবে?"))
-            .setPositiveButton(L.t("Download", "ডাউনলোড করো")) { _, _ -> startModelDownload(modelId, meta) }
-            .setNegativeButton(L.t("Cancel", "বাতিল")) { _, _ -> go(4) }
-            .setOnCancelListener { go(4) }
-            .show()
-        return
-    }
-    startModelDownload(modelId, meta)
-}
-
-/** The actual download: progress dialog + background thread. Called from
- * downloadModel() after the Wi-Fi check / confirmation. */
-private fun MainActivity.startModelDownload(modelId: String, meta: ImageGuardModel.Info) {
-    val prog = tv("0%", 18f, C.text, 1)
-    prog.gravity = Gravity.CENTER
-    val body = LinearLayout(this)
-    body.orientation = LinearLayout.VERTICAL
-    body.setPadding(dp(20), dp(12), dp(20), dp(4))
-    body.addView(
-        tv(L.t("Downloading model $modelId (${meta.sizeLabel}, once only)…", "মডেল $modelId ডাউনলোড হচ্ছে (${meta.sizeLabel}, শুধু একবার)…"), 14f, C.muted),
-        lp(MATCH, WRAP, b = dp(10))
-    )
-    body.addView(prog, lp(MATCH, WRAP))
-    val d = dlg()
-        .setTitle(L.t("Downloading model…", "মডেল ডাউনলোড হচ্ছে…"))
-        .setView(body)
-        .setCancelable(false)
-        .show()
-    Thread {
-        val result = ImageGuardModel.download(this, modelId) { pct ->
-            runOnUiThread {
-                try {
-                    prog.text = L.num(pct.toString()) + "%"
-                } catch (_: Exception) {
-                }
-            }
-        }
-        runOnUiThread {
-            try {
-                d.dismiss()
-            } catch (_: Exception) {
-            }
-            if (!result.ok) {
-                val why = if (result.reason.isNotEmpty()) " (" + result.reason + ")" else ""
-                toast(L.t("Model download failed — check your internet and try again", "মডেল ডাউনলোড হয়নি — ইন্টারনেট দেখে আবার চেষ্টা করুন") + why)
-                go(4)
-                return@runOnUiThread
-            }
-            Extra.setIgModel(this, modelId)
-            ImageGuardService.noteModelSwitch(modelId)
-            ImageGuardService.sync(this)
-            go(4)
-        }
-    }.start()
-}
-
-/**
- * Notification deep-link: the user tapped "allow screen capture again"
- * after the projection ended (e.g. the screen locked — Android stops
- * every share on lock and the token is single-use, so a fresh grant is
- * the only recovery). Jump to the Protection tab and open the permission
- * dialog at once, so recovery is one tap plus the system dialog instead
- * of hunting through the app.
- */
-fun MainActivity.handleRegrantDeepLink() {
-    if (!Extra.imageGuardOn(this)) return
-    if (ImageGuardService.hasProjection()) return
-    if (!ImageGuardModel.ready(this)) return
-    go(4, false)
-    requestImageGuardPermission()
-}
-
-@Suppress("DEPRECATION")
-private fun MainActivity.requestImageGuardPermission() {
-    try {
-        startActivityForResult(Intent(this, ImageGuardPermissionActivity::class.java), REQ_IMAGE_GUARD)
-    } catch (e: Exception) {
-        Log.e(TAG, "image guard permission failed", e)
-        toast(L.t("Could not open the permission screen", "অনুমতির স্ক্রিন খোলা যায়নি"))
-        go(4)
-    }
 }
 
 /** Diagnostic card: what the service sees on a reels screen, so a missed block
@@ -1774,7 +1299,6 @@ fun MainActivity.lockedAppsCard(mode: String): View {
             when (mode) {
                 "full" -> L.t("Fully blocked apps", "সম্পূর্ণ ব্লক করা অ্যাপ")
                 "msg" -> L.t("Search blocked apps", "সার্চ ব্লক করা অ্যাপ")
-                "lockdown" -> L.t("Lockdown apps", "লকডাউন অ্যাপ")
                 else -> L.t("Reels blocked apps", "রিলস ব্লক করা অ্যাপ")
             }
         )
@@ -1784,7 +1308,6 @@ fun MainActivity.lockedAppsCard(mode: String): View {
     var pkgs = when (mode) {
         "full" -> Extra.appBlockFull(this)
         "msg" -> Extra.appBlockMsg(this)
-        "lockdown" -> Extra.lockdownApps(this)
         else -> Extra.appBlockReels(this)
     }
     if (pkgs.isEmpty()) {
@@ -1810,7 +1333,6 @@ fun MainActivity.lockedAppsCard(mode: String): View {
         when (mode) {
             "full" -> Extra.setAppBlockFull(this, pkgs)
             "msg" -> Extra.setAppBlockMsg(this, pkgs)
-            "lockdown" -> Extra.setLockdownApps(this, pkgs)
             else -> Extra.setAppBlockReels(this, pkgs)
         }
     }
@@ -1854,7 +1376,6 @@ fun MainActivity.lockedAppsCard(mode: String): View {
                 when (mode) {
                     "full" -> Extra.setAppBlockFull(this, Extra.appBlockFull(this) - row.pkg)
                     "msg" -> Extra.setAppBlockMsg(this, Extra.appBlockMsg(this) - row.pkg)
-                    "lockdown" -> Extra.setLockdownApps(this, Extra.lockdownApps(this) - row.pkg)
                     else -> Extra.setAppBlockReels(this, Extra.appBlockReels(this) - row.pkg)
                 }
                 Extra.setManualPackages(this, Extra.manualPackages(this) - row.pkg)

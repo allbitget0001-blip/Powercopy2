@@ -10,7 +10,7 @@ import java.util.Base64
 // configuration time so the signing config below always finds it. Without a
 // fixed key, every CI build is signed with a fresh random key, Android
 // refuses to update the app, and the user must uninstall first — which wipes
-// the downloaded AI model (106 MB) and all settings every time.
+// all settings every time.
 // NOTE: the import above is required — a fully-qualified java.util.Base64
 // fails in Kotlin DSL scripts because `java` resolves to the Java plugin
 // extension accessor instead of the java package ("Unresolved reference:
@@ -62,5 +62,4 @@ android {
 
 dependencies {
     implementation("androidx.work:work-runtime:2.9.0")
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
 }
