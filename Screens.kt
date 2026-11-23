@@ -10,7 +10,6 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
-import android.graphics.Paint
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
@@ -24,7 +23,6 @@ import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -64,9 +62,6 @@ class HomeScreen(private val a: MainActivity) {
     private var lastPom: Boolean? = null
     private lateinit var habitBox: LinearLayout
     private var habitSig = ""
-    private lateinit var planBox: LinearLayout
-    private lateinit var planCarryBtn: TextView
-    private var lastPlanDay = ""
     private var badgeShown = false
     private lateinit var startBtn: LinearLayout
     private lateinit var stopBtn: LinearLayout
@@ -194,24 +189,6 @@ class HomeScreen(private val a: MainActivity) {
         habAdd.setOnClickListener { addHabitDialog() }
         hab.addView(habAdd, lp(MATCH, a.dp(48), t = a.dp(12)))
         col.addView(hab, lp(MATCH, WRAP, t = a.dp(16)))
-
-        // ---- today's plan: tasks for today, with optional reminder times ----
-        val plan = a.card(20)
-        plan.addView(a.tv(L.t("Today's plan", "আজকের পরিকল্পনা"), 18f, C.text, 1))
-        planBox = LinearLayout(a)
-        planBox.orientation = LinearLayout.VERTICAL
-        plan.addView(planBox, lp(MATCH, WRAP, t = a.dp(6)))
-        val planAdd = a.outlineBtn(L.t("+ Add a task", "+ কাজ যোগ করুন"), C.primary)
-        planAdd.setOnClickListener { addPlanDialog() }
-        plan.addView(planAdd, lp(MATCH, a.dp(48), t = a.dp(12)))
-        planCarryBtn = a.outlineBtn(L.t("Bring yesterday's unfinished tasks", "গতকালের বাকি কাজ আনুন"), C.muted)
-        planCarryBtn.setOnClickListener {
-            Plan.carryOver(a)
-            updatePlan()
-            a.toast(L.t("Yesterday's tasks added", "গতকালের কাজ যোগ হয়েছে"))
-        }
-        plan.addView(planCarryBtn, lp(MATCH, a.dp(48), t = a.dp(8)))
-        col.addView(plan, lp(MATCH, WRAP, t = a.dp(16)))
 
         // ---- lock templates: one tap starts a lock with that duration ----
         col.addView(a.heading(L.t("Lock templates", "লক টেমপ্লেট")), lp(MATCH, WRAP, t = a.dp(26), b = a.dp(4)))
@@ -344,23 +321,8 @@ class HomeScreen(private val a: MainActivity) {
         refreshChips()
         refreshModeChips()
         refreshProfileRow()
-        lastPlanDay = Store.dayKey(0)
-        updatePlan()
         tick()
-        // home wallpaper: the picked photo sits behind the content, dimmed so
-        // the text stays readable; no photo (or a broken file) = plain page
-        val wall = Wallpaper.loadBitmap(a)
-        if (wall == null) return sv
-        val wrap = FrameLayout(a)
-        val iv = ImageView(a)
-        iv.setImageBitmap(wall)
-        iv.scaleType = ImageView.ScaleType.CENTER_CROP
-        wrap.addView(iv, FrameLayout.LayoutParams(MATCH, MATCH))
-        val scrim = View(a)
-        scrim.setBackgroundColor(Color.argb(150, 0, 0, 0))
-        wrap.addView(scrim, FrameLayout.LayoutParams(MATCH, MATCH))
-        wrap.addView(sv, FrameLayout.LayoutParams(MATCH, MATCH))
-        return wrap
+        return sv
     }
 
     private fun refreshChips(animate: Boolean = false) {
@@ -735,11 +697,6 @@ class HomeScreen(private val a: MainActivity) {
         updateDetox()
         updatePomodoro()
         updateHabits()
-        // midnight rollover: the plan card shows the new day's tasks
-        if (Store.dayKey(0) != lastPlanDay) {
-            lastPlanDay = Store.dayKey(0)
-            updatePlan()
-        }
         maybeShowSummary()
         maybeShowBadge()
     }
@@ -1105,76 +1062,6 @@ class HomeScreen(private val a: MainActivity) {
             .setPositiveButton(L.t("Delete", "মুছে ফেলুন")) { _, _ ->
                 Store.saveHabits(a, Store.habits(a).filter { it.id != h.id })
                 updateHabits()
-            }
-            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
-            .show()
-    }
-
-    /** Today's plan rows: tap a row to check it off, ✕ to delete it. */
-    private fun updatePlan() {
-        planBox.removeAllViews()
-        val tasks = Plan.tasksToday(a)
-        if (tasks.isEmpty()) {
-            planBox.addView(
-                a.tv(L.t("Nothing planned yet today.", "আজ এখনো কিছু পরিকল্পনা করা হয়নি।"), 13f, C.muted)
-            )
-        }
-        for (t in tasks) {
-            val r = LinearLayout(a)
-            r.gravity = Gravity.CENTER_VERTICAL
-            r.setPadding(0, a.dp(8), 0, a.dp(8))
-            val box = a.tv(if (t.done) "☑" else "☐", 20f, if (t.done) C.mint else C.muted, 1)
-            r.addView(box, lp(WRAP, WRAP, r = a.dp(10)))
-            val col2 = LinearLayout(a)
-            col2.orientation = LinearLayout.VERTICAL
-            val title = a.tv(t.title, 15f, if (t.done) C.muted else C.text)
-            if (t.done) title.paintFlags = title.paintFlags or Paint.STRIKE_THRU_TEXT_FLAG
-            col2.addView(title)
-            if (t.timeMin >= 0) col2.addView(a.tv(fmtMin(t.timeMin), 12f, C.primary))
-            r.addView(col2, lp(0, WRAP, weight = 1f))
-            val del = a.tv("✕", 16f, C.muted, 1)
-            del.setPadding(a.dp(10), a.dp(4), a.dp(4), a.dp(4))
-            del.setOnClickListener {
-                Plan.deleteTask(a, t.id)
-                updatePlan()
-            }
-            r.addView(del)
-            r.pressFeedback()
-            r.setOnClickListener {
-                Plan.toggleTask(a, t.id)
-                updatePlan()
-            }
-            planBox.addView(r)
-        }
-        planCarryBtn.visibility = if (Plan.yesterdayUndone(a).isNotEmpty()) View.VISIBLE else View.GONE
-    }
-
-    private fun addPlanDialog() {
-        val box = LinearLayout(a)
-        box.orientation = LinearLayout.VERTICAL
-        box.setPadding(a.dp(24), a.dp(8), a.dp(24), 0)
-        val et = a.edit(L.t("What will you do today?", "আজ কী করবে?"), false)
-        box.addView(et)
-        var timeMin = -1
-        val timeRow = a.tv(L.t("No reminder time — tap to set", "রিমাইন্ডারের সময় নেই — সেট করতে চাপুন"), 14f, C.primary)
-        timeRow.setPadding(0, a.dp(14), 0, a.dp(4))
-        timeRow.setOnClickListener {
-            val c = Calendar.getInstance()
-            TimePickerDialog(a, { _, h, m ->
-                timeMin = h * 60 + m
-                timeRow.text = fmtMin(timeMin)
-            }, c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE), false).show()
-        }
-        box.addView(timeRow)
-        a.dlg()
-            .setTitle(L.t("Add a task", "কাজ যোগ করুন"))
-            .setView(box)
-            .setPositiveButton(L.t("Add", "যোগ করুন")) { _, _ ->
-                val title = et.text.toString().trim()
-                if (title.isNotEmpty()) {
-                    Plan.addTask(a, title, timeMin)
-                    updatePlan()
-                }
             }
             .setNegativeButton(L.t("Cancel", "বাতিল"), null)
             .show()
@@ -1661,11 +1548,6 @@ class StatsScreen(private val a: MainActivity) {
 
         col.addView(a.tv(L.t("Statistics", "পরিসংখ্যান"), 24f, C.text, 1), lp(MATCH, WRAP, b = a.dp(14)))
 
-        // focus card: today's stats as a shareable image
-        val shareBtn = a.outlineBtn(L.t("Share focus card", "ফোকাস কার্ড শেয়ার করুন"), C.primary)
-        shareBtn.setOnClickListener { FocusCard.share(a) }
-        col.addView(shareBtn, lp(MATCH, a.dp(48), b = a.dp(14)))
-
         fun statCard(icon: Ic, label: String, value: String): View {
             val c = a.card(14)
             c.addView(IconView(a, icon, C.primary), lp(a.dp(24), a.dp(24)))
@@ -1736,45 +1618,6 @@ class StatsScreen(private val a: MainActivity) {
             focus7.addView(r)
         }
         col.addView(focus7, lp(MATCH, WRAP, b = a.dp(14)))
-
-        // this week vs last week: focus minutes + completed locks (focus_days, 90 days kept)
-        val cmpCard = a.card()
-        cmpCard.addView(a.section(L.t("This week vs last week", "এই সপ্তাহ বনাম গত সপ্তাহ")))
-        val focusMap = Store.focusDayMap(a)
-        val thisKeys = (0..6).map { Store.dayKey(it) }.toSet()
-        val lastKeys = (7..13).map { Store.dayKey(it) }.toSet()
-        val thisMin = thisKeys.sumOf { focusMap[it] ?: 0 }
-        val lastMin = lastKeys.sumOf { focusMap[it] ?: 0 }
-        val thisLocks = all.count { it.ok && Store.dayKeyFor(it.start) in thisKeys }
-        val lastLocks = all.count { it.ok && Store.dayKeyFor(it.start) in lastKeys }
-        fun cmpRow(label: String, thisV: String, lastV: String) {
-            val r = LinearLayout(a)
-            r.gravity = Gravity.CENTER_VERTICAL
-            r.setPadding(0, a.dp(6), 0, a.dp(6))
-            r.addView(a.tv(label, 14f, C.text, 1), lp(0, WRAP, weight = 1f))
-            r.addView(a.tv(thisV, 14f, C.mint, 1), lp(WRAP, WRAP, r = a.dp(12)))
-            r.addView(a.tv(L.t("last week: ", "গত সপ্তাহে: ") + lastV, 13f, C.muted))
-            cmpCard.addView(r)
-        }
-        cmpRow(L.t("Focus", "ফোকাস"), fmtDur(thisMin * 60000L), fmtDur(lastMin * 60000L))
-        cmpRow(L.t("Locks completed", "সম্পন্ন লক"), L.num(thisLocks.toString()), L.num(lastLocks.toString()))
-        val cmpText = when {
-            lastMin == 0 && thisMin == 0 -> L.t("No focus in either week yet.", "দুই সপ্তাহেই এখনো ফোকাস হয়নি।")
-            lastMin == 0 -> L.t("No focus last week — this week is a fresh start!", "গত সপ্তাহে ফোকাস হয়নি — এই সপ্তাহ নতুন শুরু!")
-            else -> {
-                val pct = (thisMin - lastMin) * 100 / lastMin
-                when {
-                    pct == 0 -> L.t("Same focus as last week.", "গত সপ্তাহের সমান ফোকাস।")
-                    pct > 0 -> L.num(L.t("$pct% more focus than last week", "গত সপ্তাহের চেয়ে $pct% বেশি ফোকাস"))
-                    else -> L.num(L.t("${-pct}% less focus than last week", "গত সপ্তাহের চেয়ে ${-pct}% কম ফোকাস"))
-                }
-            }
-        }
-        cmpCard.addView(
-            a.tv(cmpText, 14f, if (thisMin >= lastMin) C.mint else C.warn, 1),
-            lp(MATCH, WRAP, t = a.dp(10))
-        )
-        col.addView(cmpCard, lp(MATCH, WRAP, b = a.dp(14)))
 
         // milestone badges: earned in colour with the date, unearned greyed out
         val badgeCard = a.card()
@@ -2127,27 +1970,6 @@ class SettingsScreen(private val a: MainActivity) {
             .show()
     }
 
-    /** Home background photo: pick from the gallery, or remove the current one. */
-    private fun wallpaperDialog() {
-        val items = ArrayList<String>()
-        items.add(L.t("Pick a photo", "ছবি বাছুন"))
-        if (Wallpaper.has(a)) items.add(L.t("Remove the photo", "ছবি সরান"))
-        a.dlg()
-            .setTitle(L.t("Home background photo", "হোমের ছবি"))
-            .setItems(items.toTypedArray()) { _, which ->
-                if (which == 0) {
-                    val i = Intent(Intent.ACTION_OPEN_DOCUMENT)
-                        .setType("image/*")
-                        .addCategory(Intent.CATEGORY_OPENABLE)
-                    a.startActivityForResult(i, REQ_WALLPAPER)
-                } else {
-                    Wallpaper.remove(a)
-                    a.crossfade { }
-                }
-            }
-            .show()
-    }
-
     fun build(): View {
         val (sv, col) = a.page()
         col.addView(a.tv(L.t("Settings", "সেটিংস"), 24f, C.text, 1), lp(MATCH, WRAP, b = a.dp(14)))
@@ -2226,30 +2048,6 @@ class SettingsScreen(private val a: MainActivity) {
         styleSwatches()
         theme.addView(acRow)
         col.addView(theme, lp(MATCH, WRAP, b = a.dp(12)))
-
-        // morning reminder: a daily notification to start the first lock
-        val morn = a.card()
-        morn.addView(a.section(L.t("Morning reminder", "সকালের রিমাইন্ডার")))
-        val mornSw = a.toggle(Reminders.morningOn(a)) { v ->
-            Reminders.setMorning(a, v, Reminders.morningMin(a))
-        }
-        morn.addView(
-            a.row(
-                L.t("Remind me every morning", "প্রতি সকালে মনে করিয়ে দিন"),
-                L.t("A notification to start today's first lock.", "আজকের প্রথম লক শুরু করার নোটিফিকেশন।"),
-                mornSw
-            )
-        )
-        val mornTimeText = a.tv(fmtMin(Reminders.morningMin(a)), 16f, C.primary, 1)
-        morn.addView(a.row(L.t("Reminder time", "রিমাইন্ডারের সময়"), null, mornTimeText) {
-            val cur = Reminders.morningMin(a)
-            TimePickerDialog(a, { _, h, m ->
-                val min = h * 60 + m
-                Reminders.setMorning(a, Reminders.morningOn(a), min)
-                mornTimeText.text = fmtMin(min)
-            }, cur / 60, cur % 60, false).show()
-        })
-        col.addView(morn, lp(MATCH, WRAP, b = a.dp(12)))
 
         // strict protection
         val strictCard = a.card()
@@ -2338,15 +2136,6 @@ class SettingsScreen(private val a: MainActivity) {
                 a.tv("›", 22f, C.muted)
             ) { focusSoundDialog() }
         )
-        // home background photo: a gallery photo behind the Home screen, dimmed
-        gen.addView(
-            a.row(
-                L.t("Home background photo", "হোমের ছবি"),
-                if (Wallpaper.has(a)) L.t("Tap to change or remove", "বদলাতে বা সরাতে চাপুন")
-                else L.t("Tap to pick a photo", "ছবি বাছতে চাপুন"),
-                a.tv("›", 22f, C.muted)
-            ) { wallpaperDialog() }
-        )
         gen.addView(
             a.row(L.t("Notification settings", "নোটিফিকেশন সেটিংস"), null, a.tv("›", 22f, C.muted)) {
                 launch(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, a.packageName))
@@ -2421,7 +2210,6 @@ class ProtectionScreen(private val a: MainActivity) {
         col.addView(a.dailyLimitsCard(), lp(MATCH, WRAP, b = a.dp(12)))
         col.addView(a.appGroupsCard(), lp(MATCH, WRAP, b = a.dp(12)))
         col.addView(a.profilesCard(), lp(MATCH, WRAP, b = a.dp(12)))
-        col.addView(a.siteBlockCard(), lp(MATCH, WRAP, b = a.dp(12)))
         col.addView(a.diagnosticCard(), lp(MATCH, WRAP, b = a.dp(12)))
         return sv
     }

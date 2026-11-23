@@ -1,7 +1,5 @@
 package com.powerlock.app
 
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.PixelFormat
 import android.graphics.ColorFilter
 import android.animation.ArgbEvaluator
@@ -23,9 +21,7 @@ import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
-import android.net.Uri
 import android.text.InputType
-import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -39,8 +35,6 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
-import java.io.File
-import java.io.FileOutputStream
 
 const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
 const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
@@ -110,64 +104,6 @@ fun rounded(color: Int, radius: Float, strokeColor: Int = 0, strokeWidth: Int = 
     d.cornerRadius = radius
     if (strokeWidth > 0) d.setStroke(strokeWidth, strokeColor)
     return d
-}
-
-/**
- * Home background photo: the picked image is copied (downscaled) into app
- * files, so no persistable URI permission is needed and the photo survives
- * gallery moves. A missing or unreadable file just falls back to the normal
- * background — never a crash.
- */
-object Wallpaper {
-    private const val FILE = "wallpaper.jpg"
-
-    fun has(ctx: Context): Boolean = File(ctx.filesDir, FILE).exists()
-
-    private fun file(ctx: Context): File = File(ctx.filesDir, FILE)
-
-    /** Copies the picked image into app files, downscaled to at most 1080 px wide. False on failure. */
-    fun saveFromUri(ctx: Context, uri: Uri): Boolean {
-        return try {
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            ctx.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-            if (bounds.outWidth <= 0) return false
-            var sample = 1
-            while (bounds.outWidth / sample > 1080 || bounds.outHeight / sample > 1920) sample *= 2
-            val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-            val bmp = ctx.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
-                ?: return false
-            FileOutputStream(file(ctx)).use { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }
-            bmp.recycle()
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "wallpaper save failed", e)
-            false
-        }
-    }
-
-    fun remove(ctx: Context) {
-        try {
-            file(ctx).delete()
-        } catch (_: Exception) {
-        }
-    }
-
-    /** Loads the wallpaper scaled to the screen (or null when there is none / it fails). */
-    fun loadBitmap(ctx: Context): Bitmap? {
-        if (!has(ctx)) return null
-        return try {
-            val dm = ctx.resources.displayMetrics
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(file(ctx).absolutePath, bounds)
-            if (bounds.outWidth <= 0) return null
-            var sample = 1
-            while (bounds.outWidth / sample > dm.widthPixels * 2 || bounds.outHeight / sample > dm.heightPixels * 2) sample *= 2
-            BitmapFactory.decodeFile(file(ctx).absolutePath, BitmapFactory.Options().apply { inSampleSize = sample })
-        } catch (e: Exception) {
-            Log.e(TAG, "wallpaper load failed", e)
-            null
-        }
-    }
 }
 
 fun withRipple(bg: Drawable): Drawable = RippleDrawable(ColorStateList.valueOf(tint(C.primary, 46)), bg, null)

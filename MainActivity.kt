@@ -21,10 +21,6 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 
-/** startActivityForResult codes: VPN consent for the site block, gallery pick for the home photo. */
-const val REQ_VPN = 1001
-const val REQ_WALLPAPER = 1002
-
 class MainActivity : Activity() {
 
     private val handler = Handler(Looper.getMainLooper())
@@ -92,7 +88,6 @@ class MainActivity : Activity() {
         applyChrome()
         navHolder.addView(buildNav())
         Scheduler.onAlarm(this)
-        Reminders.rescheduleAll(this) // morning + plan alarms (idempotent)
         go(tab, false)
         Store.kickService(this) // restart the foreground service if it was swiped away
         Watchdog.enqueue(this) // safety net: restart the service every 15 min if it dies
@@ -114,33 +109,6 @@ class MainActivity : Activity() {
     override fun onPause() {
         handler.removeCallbacks(ticker)
         super.onPause()
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        when (requestCode) {
-            REQ_VPN -> {
-                if (resultCode == RESULT_OK) {
-                    SiteBlock.sync(this)
-                    toast(L.t("Site block is ready", "সাইট ব্লক প্রস্তুত"))
-                } else {
-                    SiteBlock.setOn(this, false)
-                    toast(L.t("Site block needs VPN permission", "সাইট ব্লকের জন্য VPN অনুমতি লাগবে"))
-                }
-                if (tab == 4) go(4, false) // refresh the Protection tab's switch + state line
-            }
-            REQ_WALLPAPER -> {
-                if (resultCode == RESULT_OK) {
-                    val uri = data?.data
-                    if (uri != null && Wallpaper.saveFromUri(this, uri)) {
-                        crossfade { }
-                        toast(L.t("Home photo set", "হোমের ছবি সেট হয়েছে"))
-                    } else {
-                        toast(L.t("Could not use that photo", "ওই ছবি ব্যবহার করা যায়নি"))
-                    }
-                }
-            }
-        }
     }
 
     fun toast(m: String) {
@@ -227,13 +195,7 @@ class MainActivity : Activity() {
     private fun enter(v: View) {
         v.alpha = 0f
         v.animate().alpha(1f).setDuration(Motion.MED).setInterpolator(Motion.EASE).start()
-        // Home wraps its ScrollView in a FrameLayout when a wallpaper is set
-        val sv = when (v) {
-            is ScrollView -> v
-            is FrameLayout -> (0 until v.childCount).firstNotNullOfOrNull { v.getChildAt(it) as? ScrollView }
-            else -> null
-        }
-        val col = sv?.getChildAt(0) as? ViewGroup
+        val col = (v as? ScrollView)?.getChildAt(0) as? ViewGroup
         if (col != null) staggerIn(col)
     }
 

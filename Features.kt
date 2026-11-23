@@ -16,7 +16,6 @@ import android.graphics.drawable.Drawable
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
-import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -78,7 +77,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "52"
+    const val BUILD_ID = "51"
 
     // ---------- presets ----------
 
@@ -2261,98 +2260,6 @@ private fun MainActivity.profileEditorDialog(existing: LockProfile?, done: () ->
         }
     }
     b.show()
-}
-
-// =====================================================================
-// UI: site block (Protection) — DNS-only VPN, active only during a lock
-// =====================================================================
-
-/** Master switch + blocklist for the DNS site block. Only DNS lookups are
- * checked — no browsing data ever leaves the phone. */
-fun MainActivity.siteBlockCard(): View {
-    val c = card()
-    c.addView(section(L.t("Site block", "সাইট ব্লক")))
-    c.addView(
-        tv(
-            L.t("Blocked sites cannot open while a lock runs. Only DNS lookups are checked — no browsing data leaves the phone.", "লক চলাকালীন ব্লক করা সাইট খুলবে না। শুধু DNS যাচাই করা হয় — ব্রাউজিংয়ের কোনো তথ্য ফোনের বাইরে যায় না।"),
-            13f, C.muted
-        ),
-        lp(MATCH, WRAP, t = dp(6))
-    )
-    val stateText = tv("", 13f, C.primary)
-    fun refreshState() {
-        stateText.text = when {
-            !SiteBlock.isOn(this) -> L.t("Off", "বন্ধ")
-            !SiteBlock.hasPermission(this) -> L.t("Needs VPN permission — tap the switch to grant it", "VPN অনুমতি দরকার — চালু করতে সুইচ চাপুন")
-            Store.isActive(this) -> L.t("Active now — blocked sites cannot open", "এখন সক্রিয় — ব্লক করা সাইট খুলবে না")
-            else -> L.t("On — starts with the next lock", "চালু — পরের লক থেকে কাজ করবে")
-        }
-    }
-    val sw = toggle(SiteBlock.isOn(this)) { v ->
-        if (v) {
-            SiteBlock.setOn(this, true)
-            val prep = VpnService.prepare(this)
-            if (prep != null) {
-                // consent needed: the result comes back to MainActivity.onActivityResult
-                startActivityForResult(prep, REQ_VPN)
-            } else {
-                SiteBlock.sync(this)
-            }
-        } else {
-            SiteBlock.setOn(this, false)
-            SiteBlock.sync(this)
-        }
-        refreshState()
-    }
-    c.addView(row(L.t("Block sites during a lock", "লক চলাকালীন সাইট ব্লক"), null, sw))
-    c.addView(stateText, lp(MATCH, WRAP, t = dp(6)))
-    // the blocklist: tap ✕ to remove a domain
-    val listBox = LinearLayout(this)
-    listBox.orientation = LinearLayout.VERTICAL
-    c.addView(listBox, lp(MATCH, WRAP, t = dp(10)))
-    fun refreshList() {
-        listBox.removeAllViews()
-        for (d in SiteBlock.blocklist(this)) {
-            val r = LinearLayout(this)
-            r.gravity = Gravity.CENTER_VERTICAL
-            r.setPadding(0, dp(8), 0, dp(8))
-            r.addView(tv(d, 15f, C.text), lp(0, WRAP, weight = 1f))
-            val del = tv("✕", 16f, C.muted, 1)
-            del.setPadding(dp(10), dp(4), dp(4), dp(4))
-            del.setOnClickListener {
-                SiteBlock.saveBlocklist(this, SiteBlock.blocklist(this) - d)
-                refreshList()
-            }
-            r.addView(del)
-            listBox.addView(r)
-        }
-    }
-    refreshList()
-    refreshState()
-    // add a domain
-    val addRow = LinearLayout(this)
-    addRow.gravity = Gravity.CENTER_VERTICAL
-    val et = edit(L.t("Add a site, e.g. facebook.com", "সাইট যোগ করুন, যেমন facebook.com"), false)
-    addRow.addView(et, lp(0, WRAP, weight = 1f))
-    val addBtn = outlineBtn(L.t("Add", "যোগ করুন"), C.primary)
-    addBtn.setOnClickListener {
-        val norm = SiteBlock.normalize(et.text.toString())
-        if (norm == null) {
-            toast(L.t("Enter a valid domain, e.g. facebook.com", "সঠিক ডোমেইন লিখুন, যেমন facebook.com"))
-            return@setOnClickListener
-        }
-        val list = SiteBlock.blocklist(this)
-        if (norm in list) {
-            toast(L.t("Already blocked", "আগেই ব্লক করা আছে"))
-            return@setOnClickListener
-        }
-        SiteBlock.saveBlocklist(this, list + norm)
-        et.setText("")
-        refreshList()
-    }
-    addRow.addView(addBtn, lp(WRAP, WRAP, l = dp(10)))
-    c.addView(addRow, lp(MATCH, WRAP, t = dp(10)))
-    return c
 }
 
 // =====================================================================

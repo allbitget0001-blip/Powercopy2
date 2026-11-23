@@ -184,7 +184,6 @@ class KeepAliveService : Service() {
             handler.removeCallbacks(heartbeatTask)
             handler.post(heartbeatTask) // fresh heartbeat every 60s so the accessibility service can tell we are alive
             FocusSound.sync(this) // resume the focus sound after a restart if a lock is running
-            SiteBlock.sync(this) // resume the site-block VPN after a restart if a lock is running
             // location lock no longer uses sessions: end any old location session, the flag takes over
             if (Store.isLocationSession(this)) Store.stopSession(this, force = true)
             PlaceWatcher.sync(this) // resume location watching after a restart/reboot

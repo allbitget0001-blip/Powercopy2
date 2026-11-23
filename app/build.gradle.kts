@@ -31,7 +31,7 @@ android {
         applicationId = "com.powerlock.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 25
+        versionCode = 26
         versionName = "3.0"
     }
 
@@ -62,6 +62,4 @@ android {
 
 dependencies {
     implementation("androidx.work:work-runtime:2.9.0")
-    // FileProvider for sharing the focus card image (androidx.core)
-    implementation("androidx.core:core-ktx:1.13.1")
 }
