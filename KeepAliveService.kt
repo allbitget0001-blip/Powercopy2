@@ -39,6 +39,7 @@ class KeepAliveService : Service() {
             // backup arrival check for a location-unlock session (cheap, last known fix only)
             PlaceWatcher.checkUnlockLastKnown(this)
             Pomodoro.sync(this) // advance the Pomodoro set when a phase is over
+            Routine.sweep(this) // a routine task may have become overdue while the app is closed
             LockWidget.refresh(this) // keep the widget countdown fresh while the app is closed
         } catch (e: Exception) {
             Log.e(TAG, "heartbeat failed", e)

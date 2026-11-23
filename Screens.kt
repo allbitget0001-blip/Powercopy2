@@ -75,6 +75,10 @@ class HomeScreen(private val a: MainActivity) {
     private lateinit var planBox: LinearLayout
     private lateinit var planCarryBtn: TextView
     private var lastPlanDay = ""
+    private lateinit var routineBox: LinearLayout
+    private lateinit var routineStreakText: TextView
+    private var routineSig = ""
+    private var lastRoutineSweep = 0L
     private lateinit var noteBox: LinearLayout
     private lateinit var noteEdit: EditText
     private var noteSig = ""
@@ -233,6 +237,19 @@ class HomeScreen(private val a: MainActivity) {
         }
         plan.addView(planCarryBtn, lp(MATCH, a.dp(48), t = a.dp(8)))
         col.addView(plan, lp(MATCH, WRAP, t = a.dp(16)))
+
+        // ---- daily routine: repeating tasks; miss one and the phone locks ----
+        val routine = a.card(20)
+        routine.addView(a.tv(L.t("Daily routine", "দৈনিক রুটিন"), 18f, C.text, 1))
+        routineStreakText = a.tv("", 13f, C.mint)
+        routine.addView(routineStreakText, lp(MATCH, WRAP, t = a.dp(4)))
+        routineBox = LinearLayout(a)
+        routineBox.orientation = LinearLayout.VERTICAL
+        routine.addView(routineBox, lp(MATCH, WRAP, t = a.dp(6)))
+        val routineEdit = a.outlineBtn(L.t("Edit routine", "রুটিন বদলান"), C.primary)
+        routineEdit.setOnClickListener { a.go(1) }
+        routine.addView(routineEdit, lp(MATCH, a.dp(48), t = a.dp(12)))
+        col.addView(routine, lp(MATCH, WRAP, t = a.dp(16)))
 
         // ---- focus note: jot a thought during a lock without breaking it ----
         val note = a.card(20)
@@ -649,6 +666,11 @@ class HomeScreen(private val a: MainActivity) {
         // backup arrival check (the service listener is the main path)
         if (Store.unlockTarget(a) != null) PlaceWatcher.checkUnlockLastKnown(a)
         Pomodoro.sync(a) // advance the Pomodoro set when a phase is over
+        // routine overdue check (throttled: the window-end alarms are the main path)
+        if (now - lastRoutineSweep > 30_000) {
+            lastRoutineSweep = now
+            Routine.sweep(a)
+        }
         val active = Store.isActive(a)
         val st = statusOf(a, active, now)
         applyStatus(st)
@@ -782,6 +804,7 @@ class HomeScreen(private val a: MainActivity) {
         updatePomodoro()
         updateHabits()
         updateNotes()
+        updateRoutine()
         // midnight rollover: the plan card shows the new day's tasks
         if (Store.dayKey(0) != lastPlanDay) {
             lastPlanDay = Store.dayKey(0)
@@ -1363,6 +1386,67 @@ class HomeScreen(private val a: MainActivity) {
             .show()
     }
 
+    /** Today's routine tasks: tap to check off. Overdue tasks show in warn colour;
+     * a running penalty lock names the task that caused it. */
+    private fun updateRoutine() {
+        val tasks = Routine.tasksToday(a)
+        val day = Store.dayKey(0)
+        val done = Routine.doneIds(a, day)
+        val missed = Routine.missedIds(a, day)
+        val pen = Routine.isPenaltyLock(a)
+        val penTitle = Routine.penaltyTaskTitle(a)
+        val sig = "$day#" + tasks.joinToString("|") { "${it.id}:${it.title}:${it.timeMin}:${it.graceMin}" } + "#" +
+            tasks.joinToString("|") { if (it.id in done) "1" else if (it.id in missed) "2" else "0" } +
+            "#$pen:$penTitle"
+        if (sig == routineSig) return
+        routineSig = sig
+        val s = Routine.streak(a)
+        routineStreakText.text = if (s > 0) L.num(s.toString()) + " " + L.t("day routine streak", "দিনের রুটিন স্ট্রিক") else ""
+        routineStreakText.visibility = if (s > 0) View.VISIBLE else View.GONE
+        routineBox.removeAllViews()
+        if (tasks.isEmpty()) {
+            routineBox.addView(
+                a.tv(L.t("No routine yet. Build one in the Schedule tab — miss a task and the phone locks until you do it.", "এখনো রুটিন নেই। সময়সূচি ট্যাবে বানান — কাজ বাদ গেলে ফোন লক হবে, কাজ শেষ করলে খুলবে।"), 13f, C.muted),
+                lp(MATCH, WRAP, t = a.dp(4))
+            )
+            return
+        }
+        if (pen && penTitle != null) {
+            routineBox.addView(
+                a.tv(
+                    L.t("Locked: \"$penTitle\" is overdue. Finish it and check it off to unlock.", "লক হয়েছে: \"$penTitle\" বাকি আছে। কাজ শেষ করে টিক দিলে লক খুলবে।"),
+                    13f, C.warn, 1
+                ),
+                lp(MATCH, WRAP, t = a.dp(4), b = a.dp(4))
+            )
+        }
+        for (t in tasks) {
+            val isDone = t.id in done
+            val isMissed = t.id in missed
+            val r = LinearLayout(a)
+            r.gravity = Gravity.CENTER_VERTICAL
+            r.setPadding(0, a.dp(8), 0, a.dp(8))
+            val box = a.tv(if (isDone) "☑" else "☐", 20f, if (isDone) C.mint else if (isMissed) C.warn else C.muted, 1)
+            r.addView(box, lp(WRAP, WRAP, r = a.dp(10)))
+            val col2 = LinearLayout(a)
+            col2.orientation = LinearLayout.VERTICAL
+            val title = a.tv(t.title, 15f, if (isDone) C.muted else C.text)
+            if (isDone) title.paintFlags = title.paintFlags or Paint.STRIKE_THRU_TEXT_FLAG
+            col2.addView(title)
+            val meta = fmtMin(t.timeMin) + if (isMissed && !isDone) "  ·  " + L.t("overdue", "বাকি আছে") else ""
+            col2.addView(a.tv(meta, 12f, if (isMissed && !isDone) C.warn else C.primary))
+            r.addView(col2, lp(0, WRAP, weight = 1f))
+            r.pressFeedback()
+            r.setOnClickListener {
+                Routine.toggleDone(a, t.id)
+                routineSig = ""
+                updateRoutine()
+                tick()
+            }
+            routineBox.addView(r)
+        }
+    }
+
     /** Shows the "new badge" dialog once, the first time Home ticks after one is earned. */
     private fun maybeShowBadge() {
         if (badgeShown) return
@@ -1402,10 +1486,22 @@ class HomeScreen(private val a: MainActivity) {
         // warn only while a lock runs: the admin was on, now it is off, so
         // the app could be uninstalled mid-lock
         val adminOff = Store.isActive(a) && DeviceAdmin.wasActive(a) && !adminActive
-        val sig = "$acc|$bat|$adminOff|${L.bn}"
+        val pen = Routine.isPenaltyLock(a)
+        val penTitle = Routine.penaltyTaskTitle(a)
+        val sig = "$acc|$bat|$adminOff|$pen:$penTitle|${L.bn}"
         if (sig == warnSig) return
         warnSig = sig
         warnBox.removeAllViews()
+        if (pen) {
+            warnBox.addView(
+                warnCard(
+                    "!",
+                    L.t("Routine task overdue", "রুটিনের কাজ বাকি"),
+                    (penTitle ?: "") + " — " + L.t("finish it and check it off below to unlock early.", "শেষ করে নিচে টিক দিলে লক আগেই খুলবে।")
+                ) { },
+                lp(MATCH, WRAP, b = a.dp(8))
+            )
+        }
         if (!acc) {
             warnBox.addView(
                 warnCard(
@@ -1668,6 +1764,9 @@ class HomeScreen(private val a: MainActivity) {
 // =====================================================================
 class ScheduleScreen(private val a: MainActivity) {
     private lateinit var list: LinearLayout
+    private lateinit var routineList: LinearLayout
+    private val routineDayChips = ArrayList<TextView>()
+    private var routineDay = dayIdx(Calendar.getInstance()) // today by default
 
     fun build(): View {
         val (sv, col) = a.page()
@@ -1686,7 +1785,176 @@ class ScheduleScreen(private val a: MainActivity) {
         list.orientation = LinearLayout.VERTICAL
         col.addView(list, lp(MATCH, WRAP, t = a.dp(14)))
         refresh()
+
+        // ---- daily routine: repeating tasks per weekday ----
+        col.addView(a.tv(L.t("Daily routine", "দৈনিক রুটিন"), 24f, C.text, 1), lp(MATCH, WRAP, t = a.dp(26)))
+        col.addView(
+            a.tv(
+                L.t("Tasks that repeat every day. Miss one and the phone locks until you do it.", "প্রতিদিনের কাজ। একটা বাদ গেলে ফোন লক হবে — কাজ শেষ করলে খুলবে।"),
+                13f, C.muted
+            ),
+            lp(MATCH, WRAP, t = a.dp(4), b = a.dp(12))
+        )
+        val dayRow = LinearLayout(a)
+        for (i in 0..6) {
+            val d = a.chip(L.dayShort(i), i == routineDay)
+            d.setPadding(0, a.dp(10), 0, a.dp(10))
+            d.setOnClickListener {
+                routineDay = i
+                for ((j, c) in routineDayChips.withIndex()) a.animateChip(c, j == i)
+                refreshRoutine()
+            }
+            routineDayChips.add(d)
+            dayRow.addView(d, lp(0, WRAP, r = if (i < 6) a.dp(4) else 0, weight = 1f))
+        }
+        col.addView(dayRow)
+        val rAdd = a.primaryBtn("＋  " + L.t("Add routine task", "রুটিনের কাজ যোগ করুন"))
+        rAdd.setOnClickListener { routineEditor(null) }
+        col.addView(rAdd, lp(MATCH, a.dp(52), t = a.dp(12)))
+        val rTpl = a.outlineBtn(L.t("Use a template", "টেমপ্লেট ব্যবহার করুন"), C.primary)
+        rTpl.setOnClickListener { templateDialog() }
+        col.addView(rTpl, lp(MATCH, a.dp(48), t = a.dp(8)))
+        routineList = LinearLayout(a)
+        routineList.orientation = LinearLayout.VERTICAL
+        col.addView(routineList, lp(MATCH, WRAP, t = a.dp(14)))
+        refreshRoutine()
         return sv
+    }
+
+    /** The selected weekday's routine tasks. */
+    private fun refreshRoutine() {
+        routineList.removeAllViews()
+        val items = Routine.tasksForDay(a, routineDay)
+        if (items.isEmpty()) {
+            val c = a.card(24)
+            c.gravity = Gravity.CENTER_HORIZONTAL
+            val t = a.tv(L.t("No tasks on ${L.dayLong(routineDay)}", "${L.dayLong(routineDay)}-এ কোনো কাজ নেই"), 15f, C.muted, 1)
+            t.gravity = Gravity.CENTER
+            c.addView(t, lp(MATCH, WRAP, t = a.dp(8)))
+            routineList.addView(c)
+            return
+        }
+        for (t in items) {
+            val c = a.card()
+            val r = LinearLayout(a)
+            r.gravity = Gravity.CENTER_VERTICAL
+            val col2 = LinearLayout(a)
+            col2.orientation = LinearLayout.VERTICAL
+            col2.addView(a.tv(t.title, 17f, C.text, 1))
+            col2.addView(
+                a.tv(fmtMin(t.timeMin) + "  ·  " + L.t("${t.graceMin} min grace", "${L.num(t.graceMin.toString())} মিনিট ছাড়"), 13f, C.primary),
+                lp(MATCH, WRAP, t = a.dp(4))
+            )
+            r.addView(col2, lp(0, WRAP, weight = 1f))
+            val del = a.tv("🗑", 20f)
+            del.setPadding(a.dp(16), a.dp(4), a.dp(4), a.dp(4))
+            del.setOnClickListener {
+                a.dlg()
+                    .setTitle(L.t("Delete this task?", "এই কাজ মুছে ফেলবেন?"))
+                    .setMessage(t.title)
+                    .setPositiveButton(L.t("Delete", "মুছুন")) { _, _ ->
+                        Routine.saveTasks(a, routineDay, Routine.tasksForDay(a, routineDay).filter { it.id != t.id })
+                        refreshRoutine()
+                    }
+                    .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+                    .show()
+            }
+            r.addView(del)
+            c.addView(r)
+            c.setOnClickListener { routineEditor(t) }
+            routineList.addView(c, lp(MATCH, WRAP, b = a.dp(12)))
+        }
+    }
+
+    /** Add or edit one routine task for the selected weekday. */
+    private fun routineEditor(existing: RoutineTask?) {
+        var timeMin = existing?.timeMin ?: (8 * 60)
+        var grace = existing?.graceMin ?: 30
+        val box = LinearLayout(a)
+        box.orientation = LinearLayout.VERTICAL
+        box.setPadding(a.dp(20), a.dp(8), a.dp(20), 0)
+        val et = a.edit(L.t("Task (e.g. Exercise)", "কাজ (যেমন ব্যায়াম)"), false)
+        if (existing != null) et.setText(existing.title)
+        box.addView(et)
+        val timeView = a.tv("", 18f, C.text, 1)
+        timeView.gravity = Gravity.CENTER
+        timeView.background = withRipple(rounded(C.card2, a.dp(12).toFloat()))
+        timeView.setPadding(a.dp(8), a.dp(14), a.dp(8), a.dp(14))
+        fun renderTime() {
+            timeView.text = L.t("Time  ", "সময়  ") + fmtMin(timeMin)
+        }
+        timeView.setOnClickListener {
+            TimePickerDialog(a, android.R.style.Theme_DeviceDefault_Dialog, { _, h, m ->
+                timeMin = h * 60 + m
+                renderTime()
+            }, timeMin / 60, timeMin % 60, false).show()
+        }
+        box.addView(timeView, lp(MATCH, WRAP, t = a.dp(14)))
+        renderTime()
+        box.addView(
+            a.tv(L.t("Grace time — how long after the time before the phone locks", "ছাড় — সময়ের কত পরে ফোন লক হবে"), 13f, C.muted),
+            lp(MATCH, WRAP, t = a.dp(14))
+        )
+        val graceRow = LinearLayout(a)
+        val graceChips = ArrayList<TextView>()
+        val graceOpts = listOf(15, 30, 60)
+        for (g in graceOpts) {
+            val ch = a.chip(L.num(g.toString()) + " " + L.t("min", "মিনিট"), g == grace)
+            ch.setOnClickListener {
+                grace = g
+                for ((i, c) in graceChips.withIndex()) a.animateChip(c, graceOpts[i] == g)
+            }
+            graceChips.add(ch)
+            graceRow.addView(ch, lp(0, WRAP, r = a.dp(8), t = a.dp(8), weight = 1f))
+        }
+        box.addView(graceRow)
+        val d = a.dlg()
+            .setTitle(if (existing == null) L.t("New routine task", "নতুন রুটিনের কাজ") else L.t("Edit routine task", "রুটিনের কাজ বদলান"))
+            .setView(box)
+            .setPositiveButton(L.t("Save", "সংরক্ষণ"), null)
+            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+            .create()
+        d.show()
+        d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val title = et.text.toString().trim()
+            if (title.isEmpty()) {
+                et.error = L.t("Write a task name", "কাজের নাম লিখুন")
+            } else {
+                val all = Routine.tasksForDay(a, routineDay)
+                val updated = if (existing == null) {
+                    all + RoutineTask(System.currentTimeMillis(), title.take(40), timeMin, grace, "manual")
+                } else {
+                    all.map { if (it.id == existing.id) it.copy(title = title.take(40), timeMin = timeMin, graceMin = grace) else it }
+                }
+                Routine.saveTasks(a, routineDay, updated)
+                d.dismiss()
+                refreshRoutine()
+            }
+        }
+    }
+
+    /** One-tap presets (student / office / general) — replaces the whole routine. */
+    private fun templateDialog() {
+        val tpls = Routine.templates()
+        val items = tpls.map {
+            L.t(it.nameEn, it.nameBn) + "  ·  " + L.num(it.tasks.size.toString()) + " " + L.t("tasks", "টি কাজ")
+        }.toTypedArray()
+        a.dlg()
+            .setTitle(L.t("Routine template", "রুটিন টেমপ্লেট"))
+            .setItems(items) { _, which ->
+                val tpl = tpls[which]
+                a.dlg()
+                    .setTitle(L.t(tpl.nameEn, tpl.nameBn))
+                    .setMessage(L.t("This replaces your whole routine (all days) with the template's tasks.", "এটা তোমার পুরো রুটিন (সব দিন) টেমপ্লেটের কাজ দিয়ে বদলে দেবে।"))
+                    .setPositiveButton(L.t("Apply", "প্রয়োগ করুন")) { _, _ ->
+                        Routine.applyTemplate(a, tpl)
+                        refreshRoutine()
+                        a.toast(L.t("Routine applied", "রুটিন প্রয়োগ হয়েছে"))
+                    }
+                    .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+                    .show()
+            }
+            .show()
     }
 
     private fun refresh() {
@@ -1992,6 +2260,41 @@ class StatsScreen(private val a: MainActivity) {
             scoreCard.addView(r)
         }
         col.addView(scoreCard, lp(MATCH, WRAP, b = a.dp(14)))
+
+        // routine: streak + today's progress + the last 7 days
+        val (rDone, rTotal) = Routine.todaySummary(a)
+        val rStreak = Routine.streak(a)
+        val routineCard = a.card()
+        routineCard.addView(a.section(L.t("Daily routine", "দৈনিক রুটিন")))
+        val rBig = LinearLayout(a)
+        rBig.gravity = Gravity.CENTER_VERTICAL
+        rBig.addView(a.tv(L.num(rStreak.toString()), 34f, C.mint, 1))
+        rBig.addView(a.tv(L.t(" day streak", " দিনের স্ট্রিক"), 16f, C.muted), lp(WRAP, WRAP, l = a.dp(4)))
+        routineCard.addView(rBig, lp(MATCH, WRAP, t = a.dp(8)))
+        routineCard.addView(
+            a.tv(
+                if (rTotal > 0) L.t("Today: $rDone of $rTotal tasks done", "আজ: ${L.num(rTotal.toString())}টি কাজের মধ্যে ${L.num(rDone.toString())}টি শেষ")
+                else L.t("No routine tasks today — build one in the Schedule tab.", "আজ কোনো রুটিনের কাজ নেই — সময়সূচি ট্যাবে বানান।"),
+                14f, C.text
+            ),
+            lp(MATCH, WRAP, t = a.dp(6))
+        )
+        for (i in 6 downTo 0) {
+            val c = Calendar.getInstance()
+            c.add(Calendar.DAY_OF_YEAR, -i)
+            val label = if (i == 0) L.t("Today", "আজ") else L.dayLong(dayIdx(c))
+            val tasks = Routine.tasksForDay(a, dayIdx(c))
+            val done = Routine.doneIds(a, Store.dayKey(i))
+            val doneCount = tasks.count { it.id in done }
+            val r = LinearLayout(a)
+            r.gravity = Gravity.CENTER_VERTICAL
+            r.setPadding(0, a.dp(6), 0, a.dp(6))
+            r.addView(a.tv(label, 14f, C.text, 1), lp(0, WRAP, weight = 1f))
+            val txt = if (tasks.isEmpty()) "—" else L.num(doneCount.toString()) + "/" + L.num(tasks.size.toString())
+            r.addView(a.tv(txt, 14f, if (tasks.isNotEmpty() && doneCount == tasks.size) C.mint else C.muted, 1))
+            routineCard.addView(r)
+        }
+        col.addView(routineCard, lp(MATCH, WRAP, b = a.dp(14)))
 
         // this week vs last week: focus minutes + completed locks (focus_days, 90 days kept)
         val cmpCard = a.card()
@@ -2631,6 +2934,31 @@ class SettingsScreen(private val a: MainActivity) {
             }, cur / 60, cur % 60, false).show()
         })
         col.addView(morn, lp(MATCH, WRAP, b = a.dp(12)))
+
+        // routine: how long the penalty lock lasts when a task is missed
+        val routine = a.card()
+        routine.addView(a.section(L.t("Routine", "রুটিন")))
+        routine.addView(
+            a.tv(
+                L.t("Miss a routine task and the phone locks for this long. Finish the task and check it off to unlock early.", "রুটিনের কাজ বাদ গেলে ফোন এতক্ষণ লক হবে। কাজ শেষ করে টিক দিলে আগেই খুলবে।"),
+                13f, C.muted
+            ),
+            lp(MATCH, WRAP, t = a.dp(8))
+        )
+        val penRow = LinearLayout(a)
+        val penChips = ArrayList<TextView>()
+        val penOpts = listOf(15, 30, 60)
+        for (m in penOpts) {
+            val ch = a.chip(L.num(m.toString()) + " " + L.t("min", "মিনিট"), Routine.penaltyMin(a) == m)
+            ch.setOnClickListener {
+                Routine.setPenaltyMin(a, m)
+                for ((i, c) in penChips.withIndex()) a.animateChip(c, penOpts[i] == m)
+            }
+            penChips.add(ch)
+            penRow.addView(ch, lp(0, WRAP, r = a.dp(8), t = a.dp(10), weight = 1f))
+        }
+        routine.addView(penRow)
+        col.addView(routine, lp(MATCH, WRAP, b = a.dp(12)))
 
         // strict protection
         val strictCard = a.card()

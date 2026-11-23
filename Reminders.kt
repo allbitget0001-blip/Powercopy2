@@ -73,6 +73,7 @@ object Reminders {
     fun rescheduleAll(ctx: Context) {
         rescheduleMorning(ctx)
         Plan.rescheduleAlarms(ctx)
+        Routine.rescheduleAlarms(ctx)
     }
 
     /** Fires at the morning time: a lock reminder + today's task summary (if any). */
@@ -107,7 +108,8 @@ object Reminders {
         }
     }
 
-    private fun show(ctx: Context, id: Int, title: String, text: String) {
+    /** Shared notification helper (the routine reminders use it too). */
+    fun show(ctx: Context, id: Int, title: String, text: String) {
         try {
             val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             nm.createNotificationChannel(
@@ -140,6 +142,17 @@ class ReminderReceiver : BroadcastReceiver() {
                     intent.getLongExtra("task_id", 0),
                     intent.getStringExtra("day") ?: ""
                 )
+                ACTION_ROUTINE_REMIND -> Routine.onRemind(
+                    context,
+                    intent.getLongExtra("task_id", 0),
+                    intent.getStringExtra("day") ?: ""
+                )
+                ACTION_ROUTINE_OVERDUE -> Routine.onOverdue(
+                    context,
+                    intent.getLongExtra("task_id", 0),
+                    intent.getStringExtra("day") ?: ""
+                )
+                ACTION_ROUTINE_REPORT -> Routine.onReport(context)
             }
         } catch (e: Exception) {
             Log.e(TAG, "ReminderReceiver failed", e)

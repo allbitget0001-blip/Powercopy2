@@ -103,6 +103,11 @@ data class FocusNote(val id: Long, val text: String, val time: Long, val duringL
 /** One task in today's plan: optional reminder time in minutes since midnight (-1 = none). */
 data class PlanTask(val id: Long, val title: String, val timeMin: Int, val done: Boolean)
 
+/** One repeating routine task: [timeMin] is the time, [graceMin] the window
+ * before the phone locks, [verify] the check-off type ("manual" in v1 —
+ * a later build adds sensor verification per task). */
+data class RoutineTask(val id: Long, val title: String, val timeMin: Int, val graceMin: Int, val verify: String = "manual")
+
 /** One usage-history session: which app, opened when, closed when (wall-clock ms). */
 data class UsageSession(val pkg: String, val open: Long, val close: Long)
 
@@ -439,6 +444,7 @@ object Store {
         val e = p.edit().putBoolean("active", false).putLong("lastDone", end)
         clearUnlock(e)
         e.remove("s_profile_apps").remove("s_profile_name")
+        e.remove("pen_task_id").remove("pen_task")
         e.apply()
         Dnd.restore(ctx) // lock over: notifications come back
         FocusSound.stop() // lock over: the focus sound stops
@@ -481,6 +487,35 @@ object Store {
         val e = p.edit().putBoolean("active", false).putLong("lastDone", now).putLong("end", now)
         clearUnlock(e)
         e.remove("s_profile_apps").remove("s_profile_name")
+        e.remove("pen_task_id").remove("pen_task")
+        e.apply()
+        Dnd.restore(ctx) // lock over: notifications come back
+        FocusSound.stop() // lock over: the focus sound stops
+        SiteBlock.sync(ctx) // lock over: the site-block VPN stops
+        LockWidget.refresh(ctx)
+        PlaceWatcher.sync(ctx) // no session left: stop watching unless the location lock needs it
+        kickService(ctx) // refresh the notification: the lock is off now
+        return true
+    }
+
+    /**
+     * Ends a penalty lock early because the user finished the overdue routine
+     * task and checked it off. Counts as a completed session (the task was
+     * done), unlike stopSession. Returns true when a penalty lock was ended.
+     */
+    @Synchronized
+    fun finalizePenalty(ctx: Context): Boolean {
+        val p = lock(ctx)
+        if (!p.getBoolean("active", false)) return false
+        if ((p.getString("src", "manual") ?: "manual") != "routine") return false
+        val now = System.currentTimeMillis()
+        val start = p.getLong("start", now)
+        addSession(ctx, Session(start, now, now - start, true, "routine"))
+        FocusTree.recordOutcome(ctx, true, now) // task done: the lock completed, the tree survives
+        val e = p.edit().putBoolean("active", false).putLong("lastDone", now).putLong("end", now)
+        clearUnlock(e)
+        e.remove("s_profile_apps").remove("s_profile_name")
+        e.remove("pen_task_id").remove("pen_task")
         e.apply()
         Dnd.restore(ctx) // lock over: notifications come back
         FocusSound.stop() // lock over: the focus sound stops
@@ -536,6 +571,7 @@ object Store {
         }
         // a normal lock plants a seed; Pomodoro focus rounds never grow trees
         if (src == "pomodoro") e.remove("tree_planted") else e.putBoolean("tree_planted", true)
+        e.remove("pen_task_id").remove("pen_task") // only a penalty lock sets these (after this call)
         e.apply()
         Dnd.apply(ctx) // lock started: silence notifications if the user wants it
         FocusSound.sync(ctx) // lock started: play the chosen focus sound, if any
@@ -585,6 +621,7 @@ object Store {
         if (w != null) e.putLong("suppress", w)
         clearUnlock(e)
         e.remove("s_profile_apps").remove("s_profile_name")
+        e.remove("pen_task_id").remove("pen_task")
         e.apply()
         Dnd.restore(ctx) // lock over: notifications come back
         FocusSound.stop() // lock over: the focus sound stops
