@@ -2616,12 +2616,12 @@ class StatsScreen(private val a: MainActivity) {
         col.addView(a.attemptsCard(), lp(MATCH, WRAP, b = a.dp(14)))
 
         // history
-        val hist = a.card()
-        hist.addView(a.section(L.t("Session history", "সেশন ইতিহাস")))
+        val sessHistCard = a.card()
+        sessHistCard.addView(a.section(L.t("Session history", "সেশন ইতিহাস")))
         if (all.isEmpty()) {
             val e = a.tv(L.t("No sessions yet", "এখনো কোনো সেশন নেই"), 14f, C.muted)
             e.gravity = Gravity.CENTER
-            hist.addView(e, lp(MATCH, WRAP, t = a.dp(16), b = a.dp(8)))
+            sessHistCard.addView(e, lp(MATCH, WRAP, t = a.dp(16), b = a.dp(8)))
         } else {
             for (s in all.reversed().take(30)) {
                 val r = LinearLayout(a)
@@ -2639,10 +2639,10 @@ class StatsScreen(private val a: MainActivity) {
                 left.addView(a.tv("$src · $state", 12f, C.muted))
                 r.addView(left, lp(0, WRAP, weight = 1f))
                 r.addView(a.tv(fmtDur(s.dur), 15f, if (s.ok) C.mint else C.warn, 1))
-                hist.addView(r)
+                sessHistCard.addView(r)
             }
         }
-        col.addView(hist)
+        col.addView(sessHistCard)
         return sv
     }
 
