@@ -269,7 +269,7 @@ class HomeScreen(private val a: MainActivity) {
         val d = unlockDest()
         destNameText.text = d?.name ?: L.t("Choose a destination", "গন্তব্য বাছুন")
         destRadiusText.text = if (d != null) {
-            L.num("${d.radius} " + L.t("m radius · tap to change", "মি. ব্যাসার্ধ · বদলাতে চাপুন"))
+            fmtDistM(d.radius.toFloat()) + " " + L.t("radius · tap to change", "ব্যাসার্ধ · বদলাতে চাপুন")
         } else {
             L.t("Tap to choose", "বাছতে চাপুন")
         }
@@ -288,7 +288,7 @@ class HomeScreen(private val a: MainActivity) {
         if (Store.isActive(a)) return
         val places = Extra.places(a)
         val items = ArrayList<String>()
-        for (pl in places) items.add(pl.name + "  ·  " + L.num("${pl.radius} " + L.t("m", "মি.")))
+        for (pl in places) items.add(pl.name + "  ·  " + fmtDistM(pl.radius.toFloat()))
         items.add(L.t("My current location", "আমার বর্তমান অবস্থান"))
         items.add(L.t("Open map to add a place", "ম্যাপ খুলে জায়গা যোগ করুন"))
         a.dlg()
@@ -328,8 +328,8 @@ class HomeScreen(private val a: MainActivity) {
     private fun pickRadius() {
         if (Store.isActive(a)) return
         val d = unlockDest() ?: return
-        val radii = intArrayOf(100, 200, 500, 1000)
-        val labels = Array(radii.size) { L.num("${radii[it]} " + L.t("m", "মি.")) }
+        val radii = intArrayOf(100, 200, 500, 1000, 5000, 10000)
+        val labels = Array(radii.size) { fmtDistM(radii[it].toFloat()) }
         a.dlg()
             .setTitle(L.t("Radius", "ব্যাসার্ধ"))
             .setItems(labels) { _, which ->
@@ -646,8 +646,8 @@ class HomeScreen(private val a: MainActivity) {
         val strictOn = Store.settings(a).getBoolean("strict", false)
         val body = when (mode) {
             UNLOCK_LOC -> L.t(
-                "The power menu will stay blocked until you arrive at ${dest.name} (within ${dest.radius} m).",
-                "${dest.name} পৌঁছানো পর্যন্ত (ব্যাসার্ধ ${dest.radius} মি.) পাওয়ার মেনু ব্লক থাকবে।"
+                "The power menu will stay blocked until you arrive at ${dest.name} (within ${fmtDistM(dest.radius.toFloat())}).",
+                "${dest.name} পৌঁছানো পর্যন্ত (ব্যাসার্ধ ${fmtDistM(dest.radius.toFloat())}) পাওয়ার মেনু ব্লক থাকবে।"
             )
             else -> L.t(
                 "The power menu will be blocked for $d, until $ends — or it opens early when you arrive at ${dest.name}.",

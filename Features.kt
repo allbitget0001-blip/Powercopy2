@@ -71,7 +71,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "46"
+    const val BUILD_ID = "47"
 
     // ---------- presets ----------
 
@@ -1690,7 +1690,7 @@ fun MainActivity.historyCard(): View {
 }
 
 /** "3.4 km" / "250 m" for a distance in metres. */
-private fun fmtDistM(distM: Float): String {
+fun fmtDistM(distM: Float): String {
     return if (distM >= 1000f) {
         val km10 = (distM / 100).toInt() // tenths of a km
         L.num("${km10 / 10}.${km10 % 10}") + " " + L.t("km", "কিমি")

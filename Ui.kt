@@ -27,6 +27,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.Interpolator
+import android.view.animation.LinearInterpolator
 import android.view.animation.PathInterpolator
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -439,11 +440,15 @@ class RingView(ctx: Context) : View(ctx) {
     }
 
     fun animateTo(p: Float) {
-        if (Math.abs(p - target) < 0.0005f) return
+        // smooth continuous sweep: the 1 s tick feeds a new target every
+        // second, so a linear 1 s animation flows into the next one with no
+        // pause — no stepping, even on 24 h locks (tiny per-second moves)
+        if (Math.abs(p - target) < 0.00001f) return
         target = p
         anim?.cancel()
         val a = ValueAnimator.ofFloat(shown, p)
-        a.duration = 600
+        a.duration = 1000
+        a.interpolator = LinearInterpolator()
         a.addUpdateListener {
             shown = it.animatedValue as Float
             invalidate()
