@@ -97,6 +97,9 @@ data class BadgeDef(val id: String, val icon: Ic, val titleEn: String, val title
 /** A daily habit: checked off once a day, with a consecutive-day streak. */
 data class Habit(val id: Long, val name: String, val created: Long)
 
+/** One task in today's plan: optional reminder time in minutes since midnight (-1 = none). */
+data class PlanTask(val id: Long, val title: String, val timeMin: Int, val done: Boolean)
+
 // ---------- formatting helpers ----------
 
 fun dayIdx(c: Calendar): Int = (c.get(Calendar.DAY_OF_WEEK) + 5) % 7
@@ -284,6 +287,7 @@ object Store {
         e.apply()
         Dnd.restore(ctx) // lock over: notifications come back
         FocusSound.stop() // lock over: the focus sound stops
+        SiteBlock.sync(ctx) // lock over: the site-block VPN stops
         LockWidget.refresh(ctx)
         PlaceWatcher.sync(ctx) // no session left: stop watching unless the location lock needs it
     }
@@ -324,6 +328,7 @@ object Store {
         e.apply()
         Dnd.restore(ctx) // lock over: notifications come back
         FocusSound.stop() // lock over: the focus sound stops
+        SiteBlock.sync(ctx) // lock over: the site-block VPN stops
         LockWidget.refresh(ctx)
         PlaceWatcher.sync(ctx) // no session left: stop watching unless the location lock needs it
         kickService(ctx) // refresh the notification: the lock is off now
@@ -376,6 +381,7 @@ object Store {
         e.apply()
         Dnd.apply(ctx) // lock started: silence notifications if the user wants it
         FocusSound.sync(ctx) // lock started: play the chosen focus sound, if any
+        SiteBlock.sync(ctx) // lock started: start the site-block VPN, if enabled
         LockWidget.refresh(ctx)
         kickService(ctx)
         return true
@@ -423,6 +429,7 @@ object Store {
         e.apply()
         Dnd.restore(ctx) // lock over: notifications come back
         FocusSound.stop() // lock over: the focus sound stops
+        SiteBlock.sync(ctx) // lock over: the site-block VPN stops
         LockWidget.refresh(ctx)
         PlaceWatcher.sync(ctx) // no session left: stop watching unless the location lock needs it
         kickService(ctx)
