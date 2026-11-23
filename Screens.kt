@@ -52,6 +52,9 @@ class HomeScreen(private val a: MainActivity) {
     private lateinit var scoreText: TextView
     private var cachedScore: ScoreBreakdown? = null
     private var cachedScoreAt = 0L
+    private lateinit var treeView: TreeView
+    private lateinit var treeLabel: TextView
+    private var treeSig = ""
     private lateinit var profileRow: LinearLayout
     private lateinit var profileNameText: TextView
     private lateinit var profileSubText: TextView
@@ -144,6 +147,16 @@ class HomeScreen(private val a: MainActivity) {
         extendBtn.setOnClickListener { a.extendFlow { tick() } }
         sc.addView(extendBtn, lp(MATCH, a.dp(60), t = a.dp(12)))
         col.addView(sc, lp(MATCH, WRAP, t = a.dp(16)))
+
+        // ---- focus tree: grows while a lock runs, withers if stopped early ----
+        val treeCard = a.card(20)
+        treeCard.addView(a.tv(L.t("Focus tree", "ফোকাস গাছ"), 18f, C.text, 1))
+        treeView = TreeView(a)
+        treeCard.addView(treeView, lp(MATCH, a.dp(170), t = a.dp(8)))
+        treeLabel = a.tv("", 13f, C.muted)
+        treeLabel.gravity = Gravity.CENTER
+        treeCard.addView(treeLabel, lp(MATCH, WRAP, t = a.dp(6)))
+        col.addView(treeCard, lp(MATCH, WRAP, t = a.dp(16)))
 
         // ---- 7-day detox challenge: one completed lock a day, 7 days in a row ----
         val detox = a.card(20)
@@ -741,6 +754,7 @@ class HomeScreen(private val a: MainActivity) {
         updateLastSummary()
         updateScreenTime()
         updateFocusScore()
+        updateTree()
         updateDetox()
         updatePomodoro()
         updateHabits()
@@ -749,6 +763,7 @@ class HomeScreen(private val a: MainActivity) {
             lastPlanDay = Store.dayKey(0)
             updatePlan()
         }
+        maybeShowTreeOutcome()
         maybeShowSummary()
         maybeShowBadge()
     }
@@ -866,6 +881,59 @@ class HomeScreen(private val a: MainActivity) {
         lastSummaryText.text = L.t("Last session: ", "গত সেশন: ") + fmtDur(s.durMs) + " · " + blocksTxt
     }
 
+    /** The focus tree: live while a lock runs, else the garden's newest tree. */
+    private fun updateTree() {
+        val active = Store.isActive(a)
+        if (active && FocusTree.isPlanted(a)) {
+            val frac = FocusTree.currentFraction(a)
+            val stage = FocusTree.stageFor(frac)
+            treeView.frac = frac
+            treeView.alive = true
+            treeView.invalidate()
+            // label every tick: the % keeps counting inside a stage
+            treeSig = "live:$stage"
+            treeLabel.text = FocusTree.stageName(stage) + " · " +
+                L.num((frac * 100).toInt().toString()) + "%"
+            return
+        }
+        val last = FocusTree.garden(a).firstOrNull()
+        if (last == null) {
+            val sig = "empty"
+            if (sig != treeSig) {
+                treeSig = sig
+                treeView.frac = 0f
+                treeView.alive = true
+                treeView.invalidate()
+                treeLabel.text = L.t("Start a lock and a seed will be planted", "লক শুরু করলে বীজ রোপণ হবে")
+            }
+            return
+        }
+        val sig = "garden:${last.endMs}"
+        if (sig != treeSig) {
+            treeSig = sig
+            treeView.frac = last.stage * 0.25f
+            treeView.alive = last.alive
+            treeView.invalidate()
+            treeLabel.text = FocusTree.stageName(last.stage) + " · " + fmtDate(last.endMs) +
+                if (last.alive) "" else " · " + L.t("withered", "শুকিয়ে গেছে")
+        }
+    }
+
+    /** One-time tree message after a lock ends: withered = toast, survived = in the summary dialog. */
+    private fun maybeShowTreeOutcome() {
+        when (FocusTree.outcomePending(a)) {
+            "dead" -> {
+                FocusTree.clearOutcome(a)
+                a.toast(L.t("The tree withered", "গাছটা মরে গেল"))
+            }
+            "alive" -> {
+                // the summary dialog carries the survived message; if no summary
+                // is pending (edge case), just drop the flag
+                if (!Store.summaryPending(a)) FocusTree.clearOutcome(a)
+            }
+        }
+    }
+
     /** Shows the session-summary dialog once, the first time Home ticks after a lock completes. */
     private fun maybeShowSummary() {
         if (summaryShown) return
@@ -876,6 +944,10 @@ class HomeScreen(private val a: MainActivity) {
         }
         summaryShown = true
         Store.clearSummaryPending(a)
+        val treeLine = if (FocusTree.outcomePending(a) == "alive") {
+            FocusTree.clearOutcome(a)
+            "\n\n" + L.t("Your tree survived!", "তোমার গাছ বেঁচে গেল!")
+        } else ""
         val blocksTxt = if (s.blocks > 0) {
             L.num(s.blocks.toString()) + " " + L.t("times an app was blocked", "বার অ্যাপ ব্লক হয়েছে")
         } else {
@@ -885,7 +957,7 @@ class HomeScreen(private val a: MainActivity) {
             .setTitle(L.t("Session completed!", "সেশন সম্পন্ন!"))
             .setMessage(
                 L.t("Focus time: ", "ফোকাস সময়: ") + fmtDur(s.durMs) + "\n" + blocksTxt +
-                    "\n\n" + Quotes.random()
+                    treeLine + "\n\n" + Quotes.random()
             )
             .setPositiveButton(L.t("Great!", "ভালো হয়েছে!"), null)
             .show()
@@ -1952,6 +2024,57 @@ class StatsScreen(private val a: MainActivity) {
         calCard.addView(calDetail, lp(MATCH, WRAP, t = a.dp(10)))
         col.addView(calCard, lp(MATCH, WRAP, b = a.dp(14)))
         buildCalendar()
+
+        // garden: every finished tree, newest first (dead ones withered and grey)
+        val gardenCard = a.card()
+        gardenCard.addView(a.section(L.t("Garden", "বাগান")))
+        val trees = FocusTree.garden(a)
+        if (trees.isEmpty()) {
+            gardenCard.addView(
+                a.tv(L.t("No trees yet — complete a lock and your first tree will grow here.", "এখনো কোনো গাছ নেই — একটা লক সম্পন্ন করলে প্রথম গাছ এখানে জন্মাবে।"), 13f, C.muted),
+                lp(MATCH, WRAP, t = a.dp(6))
+            )
+        } else {
+            var i = 0
+            while (i < trees.size) {
+                val row = LinearLayout(a)
+                for (j in 0 until 3) {
+                    val t = trees.getOrNull(i + j)
+                    val cell = LinearLayout(a)
+                    cell.orientation = LinearLayout.VERTICAL
+                    cell.gravity = Gravity.CENTER_HORIZONTAL
+                    if (t != null) {
+                        val tv = TreeView(a)
+                        tv.frac = t.stage * 0.25f
+                        tv.alive = t.alive
+                        cell.addView(tv, lp(a.dp(96), a.dp(96)))
+                        val dl = a.tv(fmtDate(t.endMs), 11f, C.muted, 1)
+                        dl.gravity = Gravity.CENTER
+                        cell.addView(dl, lp(MATCH, WRAP, t = a.dp(2)))
+                        val ml = a.tv(fmtDur(t.durMin * 60000L), 11f, if (t.alive) C.primary else C.muted, 1)
+                        ml.gravity = Gravity.CENTER
+                        cell.addView(ml)
+                        cell.pressFeedback()
+                        cell.setOnClickListener {
+                            a.dlg()
+                                .setTitle(FocusTree.stageName(t.stage))
+                                .setMessage(
+                                    fmtDate(t.endMs) + "\n" +
+                                        L.t("Lock time: ", "লকের সময়: ") + fmtDur(t.durMin * 60000L) + "\n" +
+                                        if (t.alive) L.t("The tree survived", "গাছটা বেঁচে গেছে")
+                                        else L.t("The tree withered — the lock was stopped early", "গাছটা শুকিয়ে গেছে — লক আগেই বন্ধ করা হয়েছিল")
+                                )
+                                .setPositiveButton(L.t("OK", "ঠিক আছে"), null)
+                                .show()
+                        }
+                    }
+                    row.addView(cell, lp(0, WRAP, weight = 1f))
+                }
+                gardenCard.addView(row, lp(MATCH, WRAP, t = a.dp(8)))
+                i += 3
+            }
+        }
+        col.addView(gardenCard, lp(MATCH, WRAP, b = a.dp(14)))
 
         // today's app usage (from the daily-limits tracker): most-used first.
         // Tapping a row opens its daily-limit setting.

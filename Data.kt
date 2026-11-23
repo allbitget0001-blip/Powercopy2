@@ -429,6 +429,7 @@ object Store {
         if (System.currentTimeMillis() < end) return
         val src = p.getString("src", "manual") ?: "manual"
         addSession(ctx, Session(p.getLong("start", end), end, p.getLong("total", 0), true, src))
+        FocusTree.recordOutcome(ctx, true, end) // the lock completed: the tree survives
         val e = p.edit().putBoolean("active", false).putLong("lastDone", end)
         clearUnlock(e)
         e.remove("s_profile_apps").remove("s_profile_name")
@@ -470,6 +471,7 @@ object Store {
         val start = p.getLong("start", now)
         val src = p.getString("src", "manual") ?: "manual"
         addSession(ctx, Session(start, now, now - start, true, src))
+        FocusTree.recordOutcome(ctx, true, now) // arrived: the lock completed, the tree survives
         val e = p.edit().putBoolean("active", false).putLong("lastDone", now).putLong("end", now)
         clearUnlock(e)
         e.remove("s_profile_apps").remove("s_profile_name")
@@ -526,6 +528,8 @@ object Store {
         } else {
             clearUnlock(e)
         }
+        // a normal lock plants a seed; Pomodoro focus rounds never grow trees
+        if (src == "pomodoro") e.remove("tree_planted") else e.putBoolean("tree_planted", true)
         e.apply()
         Dnd.apply(ctx) // lock started: silence notifications if the user wants it
         FocusSound.sync(ctx) // lock started: play the chosen focus sound, if any
@@ -569,6 +573,7 @@ object Store {
         val start = p.getLong("start", now)
         val src = p.getString("src", "manual") ?: "manual"
         addSession(ctx, Session(start, now, now - start, false, src))
+        FocusTree.recordOutcome(ctx, false, now) // stopped early: the tree withers
         val w = Scheduler.activeWindowEnd(ctx, now)
         val e = p.edit().putBoolean("active", false).putLong("end", now)
         if (w != null) e.putLong("suppress", w)
