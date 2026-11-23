@@ -67,11 +67,14 @@ data class RoutePoint(val lat: Double, val lng: Double, val t: Long)
 /** One visit to a place: entered at [inTime], left at [outTime] (0 = still inside). */
 data class PlaceEvent(val placeId: Long, val name: String, val inTime: Long, val outTime: Long)
 
+/** A named set of apps (Protection tab). Blocking stays per-app; a group is a shortcut. */
+data class AppGroup(val id: Long, val name: String, val pkgs: List<String>)
+
 object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "48"
+    const val BUILD_ID = "49"
 
     // ---------- presets ----------
 
@@ -303,6 +306,36 @@ object Extra {
 
     fun usageTodaySec(ctx: Context, pkg: String): Long = usageTodayAll(ctx)[pkg] ?: 0L
 
+    /** Foreground seconds per app for one day key ("yyyyMMdd"). */
+    fun usageForDay(ctx: Context, dayKey: String): Map<String, Long> {
+        val out = HashMap<String, Long>()
+        try {
+            val obj = JSONObject(usagePrefs(ctx).getString("u_$dayKey", "{}"))
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                out[k] = obj.optLong(k, 0)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "usage read failed", e)
+        }
+        return out
+    }
+
+    /** Total foreground seconds for one day key. */
+    fun usageDayTotal(ctx: Context, dayKey: String): Long = usageForDay(ctx, dayKey).values.sum()
+
+    /** Foreground seconds per app summed over the last 7 days (what is stored). */
+    fun usage7DayTotal(ctx: Context): Map<String, Long> {
+        val out = HashMap<String, Long>()
+        for (i in 0 until 7) {
+            for ((pkg, sec) in usageForDay(ctx, Store.dayKey(i))) {
+                out[pkg] = (out[pkg] ?: 0L) + sec
+            }
+        }
+        return out
+    }
+
     /** Seconds left today for an app with a limit, or null when it has none. */
     fun remainingTodaySec(ctx: Context, pkg: String): Long? {
         val lim = dailyLimit(ctx, pkg)
@@ -317,6 +350,102 @@ object Extra {
 
     fun setBlockMessage(ctx: Context, msg: String) {
         Store.settings(ctx).edit().putString("block_msg", msg).apply()
+    }
+
+    // ---------- app groups (named sets; blocking itself stays per-app) ----------
+
+    /** A named set of apps. Groups never block by themselves — "block all" just
+     * adds every app in the group to the full-block list at once. */
+    fun appGroups(ctx: Context): List<AppGroup> {
+        val raw = Store.settings(ctx).getString("app_groups", null)
+        if (raw == null) {
+            // first read: seed the two starter groups, keeping only installed apps
+            val seeded = starterGroups(ctx)
+            saveAppGroups(ctx, seeded)
+            return seeded
+        }
+        val out = ArrayList<AppGroup>()
+        try {
+            val arr = JSONArray(raw)
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val pkgs = ArrayList<String>()
+                val pa = o.optJSONArray("pkgs")
+                if (pa != null) for (j in 0 until pa.length()) pkgs.add(pa.getString(j))
+                out.add(AppGroup(o.getLong("id"), o.getString("name"), pkgs))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "app groups read failed", e)
+        }
+        return out
+    }
+
+    fun saveAppGroups(ctx: Context, list: List<AppGroup>) {
+        try {
+            val arr = JSONArray()
+            for (g in list) {
+                val o = JSONObject()
+                o.put("id", g.id)
+                o.put("name", g.name)
+                val pa = JSONArray()
+                for (p in g.pkgs) pa.put(p)
+                o.put("pkgs", pa)
+                arr.put(o)
+            }
+            Store.settings(ctx).edit().putString("app_groups", arr.toString()).apply()
+        } catch (e: Exception) {
+            Log.e(TAG, "app groups save failed", e)
+        }
+    }
+
+    fun addAppGroup(ctx: Context, name: String, pkgs: List<String>): AppGroup {
+        val g = AppGroup(System.currentTimeMillis(), name, pkgs)
+        val list = appGroups(ctx).toMutableList()
+        list.add(g)
+        saveAppGroups(ctx, list)
+        return g
+    }
+
+    fun updateAppGroup(ctx: Context, id: Long, name: String, pkgs: List<String>) {
+        val list = appGroups(ctx).map { if (it.id == id) it.copy(name = name, pkgs = pkgs) else it }
+        saveAppGroups(ctx, list)
+    }
+
+    fun deleteAppGroup(ctx: Context, id: Long) {
+        saveAppGroups(ctx, appGroups(ctx).filter { it.id != id })
+    }
+
+    /** Starter groups by well-known package names; only installed apps are kept. */
+    private fun starterGroups(ctx: Context): List<AppGroup> {
+        val pm = ctx.packageManager
+        fun installed(pkgs: List<String>): List<String> {
+            return pkgs.filter {
+                try {
+                    pm.getApplicationInfo(it, 0)
+                    true
+                } catch (e: Exception) {
+                    false
+                }
+            }
+        }
+        val out = ArrayList<AppGroup>()
+        val social = installed(
+            listOf(
+                "com.facebook.katana", "com.facebook.lite", "com.instagram.android",
+                "com.whatsapp", "com.whatsapp.w4b", "com.zhiliaoapp.musically",
+                "com.ss.android.ugc.trill", "org.telegram.messenger",
+                "com.twitter.android", "com.snapchat.android"
+            )
+        )
+        if (social.isNotEmpty()) out.add(AppGroup(1L, L.t("Social", "সোশ্যাল"), social))
+        val video = installed(
+            listOf(
+                "com.google.android.youtube", "com.netflix.mediaclient",
+                "com.amazon.avod", "com.google.android.apps.youtube.mango"
+            )
+        )
+        if (video.isNotEmpty()) out.add(AppGroup(2L, L.t("Video", "ভিডিও"), video))
+        return out
     }
 
     /** All launchable apps (label + icon), loaded once per session: loading ~150 icons is slow. */
@@ -1694,7 +1823,8 @@ private fun MainActivity.showDailyLimitPicker(apps: List<Triple<String, String, 
 }
 
 /** Minute options for one app's daily limit (0 = remove the limit). */
-private fun MainActivity.limitChoiceDialog(pkg: String, label: String, current: Int, done: () -> Unit) {
+/** Choose a daily limit for one app (also used from the usage dashboard). */
+fun MainActivity.limitChoiceDialog(pkg: String, label: String, current: Int, done: () -> Unit) {
     val options = intArrayOf(15, 30, 60, 90, 120, 180, 240)
     val items = ArrayList<String>()
     for (m in options) items.add(fmtDur(m * 60_000L) + " " + L.t("per day", "প্রতিদিন"))
@@ -1711,6 +1841,204 @@ private fun MainActivity.limitChoiceDialog(pkg: String, label: String, current: 
             }
             done()
         }
+        .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+        .show()
+}
+
+// =====================================================================
+// UI: app groups (Protection)
+// =====================================================================
+
+/** Named sets of apps. A group never blocks by itself — "block all" just adds
+ * every app in the group to the full-block list at once. Editing a group never
+ * removes a block, so groups can be edited any time, even during a session. */
+fun MainActivity.appGroupsCard(): View {
+    val c = card()
+    c.addView(section(L.t("App groups", "অ্যাপ গ্রুপ")))
+    c.addView(
+        tv(
+            L.t("Group apps together (e.g. Social, Games) and block the whole group at once.", "অ্যাপগুলো গ্রুপ করুন (যেমন সোশ্যাল, গেমস) আর একসাথে পুরো গ্রুপ ব্লক করুন।"),
+            13f, C.muted
+        ),
+        lp(MATCH, WRAP, t = dp(6))
+    )
+    val groups = Extra.appGroups(this)
+    val pm = packageManager
+    if (groups.isEmpty()) {
+        c.addView(
+            tv(L.t("No groups yet. Add one below.", "এখনো কোনো গ্রুপ নেই। নিচে গ্রুপ যোগ করুন।"), 13f, C.muted),
+            lp(MATCH, WRAP, t = dp(6))
+        )
+    }
+    for (g in groups) {
+        val r = LinearLayout(this)
+        r.gravity = Gravity.CENTER_VERTICAL
+        r.setPadding(0, dp(10), 0, dp(10))
+        // up to 4 small app icons
+        val icons = LinearLayout(this)
+        icons.orientation = LinearLayout.HORIZONTAL
+        var shown = 0
+        for (pkg in g.pkgs) {
+            if (shown >= 4) break
+            try {
+                val iv = ImageView(this)
+                iv.setImageDrawable(pm.getApplicationIcon(pkg))
+                icons.addView(iv, lp(dp(28), dp(28), r = dp(4)))
+                shown++
+            } catch (e: Exception) {
+                // not installed: skip the icon, the package stays in the group
+            }
+        }
+        if (shown > 0) r.addView(icons, lp(WRAP, WRAP, r = dp(12)))
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.addView(tv(g.name, 15f, C.text, 1))
+        col.addView(tv(L.num(g.pkgs.size.toString()) + " " + L.t("apps", "টি অ্যাপ"), 12f, C.muted))
+        r.addView(col, lp(0, WRAP, weight = 1f))
+        val blockBtn = outlineBtn(L.t("Block all", "সব ব্লক"), C.primary)
+        blockBtn.setOnClickListener {
+            // full block wins: the apps leave the reels list, like the picker does
+            Extra.setAppBlockFull(this, Extra.appBlockFull(this) + g.pkgs)
+            Extra.setAppBlockReels(this, Extra.appBlockReels(this) - g.pkgs.toSet())
+            toast(L.t("Blocked: ", "ব্লক করা হয়েছে: ") + g.name + " (" + L.num(g.pkgs.size.toString()) + ")")
+            go(4)
+        }
+        r.addView(blockBtn, lp(WRAP, dp(40)))
+        r.pressFeedback()
+        r.setOnClickListener { groupEditorDialog(g) { go(4) } }
+        c.addView(r, lp(MATCH, WRAP, t = dp(4)))
+    }
+    val add = outlineBtn(L.t("Add a group", "গ্রুপ যোগ করুন"), C.primary)
+    add.setOnClickListener { groupEditorDialog(null) { go(4) } }
+    c.addView(add, lp(MATCH, dp(48), t = dp(10)))
+    return c
+}
+
+/** Create or edit a group: name + apps. Deleting a group never unblocks apps. */
+private fun MainActivity.groupEditorDialog(existing: AppGroup?, done: () -> Unit) {
+    val box = LinearLayout(this)
+    box.orientation = LinearLayout.VERTICAL
+    box.setPadding(dp(24), dp(8), dp(24), 0)
+    val nameEt = edit(L.t("Group name (e.g. Social)", "গ্রুপের নাম (যেমন সোশ্যাল)"), false)
+    if (existing != null) nameEt.setText(existing.name)
+    box.addView(nameEt)
+    val chosen = HashSet<String>(existing?.pkgs ?: emptyList())
+    val countText = tv("", 14f, C.muted)
+    fun refreshCount() {
+        countText.text = L.num(chosen.size.toString()) + " " + L.t("apps in this group", "টি অ্যাপ এই গ্রুপে")
+    }
+    refreshCount()
+    box.addView(countText, lp(MATCH, WRAP, t = dp(14)))
+    val pickBtn = outlineBtn(L.t("Choose apps", "অ্যাপ বাছুন"), C.primary)
+    pickBtn.setOnClickListener {
+        groupAppPicker(chosen) { newSet ->
+            chosen.clear()
+            chosen.addAll(newSet)
+            refreshCount()
+        }
+    }
+    box.addView(pickBtn, lp(MATCH, dp(48), t = dp(10)))
+    box.addView(
+        tv(L.t("Deleting a group does not unblock its apps.", "গ্রুপ মুছলে এর অ্যাপগুলোর ব্লক তোলা হয় না।"), 12f, C.muted),
+        lp(MATCH, WRAP, t = dp(10))
+    )
+    val b = dlg()
+        .setTitle(if (existing == null) L.t("New group", "নতুন গ্রুপ") else L.t("Edit group", "গ্রুপ সম্পাদনা"))
+        .setView(box)
+        .setPositiveButton(L.t("Save", "সংরক্ষণ")) { _, _ ->
+            val name = nameEt.text.toString().trim()
+            if (name.isEmpty()) {
+                toast(L.t("Give the group a name", "গ্রুপের একটা নাম দিন"))
+                return@setPositiveButton
+            }
+            if (existing == null) Extra.addAppGroup(this, name, chosen.toList())
+            else Extra.updateAppGroup(this, existing.id, name, chosen.toList())
+            done()
+        }
+        .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+    if (existing != null) {
+        b.setNeutralButton(L.t("Delete", "মুছুন")) { _, _ ->
+            Extra.deleteAppGroup(this, existing.id)
+            toast(L.t("Group deleted: ", "গ্রুপ মোছা হয়েছে: ") + existing.name)
+            done()
+        }
+    }
+    b.show()
+}
+
+/** Multi-select app picker for a group. Reuses the cached launchable-app list. */
+private fun MainActivity.groupAppPicker(initial: Set<String>, onSave: (Set<String>) -> Unit) {
+    val cached = Extra.appListCache
+    if (cached != null) {
+        showGroupAppPicker(cached, initial, onSave)
+        return
+    }
+    val loading = dlg()
+        .setTitle(L.t("Loading apps…", "অ্যাপ লোড হচ্ছে…"))
+        .setView(tv(L.t("Please wait…", "একটু অপেক্ষা করুন…"), 14f, C.muted).apply {
+            setPadding(dp(20), dp(16), dp(20), dp(16))
+        })
+        .setCancelable(false)
+        .show()
+    Thread {
+        val apps = loadLaunchableApps()
+        runOnUiThread {
+            try { loading.dismiss() } catch (_: Exception) { }
+            if (apps.isEmpty()) {
+                toast(L.t("No apps found", "কোনো অ্যাপ পাওয়া যায়নি"))
+                return@runOnUiThread
+            }
+            Extra.appListCache = apps
+            showGroupAppPicker(apps, initial, onSave)
+        }
+    }.start()
+}
+
+private fun MainActivity.showGroupAppPicker(
+    apps: List<Triple<String, String, Drawable>>, initial: Set<String>, onSave: (Set<String>) -> Unit
+) {
+    val chosen = HashSet<String>(initial)
+    val body = LinearLayout(this)
+    body.orientation = LinearLayout.VERTICAL
+    val search = edit(L.t("Search apps", "অ্যাপ খুঁজুন"), false)
+    body.addView(search, lp(MATCH, WRAP, l = dp(16), r = dp(16), t = dp(8), b = dp(4)))
+    val sv = ScrollView(this)
+    val list = LinearLayout(this)
+    list.orientation = LinearLayout.VERTICAL
+    list.setPadding(dp(20), dp(4), dp(20), dp(4))
+    val rows = ArrayList<Pair<View, String>>() // (row, lowercase label)
+    for (info in apps) {
+        val r = LinearLayout(this)
+        r.gravity = Gravity.CENTER_VERTICAL
+        r.setPadding(0, dp(8), 0, dp(8))
+        val icon = ImageView(this)
+        icon.setImageDrawable(info.third)
+        r.addView(icon, lp(dp(40), dp(40), r = dp(14)))
+        r.addView(tv(info.second, 15f, C.text), lp(0, WRAP, weight = 1f))
+        val pkg = info.first
+        val sw = toggle(chosen.contains(pkg)) { v ->
+            if (v) chosen.add(pkg) else chosen.remove(pkg)
+        }
+        r.addView(sw)
+        list.addView(r)
+        rows.add(r to info.second.lowercase())
+    }
+    sv.addView(list)
+    body.addView(sv, lp(MATCH, dp(380)))
+    search.addTextChangedListener(object : TextWatcher {
+        override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+        override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+        override fun afterTextChanged(s: Editable?) {
+            val q = (s?.toString() ?: "").trim().lowercase()
+            for ((row, label) in rows) {
+                row.visibility = if (q.isEmpty() || label.contains(q)) View.VISIBLE else View.GONE
+            }
+        }
+    })
+    dlg()
+        .setTitle(L.t("Choose apps", "অ্যাপ বাছুন"))
+        .setView(body)
+        .setPositiveButton(L.t("Save", "সংরক্ষণ")) { _, _ -> onSave(chosen) }
         .setNegativeButton(L.t("Cancel", "বাতিল"), null)
         .show()
 }

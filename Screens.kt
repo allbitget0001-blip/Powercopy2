@@ -11,6 +11,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.location.Location
 import android.net.Uri
@@ -20,6 +21,7 @@ import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.util.Calendar
@@ -35,6 +37,13 @@ class HomeScreen(private val a: MainActivity) {
     private lateinit var subText: TextView
     private lateinit var previewText: TextView
     private lateinit var schedPill: TextView
+    private lateinit var lastSummaryText: TextView
+    private var summaryShown = false
+    private var lastSummarySig = ""
+    private val detoxDots = ArrayList<TextView>()
+    private lateinit var detoxLabel: TextView
+    private lateinit var detoxBtn: TextView
+    private var detoxSig = ""
     private lateinit var startBtn: LinearLayout
     private lateinit var stopBtn: LinearLayout
     private lateinit var extendBtn: LinearLayout
@@ -109,6 +118,28 @@ class HomeScreen(private val a: MainActivity) {
         sc.addView(extendBtn, lp(MATCH, a.dp(60), t = a.dp(12)))
         col.addView(sc, lp(MATCH, WRAP, t = a.dp(16)))
 
+        // ---- 7-day detox challenge: one completed lock a day, 7 days in a row ----
+        val detox = a.card(20)
+        detox.addView(a.tv(L.t("Detox challenge — 7 days", "ডিটক্স চ্যালেঞ্জ — ৭ দিন"), 18f, C.text, 1))
+        detoxLabel = a.tv("", 13f, C.muted)
+        detox.addView(detoxLabel, lp(MATCH, WRAP, t = a.dp(6)))
+        val dotsRow = LinearLayout(a)
+        dotsRow.gravity = Gravity.CENTER_VERTICAL
+        for (i in 0 until 7) {
+            val d = a.tv("○", 22f, C.muted, 1)
+            dotsRow.addView(d, lp(WRAP, WRAP, r = a.dp(8)))
+            detoxDots.add(d)
+        }
+        detox.addView(dotsRow, lp(MATCH, WRAP, t = a.dp(10)))
+        detoxBtn = a.outlineBtn("", C.primary)
+        detoxBtn.setOnClickListener {
+            Store.startDetox(a)
+            updateDetox()
+            tick()
+        }
+        detox.addView(detoxBtn, lp(MATCH, a.dp(48), t = a.dp(12)))
+        col.addView(detox, lp(MATCH, WRAP, t = a.dp(16)))
+
         // ---- lock templates: one tap starts a lock with that duration ----
         col.addView(a.heading(L.t("Lock templates", "লক টেমপ্লেট")), lp(MATCH, WRAP, t = a.dp(26), b = a.dp(4)))
         val templates = listOf(
@@ -149,6 +180,8 @@ class HomeScreen(private val a: MainActivity) {
         col.addView(row2)
         previewText = a.tv("", 13f, C.muted)
         col.addView(previewText, lp(MATCH, WRAP, t = a.dp(12)))
+        lastSummaryText = a.tv("", 13f, C.mint)
+        col.addView(lastSummaryText, lp(MATCH, WRAP, t = a.dp(6)))
 
         // ---- unlock condition: time only, location only, or either one ----
         col.addView(a.heading(L.t("When does the lock open?", "লক খুলবে কখন?")), lp(MATCH, WRAP, t = a.dp(26), b = a.dp(4)))
@@ -548,6 +581,110 @@ class HomeScreen(private val a: MainActivity) {
             refreshModeChips()
         }
         updateWarnings()
+        updateLastSummary()
+        updateDetox()
+        maybeShowSummary()
+    }
+
+    /** One line under the duration preview: what the last completed lock achieved. */
+    private fun updateLastSummary() {
+        val s = Store.lastSummary(a)
+        val sig = if (s == null) "" else "${s.endMs}:${s.durMs}:${s.blocks}"
+        if (sig == lastSummarySig) return
+        lastSummarySig = sig
+        if (s == null) {
+            lastSummaryText.text = ""
+            return
+        }
+        val blocksTxt = if (s.blocks > 0) {
+            L.num(s.blocks.toString()) + " " + L.t("blocks", "বার ব্লক")
+        } else {
+            L.t("no blocks needed", "কোনো ব্লক লাগেনি")
+        }
+        lastSummaryText.text = L.t("Last session: ", "গত সেশন: ") + fmtDur(s.durMs) + " · " + blocksTxt
+    }
+
+    /** Shows the session-summary dialog once, the first time Home ticks after a lock completes. */
+    private fun maybeShowSummary() {
+        if (summaryShown) return
+        if (!Store.summaryPending(a)) return
+        val s = Store.lastSummary(a) ?: run {
+            Store.clearSummaryPending(a)
+            return
+        }
+        summaryShown = true
+        Store.clearSummaryPending(a)
+        val blocksTxt = if (s.blocks > 0) {
+            L.num(s.blocks.toString()) + " " + L.t("times an app was blocked", "বার অ্যাপ ব্লক হয়েছে")
+        } else {
+            L.t("No app needed blocking", "কোনো অ্যাপ ব্লক করতে হয়নি")
+        }
+        a.dlg()
+            .setTitle(L.t("Session completed!", "সেশন সম্পন্ন!"))
+            .setMessage(
+                L.t("Focus time: ", "ফোকাস সময়: ") + fmtDur(s.durMs) + "\n" + blocksTxt
+            )
+            .setPositiveButton(L.t("Great!", "ভালো হয়েছে!"), null)
+            .show()
+    }
+
+    /** Detox challenge dots + label + button. Re-renders only when the state changes. */
+    private fun updateDetox() {
+        val st = Store.detoxState(a)
+        val sig = st.mode + ":" + st.checked + ":" + st.startKey
+        if (sig == detoxSig) return
+        detoxSig = sig
+        val today = Store.dayKey(0)
+        for (i in detoxDots.indices) {
+            val d = detoxDots[i]
+            val done = st.dots.getOrNull(i) == true
+            val dayKey = st.days.getOrNull(i) ?: ""
+            when {
+                done -> {
+                    d.text = "●"
+                    d.setTextColor(C.mint)
+                }
+                st.mode != "none" && dayKey.isNotEmpty() && dayKey < today -> {
+                    d.text = "●"
+                    d.setTextColor(C.danger)
+                }
+                else -> {
+                    d.text = "○"
+                    d.setTextColor(C.muted)
+                }
+            }
+        }
+        when (st.mode) {
+            "done" -> {
+                detoxLabel.text = L.t("Challenge complete — 7 out of 7 days!", "চ্যালেঞ্জ সম্পন্ন — ৭ দিনের ৭ দিনই!")
+                detoxBtn.text = L.t("Start a new challenge", "নতুন চ্যালেঞ্জ শুরু করুন")
+                detoxBtn.visibility = View.VISIBLE
+                if (!Store.detoxCelebrated(a)) {
+                    Store.markDetoxCelebrated(a)
+                    a.dlg()
+                        .setTitle(L.t("Challenge complete!", "চ্যালেঞ্জ সম্পন্ন!"))
+                        .setMessage(L.t("You completed a lock every day for 7 days straight. Well done!", "টানা ৭ দিন প্রতিদিন লক সম্পন্ন করেছেন। অভিনন্দন!"))
+                        .setPositiveButton(L.t("Thank you!", "ধন্যবাদ!"), null)
+                        .show()
+                }
+            }
+            "broken" -> {
+                detoxLabel.text = L.t("Day missed — the challenge broke. Start again!", "এক দিন মিস হয়েছে — চ্যালেঞ্জ ভেঙে গেছে। আবার শুরু করুন!")
+                detoxBtn.text = L.t("Restart challenge", "চ্যালেঞ্জ আবার শুরু করুন")
+                detoxBtn.visibility = View.VISIBLE
+            }
+            "active" -> {
+                detoxLabel.text = L.t("Complete a lock every day", "প্রতিদিন একটা লক সম্পন্ন করুন") +
+                    " · " + L.num(st.checked.toString()) + "/7"
+                detoxBtn.text = L.t("Restart challenge", "চ্যালেঞ্জ আবার শুরু করুন")
+                detoxBtn.visibility = View.VISIBLE
+            }
+            else -> {
+                detoxLabel.text = L.t("One completed lock a day, for 7 days in a row.", "টানা ৭ দিন, প্রতিদিন একটা লক সম্পন্ন করুন।")
+                detoxBtn.text = L.t("Start challenge", "চ্যালেঞ্জ শুরু করুন")
+                detoxBtn.visibility = View.VISIBLE
+            }
+        }
     }
 
     private fun warnCard(icon: String, title: String, sub: String, onClick: () -> Unit): View {
@@ -1066,6 +1203,75 @@ class StatsScreen(private val a: MainActivity) {
         }
         col.addView(focus7, lp(MATCH, WRAP, b = a.dp(14)))
 
+        // today's app usage (from the daily-limits tracker): most-used first.
+        // Tapping a row opens its daily-limit setting.
+        val usageCard = a.card()
+        usageCard.addView(a.section(L.t("App usage today", "আজকের অ্যাপ ব্যবহার")))
+        val usageToday = Extra.usageTodayAll(a)
+        val usage7 = Extra.usage7DayTotal(a)
+        if (usageToday.isEmpty()) {
+            usageCard.addView(
+                a.tv(L.t("No usage tracked yet today. Accessibility must be on to track app time.", "আজ এখনো কোনো ব্যবহার ট্র্যাক হয়নি। অ্যাপের সময় ট্র্যাক করতে Accessibility চালু থাকতে হবে।"), 13f, C.muted),
+                lp(MATCH, WRAP, t = a.dp(6))
+            )
+        } else {
+            data class URow(val pkg: String, val label: String, val icon: Drawable?, val todaySec: Long, val weekSec: Long)
+            val rows = ArrayList<URow>()
+            val pm = a.packageManager
+            for ((pkg, sec) in usageToday) {
+                try {
+                    val ai = pm.getApplicationInfo(pkg, 0)
+                    rows.add(URow(pkg, pm.getApplicationLabel(ai).toString(), pm.getApplicationIcon(ai), sec, usage7[pkg] ?: 0L))
+                } catch (e: Exception) {
+                    // uninstalled: skip the row (its seconds still count in the totals)
+                }
+            }
+            rows.sortByDescending { it.todaySec }
+            val maxSec = rows.firstOrNull()?.todaySec ?: 1L
+            for (row in rows.take(10)) {
+                val r = LinearLayout(a)
+                r.gravity = Gravity.CENTER_VERTICAL
+                r.setPadding(0, a.dp(8), 0, a.dp(2))
+                if (row.icon != null) {
+                    val icon = ImageView(a)
+                    icon.setImageDrawable(row.icon)
+                    r.addView(icon, lp(a.dp(36), a.dp(36), r = a.dp(12)))
+                } else {
+                    r.addView(View(a), lp(a.dp(36), a.dp(36), r = a.dp(12)))
+                }
+                val labelCol = LinearLayout(a)
+                labelCol.orientation = LinearLayout.VERTICAL
+                labelCol.addView(a.tv(row.label, 15f, C.text))
+                labelCol.addView(a.tv(L.t("7 days: ", "৭ দিনে: ") + fmtDur(row.weekSec * 1000L), 12f, C.muted))
+                r.addView(labelCol, lp(0, WRAP, weight = 1f))
+                r.addView(a.tv(fmtDur(row.todaySec * 1000L), 14f, C.text, 1))
+                r.pressFeedback()
+                r.setOnClickListener { a.limitChoiceDialog(row.pkg, row.label, Extra.dailyLimit(a, row.pkg)) { a.go(2) } }
+                usageCard.addView(r, lp(MATCH, WRAP, t = a.dp(4)))
+                // usage bar, relative to the most-used app
+                val barWrap = LinearLayout(a)
+                barWrap.orientation = LinearLayout.HORIZONTAL
+                barWrap.background = rounded(C.card2, a.dp(3).toFloat())
+                val frac = (row.todaySec.toFloat() / maxSec.toFloat()).coerceIn(0.02f, 1f)
+                val fill = View(a)
+                fill.background = rounded(C.primary, a.dp(3).toFloat())
+                barWrap.addView(fill, lp(0, a.dp(6), weight = frac))
+                barWrap.addView(View(a), lp(0, a.dp(6), weight = 1f - frac))
+                usageCard.addView(barWrap, lp(MATCH, a.dp(6), t = a.dp(4)))
+            }
+            val yest = Extra.usageDayTotal(a, Store.dayKey(1))
+            val weekTotal = usage7.values.sum()
+            usageCard.addView(
+                a.tv(
+                    L.t("Yesterday total: ", "গতকাল মোট: ") + fmtDur(yest * 1000L) + " · " +
+                        L.t("Last 7 days total: ", "গত ৭ দিন মোট: ") + fmtDur(weekTotal * 1000L),
+                    12f, C.muted
+                ),
+                lp(MATCH, WRAP, t = a.dp(10))
+            )
+        }
+        col.addView(usageCard, lp(MATCH, WRAP, b = a.dp(14)))
+
         // history
         val hist = a.card()
         hist.addView(a.section(L.t("Session history", "সেশন ইতিহাস")))
@@ -1174,6 +1380,29 @@ class SettingsScreen(private val a: MainActivity) {
             .setView(body)
             .setPositiveButton(L.t("Save", "সংরক্ষণ")) { _, _ ->
                 Extra.setBlockMessage(a, et.text.toString().trim())
+                a.go(3)
+            }
+            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+            .show()
+    }
+
+    /** Pick the focus sound. Choosing one while a lock runs starts it right away. */
+    private fun focusSoundDialog() {
+        val choices = listOf(FocusSound.OFF, FocusSound.WHITE, FocusSound.BROWN, FocusSound.RAIN)
+        val labels = choices.map { FocusSound.label(it) }.toTypedArray()
+        val current = choices.indexOf(FocusSound.choice(a)).coerceAtLeast(0)
+        a.dlg()
+            .setTitle(L.t("Focus sounds", "ফোকাস সাউন্ড"))
+            .setSingleChoiceItems(labels, current) { dlg, which ->
+                val picked = choices[which]
+                FocusSound.setChoice(a, picked)
+                if (picked == FocusSound.OFF) {
+                    FocusSound.stop()
+                } else if (Store.isActive(a)) {
+                    // explicit choice: start even on silent/vibrate
+                    FocusSound.startExplicit(a)
+                }
+                dlg.dismiss()
                 a.go(3)
             }
             .setNegativeButton(L.t("Cancel", "বাতিল"), null)
@@ -1309,6 +1538,14 @@ class SettingsScreen(private val a: MainActivity) {
                 a.tv("›", 22f, C.muted)
             ) { blockMessageDialog() }
         )
+        // focus sound during a lock (generated in code — no downloads)
+        gen.addView(
+            a.row(
+                L.t("Focus sounds", "ফোকাস সাউন্ড"),
+                FocusSound.label(FocusSound.choice(a)) + " · " + L.t("plays during a lock", "লক চলাকালীন বাজবে"),
+                a.tv("›", 22f, C.muted)
+            ) { focusSoundDialog() }
+        )
         gen.addView(
             a.row(L.t("Notification settings", "নোটিফিকেশন সেটিংস"), null, a.tv("›", 22f, C.muted)) {
                 launch(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, a.packageName))
@@ -1381,6 +1618,7 @@ class ProtectionScreen(private val a: MainActivity) {
         col.addView(a.appBlockModeCard("msg"), lp(MATCH, WRAP, b = a.dp(12)))
         col.addView(a.lockedAppsCard("msg"), lp(MATCH, WRAP, b = a.dp(12)))
         col.addView(a.dailyLimitsCard(), lp(MATCH, WRAP, b = a.dp(12)))
+        col.addView(a.appGroupsCard(), lp(MATCH, WRAP, b = a.dp(12)))
         col.addView(a.diagnosticCard(), lp(MATCH, WRAP, b = a.dp(12)))
         return sv
     }

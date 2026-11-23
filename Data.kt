@@ -66,6 +66,13 @@ data class Schedule(val id: Long, val days: Int, val startMin: Int, val endMin: 
 
 data class Session(val start: Long, val end: Long, val dur: Long, val ok: Boolean, val src: String)
 
+/** What the last completed lock achieved: how long it ran and how many blocks fired. */
+data class SessionSummary(val durMs: Long, val blocks: Int, val endMs: Long)
+
+/** 7-day detox challenge: "none" (not started), "active", "broken" (a day missed),
+ * "done" (all 7 days checked). [days] are the 7 day keys, [dots] which are checked. */
+data class DetoxState(val mode: String, val checked: Int, val days: List<String>, val dots: List<Boolean>, val startKey: String)
+
 /** Focus report: current streak in days, total focus minutes, completed locks,
  * and focus minutes for the last 7 days (oldest first). */
 data class FocusStats(val streak: Int, val totalMin: Long, val completed: Int, val last7: List<Int>)
@@ -263,6 +270,7 @@ object Store {
         clearUnlock(e)
         e.apply()
         Dnd.restore(ctx) // lock over: notifications come back
+        FocusSound.stop() // lock over: the focus sound stops
         LockWidget.refresh(ctx)
         PlaceWatcher.sync(ctx) // no session left: stop watching unless the location lock needs it
     }
@@ -301,6 +309,7 @@ object Store {
         clearUnlock(e)
         e.apply()
         Dnd.restore(ctx) // lock over: notifications come back
+        FocusSound.stop() // lock over: the focus sound stops
         LockWidget.refresh(ctx)
         PlaceWatcher.sync(ctx) // no session left: stop watching unless the location lock needs it
         kickService(ctx) // refresh the notification: the lock is off now
@@ -343,6 +352,7 @@ object Store {
         }
         e.apply()
         Dnd.apply(ctx) // lock started: silence notifications if the user wants it
+        FocusSound.sync(ctx) // lock started: play the chosen focus sound, if any
         LockWidget.refresh(ctx)
         kickService(ctx)
         return true
@@ -383,6 +393,7 @@ object Store {
         clearUnlock(e)
         e.apply()
         Dnd.restore(ctx) // lock over: notifications come back
+        FocusSound.stop() // lock over: the focus sound stops
         LockWidget.refresh(ctx)
         PlaceWatcher.sync(ctx) // no session left: stop watching unless the location lock needs it
         kickService(ctx)
@@ -598,6 +609,39 @@ object Store {
         }
         lock(ctx).edit().putString("sessions", arr.toString()).apply()
         if (s.ok) recordFocus(ctx, s)
+        if (s.ok) saveSessionSummary(ctx, s)
+    }
+
+    /** The last completed lock's summary (duration + blocks fired in its window),
+     * shown once as a dialog and kept as a line on Home. */
+    private fun saveSessionSummary(ctx: Context, s: Session) {
+        try {
+            val blocks = Extra.attempts(ctx).count { it.first >= s.start && it.first <= s.end }
+            val o = JSONObject()
+            o.put("d", s.dur)
+            o.put("b", blocks)
+            o.put("e", s.end)
+            lock(ctx).edit().putString("last_summary", o.toString()).putBoolean("sum_pending", true).apply()
+        } catch (e: Exception) {
+            Log.e(TAG, "summary save failed", e)
+        }
+    }
+
+    fun lastSummary(ctx: Context): SessionSummary? {
+        return try {
+            val raw = lock(ctx).getString("last_summary", null) ?: return null
+            val o = JSONObject(raw)
+            SessionSummary(o.getLong("d"), o.getInt("b"), o.getLong("e"))
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** True when a fresh summary is waiting to be shown as a dialog. */
+    fun summaryPending(ctx: Context): Boolean = lock(ctx).getBoolean("sum_pending", false)
+
+    fun clearSummaryPending(ctx: Context) {
+        lock(ctx).edit().putBoolean("sum_pending", false).apply()
     }
 
     /** A completed lock counts toward the streak + focus totals (date-keyed, kept 90 days). */
@@ -664,6 +708,73 @@ object Store {
         }
         val last7 = (6 downTo 0).map { obj.optInt(dayKey(it), 0) }
         return FocusStats(streak, p.getLong("focus_total_min", 0), sessions(ctx).count { it.ok }, last7)
+    }
+
+    /** "yyyyMMdd" key shifted by N days (negative = past). */
+    fun dayKeyPlus(key: String, days: Int): String {
+        return try {
+            val c = Calendar.getInstance()
+            c.set(key.substring(0, 4).toInt(), key.substring(4, 6).toInt() - 1, key.substring(6, 8).toInt(), 0, 0, 0)
+            c.set(Calendar.MILLISECOND, 0)
+            c.add(Calendar.DAY_OF_YEAR, days)
+            String.format(Locale.US, "%04d%02d%02d", c.get(Calendar.YEAR), c.get(Calendar.MONTH) + 1, c.get(Calendar.DAY_OF_MONTH))
+        } catch (e: Exception) {
+            key
+        }
+    }
+
+    /** Focus minutes per day key (a day counts when a lock completed on it). */
+    fun focusDayMap(ctx: Context): Map<String, Int> {
+        val p = lock(ctx)
+        if (!p.contains("focus_days")) focusStats(ctx) // one-time backfill, then cheap reads
+        val out = HashMap<String, Int>()
+        try {
+            val obj = JSONObject(p.getString("focus_days", "{}"))
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                out[k] = obj.optInt(k, 0)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "focus days read failed", e)
+        }
+        return out
+    }
+
+    // ----- 7-day detox challenge -----
+
+    /** Day 1 = today. A day is checked when a lock completed on it (focus_days). */
+    fun startDetox(ctx: Context) {
+        lock(ctx).edit().putString("detox_start", dayKey(0)).remove("detox_celebrated").apply()
+    }
+
+    fun detoxState(ctx: Context): DetoxState {
+        val start = lock(ctx).getString("detox_start", "") ?: ""
+        if (start.isEmpty()) {
+            return DetoxState("none", 0, (0 until 7).map { dayKey(it) }.reversed(), List(7) { false }, "")
+        }
+        val focus = focusDayMap(ctx)
+        val today = dayKey(0)
+        val days = (0 until 7).map { dayKeyPlus(start, it) }
+        val dots = days.map { (focus[it] ?: 0) > 0 }
+        val checked = dots.count { it }
+        val mode = when {
+            checked == 7 -> "done"
+            days.indices.any { i -> !dots[i] && days[i] < today } -> "broken"
+            else -> "active"
+        }
+        return DetoxState(mode, checked, days, dots, start)
+    }
+
+    /** True once the "challenge complete" dialog has been shown for this run. */
+    fun detoxCelebrated(ctx: Context): Boolean {
+        val start = lock(ctx).getString("detox_start", "") ?: ""
+        return start.isNotEmpty() && lock(ctx).getString("detox_celebrated", "") == start
+    }
+
+    fun markDetoxCelebrated(ctx: Context) {
+        val start = lock(ctx).getString("detox_start", "") ?: ""
+        if (start.isNotEmpty()) lock(ctx).edit().putString("detox_celebrated", start).apply()
     }
 
     fun dayStart(ms: Long, offsetDays: Int): Long {
