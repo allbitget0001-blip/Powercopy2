@@ -100,7 +100,7 @@ class MainActivity : Activity() {
         applyChrome()
         navHolder.addView(buildNav())
         Scheduler.onAlarm(this)
-        Reminders.rescheduleAll(this) // morning alarms (idempotent)
+        Reminders.rescheduleAll(this) // morning + plan alarms (idempotent)
         TimeCapsules.checkDue(this) // a capsule may have opened while the app was closed
         go(tab, false)
         Store.kickService(this) // restart the foreground service if it was swiped away

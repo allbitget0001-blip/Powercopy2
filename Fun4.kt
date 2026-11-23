@@ -244,6 +244,181 @@ object SoundMixer {
 }
 
 // =====================================================================
+// MOOD TRACKER
+// =====================================================================
+
+/**
+ * Mood tracker: a daily 1–5 log on Home, plus an optional after-lock mood
+ * in the session-complete flow. Daily logs drive the 7-day graph; the
+ * comparison pits the average after-lock mood against the average daily
+ * mood (only when there is enough data to mean anything).
+ */
+object Mood {
+    const val MIN = 1
+    const val MAX = 5
+
+    fun label(v: Int): String = when (v.coerceIn(MIN, MAX)) {
+        1 -> L.t("Very bad", "খুব খারাপ")
+        2 -> L.t("Bad", "খারাপ")
+        3 -> L.t("Okay", "ঠিকঠাক")
+        4 -> L.t("Good", "ভালো")
+        else -> L.t("Very good", "খুব ভালো")
+    }
+
+    private fun dayKey(ctx: Context, daysAgo: Int): String = Store.dayKey(daysAgo)
+
+    fun logDaily(ctx: Context, v: Int) {
+        Store.settings(ctx).edit()
+            .putInt("mood_day_" + dayKey(ctx, 0), v.coerceIn(MIN, MAX))
+            .apply()
+        prune(ctx)
+    }
+
+    fun todayDaily(ctx: Context): Int? {
+        val p = Store.settings(ctx)
+        val k = "mood_day_" + dayKey(ctx, 0)
+        return if (p.contains(k)) p.getInt(k, 0).takeIf { it in MIN..MAX } else null
+    }
+
+    /** Appends an after-lock mood for today. */
+    fun logAfter(ctx: Context, v: Int) {
+        val p = Store.settings(ctx)
+        val k = "mood_after_" + dayKey(ctx, 0)
+        val cur = p.getString(k, "") ?: ""
+        val next = if (cur.isEmpty()) v.toString() else "$cur,${v.coerceIn(MIN, MAX)}"
+        p.edit().putString(k, next.take(200)).apply()
+        prune(ctx)
+    }
+
+    private fun afterList(ctx: Context, daysAgo: Int): List<Int> {
+        val raw = Store.settings(ctx).getString("mood_after_" + dayKey(ctx, daysAgo), "") ?: ""
+        if (raw.isEmpty()) return emptyList()
+        return raw.split(",").mapNotNull { it.toIntOrNull() }.filter { it in MIN..MAX }
+    }
+
+    private fun dailyValue(ctx: Context, daysAgo: Int): Int? {
+        val p = Store.settings(ctx)
+        val k = "mood_day_" + dayKey(ctx, daysAgo)
+        return if (p.contains(k)) p.getInt(k, 0).takeIf { it in MIN..MAX } else null
+    }
+
+    /** The day's mood for the graph: the daily log, else the after-lock average. */
+    fun dayValue(ctx: Context, daysAgo: Int): Float? {
+        val d = dailyValue(ctx, daysAgo)
+        if (d != null) return d.toFloat()
+        val a = afterList(ctx, daysAgo)
+        return if (a.isNotEmpty()) a.average().toFloat() else null
+    }
+
+    /** 7 values, oldest first (6 days ago … today), null for days with no mood. */
+    fun weekValues(ctx: Context): List<Float?> = (6 downTo 0).map { dayValue(ctx, it) }
+
+    /** Daily-log average vs after-lock average over the last 30 days (null when too little data). */
+    fun comparison(ctx: Context): String? {
+        val daily = ArrayList<Int>()
+        val after = ArrayList<Int>()
+        for (i in 0 until 30) {
+            dailyValue(ctx, i)?.let { daily.add(it) }
+            after.addAll(afterList(ctx, i))
+        }
+        if (daily.size < 3 || after.size < 3) return null
+        val dAvg = daily.average()
+        val aAvg = after.average()
+        val diff = aAvg - dAvg
+        fun one(x: Double): String = L.num(String.format(Locale.US, "%.1f", x))
+        val nums = " (${one(dAvg)} → ${one(aAvg)})"
+        return when {
+            diff >= 0.3 -> L.t("Your mood is usually better after a lock", "লকের পর মুড গড়ে ভালো হয়") + nums
+            diff <= -0.3 -> L.t("Your mood is usually worse after a lock", "লকের পর মুড গড়ে খারাপ হয়") + nums
+            else -> L.t("Your mood stays about the same after a lock", "লকের পর মুড প্রায় একই থাকে") + nums
+        }
+    }
+
+    /** Keeps 30 days of mood data; older days are dropped. */
+    private fun prune(ctx: Context) {
+        try {
+            val e = Store.settings(ctx).edit()
+            for (i in 31..60) {
+                e.remove("mood_day_" + dayKey(ctx, i))
+                e.remove("mood_after_" + dayKey(ctx, i))
+            }
+            e.apply()
+        } catch (e: Exception) {
+            Log.e(TAG, "mood prune failed", e)
+        }
+    }
+}
+
+/** 7-day mood graph: dots + a line of the daily mood (1–5), with day labels. */
+class MoodGraphView(ctx: Context) : View(ctx) {
+    var values: List<Float?> = listOf()
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    override fun onDraw(canvas: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        if (w <= 0f || h <= 0f || values.size < 2) return
+        val padL = context.dp(28).toFloat()
+        val padR = context.dp(10).toFloat()
+        val padT = context.dp(8).toFloat()
+        val padB = context.dp(24).toFloat()
+        val left = padL
+        val right = w - padR
+        val top = padT
+        val bottom = h - padB
+        fun xFor(i: Int): Float = left + (right - left) * i / (values.size - 1).toFloat()
+        fun yFor(v: Float): Float = bottom - (bottom - top) * (v - 1f) / 4f
+
+        // grid lines at 1 / 3 / 5 with labels
+        textPaint.textSize = context.dp(11).toFloat()
+        textPaint.textAlign = Paint.Align.RIGHT
+        for (g in listOf(1f, 3f, 5f)) {
+            val y = yFor(g)
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1f
+            paint.color = C.border
+            canvas.drawLine(left, y, right, y, paint)
+            textPaint.color = C.muted
+            canvas.drawText(L.num(g.toInt().toString()), left - context.dp(6), y + context.dp(4), textPaint)
+        }
+
+        // connecting line (breaks at days with no mood)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = context.dp(3).toFloat()
+        paint.strokeCap = Paint.Cap.ROUND
+        paint.color = C.primary
+        var prev: Pair<Float, Float>? = null
+        for ((i, v) in values.withIndex()) {
+            if (v == null) {
+                prev = null
+                continue
+            }
+            val x = xFor(i)
+            val y = yFor(v)
+            val p = prev
+            if (p != null) canvas.drawLine(p.first, p.second, x, y, paint)
+            prev = x to y
+        }
+
+        // dots + day labels
+        textPaint.textAlign = Paint.Align.CENTER
+        for ((i, v) in values.withIndex()) {
+            val x = xFor(i)
+            if (v != null) {
+                paint.style = Paint.Style.FILL
+                paint.color = C.mint
+                canvas.drawCircle(x, yFor(v), context.dp(5).toFloat(), paint)
+            }
+            val c = Calendar.getInstance()
+            c.add(Calendar.DAY_OF_YEAR, i - (values.size - 1))
+            textPaint.color = C.muted
+            canvas.drawText(L.dayShort(dayIdx(c)), x, h - context.dp(4), textPaint)
+        }
+    }
+}
+
+// =====================================================================
 // VOICE QUOTES (TTS)
 // =====================================================================
 

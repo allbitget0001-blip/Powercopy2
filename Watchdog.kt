@@ -22,6 +22,7 @@ class WatchdogWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, param
             val c = applicationContext
             L.load(c)
             LockWidget.refresh(c) // keep the widget countdown fresh (at least every 15 min)
+            Pomodoro.sync(c) // a Pomodoro phase may have ended while the app was dead
             Routine.sweep(c) // a routine task may have become overdue while the app was dead
             Scheduler.onAlarm(c) // a schedule window may have opened while the app was dead
             SiteBlock.sync(c) // the site-block VPN may have died while the app was dead

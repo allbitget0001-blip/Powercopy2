@@ -74,10 +74,35 @@ class HomeScreen(private val a: MainActivity) {
     private lateinit var wheelSpinsText: TextView
     private lateinit var wheelBtn: TextView
     private var wheelSig = ""
+    private lateinit var xpTitleText: TextView
+    private lateinit var xpSubText: TextView
+    private lateinit var xpBar: BarView
+    private var xpSig = ""
+    private lateinit var chTitleText: TextView
+    private lateinit var chDescText: TextView
+    private lateinit var chBar: BarView
+    private var chSig = ""
+    private var chCheckedAt = 0L
+    private var levelUpShown = false
+    private var challengeShown = false
     private lateinit var profileRow: LinearLayout
     private lateinit var profileNameText: TextView
     private lateinit var profileSubText: TextView
     private var profileSig = ""
+    private val detoxDots = ArrayList<TextView>()
+    private lateinit var detoxLabel: TextView
+    private lateinit var detoxBtn: TextView
+    private var detoxSig = ""
+    private lateinit var pomLabel: TextView
+    private lateinit var pomStartBtn: TextView
+    private lateinit var pomStopBtn: TextView
+    private var pomSig = ""
+    private var lastPom: Boolean? = null
+    private lateinit var habitBox: LinearLayout
+    private var habitSig = ""
+    private lateinit var planBox: LinearLayout
+    private lateinit var planCarryBtn: TextView
+    private var lastPlanDay = ""
     private lateinit var routineBox: LinearLayout
     private lateinit var routineStreakText: TextView
     private var routineSig = ""
@@ -88,12 +113,16 @@ class HomeScreen(private val a: MainActivity) {
     private lateinit var capsuleBox: LinearLayout
     private var capsuleSig = ""
     private var lastCapsuleCheck = 0L
+    private val moodBtns = ArrayList<TextView>()
+    private lateinit var moodLabel: TextView
+    private var moodSig = ""
     private var badgeShown = false
     private lateinit var startBtn: LinearLayout
     private lateinit var stopBtn: LinearLayout
     private lateinit var extendBtn: LinearLayout
     private lateinit var warnBox: LinearLayout
     private val chips = ArrayList<TextView>()
+    private val tplChips = ArrayList<TextView>()
     private val quick = listOf(5, 10, 15, 30, 60)
     private val modeChips = ArrayList<TextView>()
     private val modes = listOf(UNLOCK_TIME, UNLOCK_LOC, UNLOCK_EITHER)
@@ -214,6 +243,100 @@ class HomeScreen(private val a: MainActivity) {
         wheelCard.addView(wheelBtn, lp(MATCH, a.dp(48), t = a.dp(12)))
         col.addView(wheelCard, lp(MATCH, WRAP, t = a.dp(16)))
 
+        // ---- XP & levels: every focus minute earns XP (tap for Statistics) ----
+        val xpCard = a.card(20)
+        xpTitleText = a.tv("", 18f, C.text, 1)
+        xpCard.addView(xpTitleText)
+        xpBar = BarView(a)
+        xpCard.addView(xpBar, lp(MATCH, a.dp(10), t = a.dp(10)))
+        xpSubText = a.tv("", 13f, C.muted)
+        xpCard.addView(xpSubText, lp(MATCH, WRAP, t = a.dp(8)))
+        xpCard.setOnClickListener { a.go(2) }
+        xpCard.pressFeedback()
+        col.addView(xpCard, lp(MATCH, WRAP, t = a.dp(16)))
+
+        // ---- daily challenge: one challenge a day, +25 XP when done ----
+        val chCard = a.card(20)
+        chCard.addView(a.tv(L.t("Daily challenge", "আজকের চ্যালেঞ্জ"), 18f, C.text, 1))
+        chTitleText = a.tv("", 15f, C.text, 1)
+        chCard.addView(chTitleText, lp(MATCH, WRAP, t = a.dp(6)))
+        chDescText = a.tv("", 13f, C.muted)
+        chCard.addView(chDescText, lp(MATCH, WRAP, t = a.dp(4)))
+        chBar = BarView(a)
+        chCard.addView(chBar, lp(MATCH, a.dp(10), t = a.dp(10)))
+        col.addView(chCard, lp(MATCH, WRAP, t = a.dp(16)))
+
+        // ---- 7-day detox challenge: one completed lock a day, 7 days in a row ----
+        val detox = a.card(20)
+        detox.addView(a.tv(L.t("Detox challenge — 7 days", "ডিটক্স চ্যালেঞ্জ — ৭ দিন"), 18f, C.text, 1))
+        detoxLabel = a.tv("", 13f, C.muted)
+        detox.addView(detoxLabel, lp(MATCH, WRAP, t = a.dp(6)))
+        val dotsRow = LinearLayout(a)
+        dotsRow.gravity = Gravity.CENTER_VERTICAL
+        for (i in 0 until 7) {
+            val d = a.tv("○", 22f, C.muted, 1)
+            dotsRow.addView(d, lp(WRAP, WRAP, r = a.dp(8)))
+            detoxDots.add(d)
+        }
+        detox.addView(dotsRow, lp(MATCH, WRAP, t = a.dp(10)))
+        detoxBtn = a.outlineBtn("", C.primary)
+        detoxBtn.setOnClickListener {
+            Store.startDetox(a)
+            updateDetox()
+            tick()
+        }
+        detox.addView(detoxBtn, lp(MATCH, a.dp(48), t = a.dp(12)))
+        col.addView(detox, lp(MATCH, WRAP, t = a.dp(16)))
+
+        // ---- Pomodoro: 25 min focus + 5 min break, 4 rounds, then a long break ----
+        val pom = a.card(20)
+        pom.addView(a.tv(L.t("Pomodoro", "পোমোডোরো"), 18f, C.text, 1))
+        pomLabel = a.tv("", 13f, C.muted)
+        pom.addView(pomLabel, lp(MATCH, WRAP, t = a.dp(6)))
+        pomStartBtn = a.outlineBtn(L.t("Start Pomodoro", "পোমোডোরো শুরু করুন"), C.primary)
+        pomStartBtn.setOnClickListener { startPomodoro() }
+        pom.addView(pomStartBtn, lp(MATCH, a.dp(48), t = a.dp(12)))
+        pomStopBtn = a.outlineBtn(L.t("Stop Pomodoro", "পোমোডোরো বন্ধ করুন"), C.danger)
+        pomStopBtn.setOnClickListener {
+            if (Pomodoro.cancel(a)) {
+                a.toast(L.t("Pomodoro stopped", "পোমোডোরো বন্ধ হয়েছে"))
+                tick()
+            } else {
+                a.toast(L.t("Strict mode: the focus round cannot be stopped early", "স্ট্রিক্ট মোড: ফোকাস রাউন্ড আগেই বন্ধ করা যাবে না"))
+            }
+        }
+        pom.addView(pomStopBtn, lp(MATCH, a.dp(48), t = a.dp(12)))
+        col.addView(pom, lp(MATCH, WRAP, t = a.dp(16)))
+
+        // ---- habit tracker: check off today's habits, build a streak ----
+        val hab = a.card(20)
+        hab.addView(a.tv(L.t("Habit tracker", "অভ্যাস ট্র্যাকার"), 18f, C.text, 1))
+        habitBox = LinearLayout(a)
+        habitBox.orientation = LinearLayout.VERTICAL
+        hab.addView(habitBox, lp(MATCH, WRAP, t = a.dp(6)))
+        val habAdd = a.outlineBtn(L.t("+ Add a habit", "+ অভ্যাস যোগ করুন"), C.primary)
+        habAdd.setOnClickListener { addHabitDialog() }
+        hab.addView(habAdd, lp(MATCH, a.dp(48), t = a.dp(12)))
+        col.addView(hab, lp(MATCH, WRAP, t = a.dp(16)))
+
+        // ---- today's plan: tasks for today, with optional reminder times ----
+        val plan = a.card(20)
+        plan.addView(a.tv(L.t("Today's plan", "আজকের পরিকল্পনা"), 18f, C.text, 1))
+        planBox = LinearLayout(a)
+        planBox.orientation = LinearLayout.VERTICAL
+        plan.addView(planBox, lp(MATCH, WRAP, t = a.dp(6)))
+        val planAdd = a.outlineBtn(L.t("+ Add a task", "+ কাজ যোগ করুন"), C.primary)
+        planAdd.setOnClickListener { addPlanDialog() }
+        plan.addView(planAdd, lp(MATCH, a.dp(48), t = a.dp(12)))
+        planCarryBtn = a.outlineBtn(L.t("Bring yesterday's unfinished tasks", "গতকালের বাকি কাজ আনুন"), C.muted)
+        planCarryBtn.setOnClickListener {
+            Plan.carryOver(a)
+            updatePlan()
+            a.toast(L.t("Yesterday's tasks added", "গতকালের কাজ যোগ হয়েছে"))
+        }
+        plan.addView(planCarryBtn, lp(MATCH, a.dp(48), t = a.dp(8)))
+        col.addView(plan, lp(MATCH, WRAP, t = a.dp(16)))
+
         // ---- daily routine: repeating tasks; miss one and the phone locks ----
         val routine = a.card(20)
         routine.addView(a.tv(L.t("Daily routine", "দৈনিক রুটিন"), 18f, C.text, 1))
@@ -277,6 +400,49 @@ class HomeScreen(private val a: MainActivity) {
         gameRow(L.t("Reaction game", "প্রতিক্রিয়া খেলা"), L.t("How fast can you tap?", "কত দ্রুত চাপতে পারো?")) { MiniGames.showReaction(a) }
         gameRow(L.t("Daily riddle", "দিনের ধাঁধা"), L.t("One riddle a day", "প্রতিদিন একটা ধাঁধা")) { MiniGames.showRiddle(a) }
         col.addView(games, lp(MATCH, WRAP, t = a.dp(16)))
+
+        // ---- today's mood: a quick 1–5 daily log ----
+        val moodCard = a.card(20)
+        moodCard.addView(a.tv(L.t("Today's mood", "আজকের মুড"), 18f, C.text, 1))
+        moodLabel = a.tv(L.t("How are you feeling today?", "আজ কেমন লাগছে?"), 13f, C.muted)
+        moodCard.addView(moodLabel, lp(MATCH, WRAP, t = a.dp(4)))
+        val moodRow = LinearLayout(a)
+        moodRow.gravity = Gravity.CENTER_VERTICAL
+        for (v in Mood.MIN..Mood.MAX) {
+            val b = a.tv(L.num(v.toString()), 16f, C.muted, 1)
+            b.gravity = Gravity.CENTER
+            b.background = rounded(C.card2, a.dp(22).toFloat())
+            b.setOnClickListener {
+                Mood.logDaily(a, v)
+                updateMoodRow()
+                a.toast(Mood.label(v))
+            }
+            b.pressFeedback()
+            moodBtns.add(b)
+            moodRow.addView(b, lp(0, a.dp(44), weight = 1f, r = if (v < Mood.MAX) a.dp(8) else 0))
+        }
+        moodCard.addView(moodRow, lp(MATCH, WRAP, t = a.dp(12)))
+        col.addView(moodCard, lp(MATCH, WRAP, t = a.dp(16)))
+
+        // ---- lock templates: one tap starts a lock with that duration ----
+        col.addView(a.heading(L.t("Lock templates", "লক টেমপ্লেট")), lp(MATCH, WRAP, t = a.dp(26), b = a.dp(4)))
+        val templates = listOf(
+            25 to L.t("Focus 25 min", "ফোকাস ২৫ মিনিট"),
+            120 to L.t("Study 2 h", "পড়াশোনা ২ ঘণ্টা"),
+            60 to L.t("Work 1 h", "কাজ ১ ঘণ্টা"),
+            480 to L.t("Sleep 8 h", "ঘুম ৮ ঘণ্টা")
+        )
+        val tplRow1 = LinearLayout(a)
+        val tplRow2 = LinearLayout(a)
+        for ((i, t) in templates.withIndex()) {
+            val c = a.chip(t.second, false)
+            c.setOnClickListener { startTemplate(t.first) }
+            tplChips.add(c)
+            val target = if (i < 2) tplRow1 else tplRow2
+            target.addView(c, lp(0, a.dp(56), r = if (i % 2 == 0) a.dp(10) else 0, t = a.dp(10), weight = 1f))
+        }
+        col.addView(tplRow1)
+        col.addView(tplRow2)
 
         // ---- duration ----
         col.addView(a.heading(L.t("Select Lock Duration", "লক সময় বাছুন")), lp(MATCH, WRAP, t = a.dp(26), b = a.dp(4)))
@@ -394,6 +560,8 @@ class HomeScreen(private val a: MainActivity) {
         refreshChips()
         refreshModeChips()
         refreshProfileRow()
+        lastPlanDay = Store.dayKey(0)
+        updatePlan()
         tick()
         // home wallpaper: the picked photo sits behind the content, dimmed so
         // the text stays readable; no photo (or a broken file) = plain page
@@ -413,21 +581,39 @@ class HomeScreen(private val a: MainActivity) {
 
     private fun refreshChips(animate: Boolean = false) {
         val active = Store.isActive(a)
+        val pom = Pomodoro.state(a).active
         // location-only mode has no duration: the chips stay visible but dimmed
         val locOnly = unlockMode() == UNLOCK_LOC
         for ((i, c) in chips.withIndex()) {
             val sel = if (i < quick.size) quick[i] == a.selectedMin else !quick.contains(a.selectedMin)
             if (animate) a.animateChip(c, sel) else a.styleChip(c, sel)
-            c.alpha = if (active || locOnly) 0.4f else 1f
+            c.alpha = if (active || locOnly || pom) 0.4f else 1f
         }
+        for (c in tplChips) c.alpha = if (active || pom) 0.4f else 1f
     }
 
     private fun pick(m: Int) {
         if (Store.isActive(a)) return
+        if (Pomodoro.state(a).active) return
         if (unlockMode() == UNLOCK_LOC) return
         a.selectedMin = m
         refreshChips(true)
         tick()
+    }
+
+    /** A template is a time-only lock: set the duration + mode, then use the normal start flow. */
+    private fun startTemplate(min: Int) {
+        if (Store.isActive(a)) return
+        if (Pomodoro.state(a).active) return
+        if (!Perm.accessibilityOn(a)) {
+            a.toast(L.t("Enable Accessibility first", "আগে Accessibility চালু করুন"))
+            return
+        }
+        setUnlockMode(UNLOCK_TIME)
+        a.selectedMin = min
+        refreshChips(true)
+        refreshModeChips()
+        startTimeSession()
     }
 
     // ---------- unlock condition (time / location / either) ----------
@@ -637,6 +823,7 @@ class HomeScreen(private val a: MainActivity) {
         val now = System.currentTimeMillis()
         // backup arrival check (the service listener is the main path)
         if (Store.unlockTarget(a) != null) PlaceWatcher.checkUnlockLastKnown(a)
+        Pomodoro.sync(a) // advance the Pomodoro set when a phase is over
         // routine overdue check (throttled: the window-end alarms are the main path)
         if (now - lastRoutineSweep > 30_000) {
             lastRoutineSweep = now
@@ -650,7 +837,32 @@ class HomeScreen(private val a: MainActivity) {
         var total = p.getLong("total", 1)
         if (total < 1) total = 1
         val strict = active && p.getBoolean("s_strict", false)
-        if (active) {
+        val pom = Pomodoro.state(a)
+        val pomBreak = pom.active && pom.phase != Pomodoro.PHASE_FOCUS
+        if (pomBreak) {
+            // Pomodoro break: no lock session, the ring counts the break down
+            val left = Pomodoro.remainingMs(a)
+            val phaseTotal = if (pom.phaseTotal > 0) pom.phaseTotal else 1L
+            val long = pom.phase == Pomodoro.PHASE_LONG
+            ring.active = true
+            ring.icon = Ic.CLOCK
+            ring.main = fmtHms(left)
+            ring.mainColor = C.mint
+            ring.sub = if (long) L.t("Long break", "লম্বা বিরতি") else L.t("Break", "বিরতি")
+            var frac = left.toFloat() / phaseTotal.toFloat()
+            if (frac < 0f) frac = 0f
+            if (frac > 1f) frac = 1f
+            ring.animateTo(frac)
+            titleText.setTextAnimated(
+                if (long) L.t("Long break", "লম্বা বিরতি চলছে") else L.t("Break time", "বিরতি চলছে")
+            )
+            subText.setTextAnimated(
+                if (long) L.t("Pomodoro · the set ends after this break", "Pomodoro · এই বিরতির পর সেট শেষ")
+                else L.t("Pomodoro · next: focus ${pom.round + 1}/4", "Pomodoro · পরের ফোকাস ${L.num((pom.round + 1).toString())}/৪")
+            )
+            previewText.text = L.t("Session in progress · ", "সেশন চলছে · ") +
+                L.t("Pomodoro break", "Pomodoro বিরতি")
+        } else if (active) {
             val mode = Store.unlockMode(a)
             val target = Store.unlockTarget(a)
             if (mode == UNLOCK_LOC && target != null) {
@@ -692,6 +904,13 @@ class HomeScreen(private val a: MainActivity) {
                     )
                     previewText.text = L.t("Session in progress · ", "সেশন চলছে · ") + fmtDur(total)
                 }
+                if (pom.active && pom.phase == Pomodoro.PHASE_FOCUS) {
+                    subText.setTextAnimated(
+                        L.t("Pomodoro · Focus ${pom.round}/4", "Pomodoro · ফোকাস ${L.num(pom.round.toString())}/৪")
+                    )
+                    previewText.text = L.t("Session in progress · ", "সেশন চলছে · ") +
+                        L.t("Pomodoro focus ${pom.round}/4", "Pomodoro ফোকাস ${L.num(pom.round.toString())}/৪")
+                }
             }
         } else {
             val sel = a.selectedMin * 60_000L
@@ -722,12 +941,13 @@ class HomeScreen(private val a: MainActivity) {
             }
         }
         ring.invalidate()
-        showView(startBtn, !active)
+        showView(startBtn, !active && !pom.active)
         showView(stopBtn, active && !strict)
-        // location-only sessions have no timer to extend
-        showView(extendBtn, active && Store.unlockMode(a) != UNLOCK_LOC)
-        if (lastActive != active) {
+        // location-only sessions have no timer to extend; a Pomodoro phase must not be extended
+        showView(extendBtn, active && Store.unlockMode(a) != UNLOCK_LOC && !pom.active)
+        if (lastActive != active || lastPom != pom.active) {
             lastActive = active
+            lastPom = pom.active
             refreshChips()
             refreshModeChips()
             refreshProfileRow()
@@ -742,18 +962,31 @@ class HomeScreen(private val a: MainActivity) {
         updateStory()
         updateWheel()
         StreakProtection.check(a) // once a day: spend a token to save a breaking streak
+        updateDetox()
+        updatePomodoro()
+        updateHabits()
         updateNotes()
         updateCapsules()
+        updateMoodRow()
         // capsule due check (throttled: a capsule may open while the app is open)
         if (now - lastCapsuleCheck > 60_000) {
             lastCapsuleCheck = now
             TimeCapsules.checkDue(a)
         }
         updateRoutine()
+        updateXp()
+        updateChallenge()
+        // midnight rollover: the plan card shows the new day's tasks
+        if (Store.dayKey(0) != lastPlanDay) {
+            lastPlanDay = Store.dayKey(0)
+            updatePlan()
+        }
         maybeShowTreeOutcome()
         maybeShowSummary()
         maybeShowPetReaction()
         maybeShowBadge()
+        maybeShowLevelUp()
+        maybeShowChallenge()
         maybeCelebrateRoutine()
     }
 
@@ -801,12 +1034,13 @@ class HomeScreen(private val a: MainActivity) {
 
     private fun refreshProfileRow() {
         val active = Store.isActive(a)
+        val pom = Pomodoro.state(a).active
         val sessionName = Store.sessionProfileName(a)
         val chosen = if (selectedProfileId() > 0) Extra.lockProfiles(a).find { it.id == selectedProfileId() } else null
-        val sig = "$active:$sessionName:${chosen?.id ?: -1}:${Extra.lockProfiles(a).size}"
+        val sig = "$active:$pom:$sessionName:${chosen?.id ?: -1}:${Extra.lockProfiles(a).size}"
         if (sig == profileSig) return
         profileSig = sig
-        profileRow.alpha = if (active) 0.4f else 1f
+        profileRow.alpha = if (active || pom) 0.4f else 1f
         when {
             active && sessionName != null -> {
                 profileNameText.text = L.t("Profile: ", "প্রোফাইল: ") + sessionName
@@ -829,6 +1063,7 @@ class HomeScreen(private val a: MainActivity) {
 
     private fun pickProfile() {
         if (Store.isActive(a)) return
+        if (Pomodoro.state(a).active) return
         val profiles = Extra.lockProfiles(a)
         if (profiles.isEmpty()) {
             a.toast(L.t("Create a profile in the Protection tab first", "আগে সুরক্ষা ট্যাবে একটা প্রোফাইল বানান"))
@@ -1107,7 +1342,7 @@ class HomeScreen(private val a: MainActivity) {
                 treeLine + petLine + storyLine + journeyLine + "\n\n" +
                 L.t(quotePair.first, quotePair.second) +
                 "\n\n" + L.t("Fun fact: ", "মজার তথ্য: ") + FunFacts.random(a)
-        // custom view: the message + a "listen" button for the quote
+        // custom view: the message + a "listen" button for the quote + the optional mood question
         val msgBox = LinearLayout(a)
         msgBox.orientation = LinearLayout.VERTICAL
         msgBox.setPadding(a.dp(24), a.dp(8), a.dp(24), 0)
@@ -1116,7 +1351,10 @@ class HomeScreen(private val a: MainActivity) {
         actRow.gravity = Gravity.CENTER_VERTICAL
         val listenBtn = a.outlineBtn(L.t("Listen", "শোনাও"), C.primary)
         listenBtn.setOnClickListener { VoiceQuotes.speak(a, quotePair.first, quotePair.second) }
-        actRow.addView(listenBtn, lp(0, a.dp(48), weight = 1f))
+        actRow.addView(listenBtn, lp(0, a.dp(48), weight = 1f, r = a.dp(8)))
+        val moodBtn = a.outlineBtn(L.t("How do you feel?", "কেমন লাগছে?"), C.mint)
+        moodBtn.setOnClickListener { showAfterMoodDialog() }
+        actRow.addView(moodBtn, lp(0, a.dp(48), weight = 1f))
         msgBox.addView(actRow, lp(MATCH, WRAP, t = a.dp(14)))
         val scroll = ScrollView(a)
         scroll.addView(msgBox)
@@ -1130,6 +1368,246 @@ class HomeScreen(private val a: MainActivity) {
         }
         builder
             .setPositiveButton(L.t("Great!", "ভালো হয়েছে!"), null)
+            .show()
+    }
+
+    /** Detox challenge dots + label + button. Re-renders only when the state changes. */
+    private fun updateDetox() {
+        val st = Store.detoxState(a)
+        val sig = st.mode + ":" + st.checked + ":" + st.startKey
+        if (sig == detoxSig) return
+        detoxSig = sig
+        val today = Store.dayKey(0)
+        for (i in detoxDots.indices) {
+            val d = detoxDots[i]
+            val done = st.dots.getOrNull(i) == true
+            val dayKey = st.days.getOrNull(i) ?: ""
+            when {
+                done -> {
+                    d.text = "●"
+                    d.setTextColor(C.mint)
+                }
+                st.mode != "none" && dayKey.isNotEmpty() && dayKey < today -> {
+                    d.text = "●"
+                    d.setTextColor(C.danger)
+                }
+                else -> {
+                    d.text = "○"
+                    d.setTextColor(C.muted)
+                }
+            }
+        }
+        when (st.mode) {
+            "done" -> {
+                detoxLabel.text = L.t("Challenge complete — 7 out of 7 days!", "চ্যালেঞ্জ সম্পন্ন — ৭ দিনের ৭ দিনই!")
+                detoxBtn.text = L.t("Start a new challenge", "নতুন চ্যালেঞ্জ শুরু করুন")
+                detoxBtn.visibility = View.VISIBLE
+                if (!Store.detoxCelebrated(a)) {
+                    Store.markDetoxCelebrated(a)
+                    a.dlg()
+                        .setTitle(L.t("Challenge complete!", "চ্যালেঞ্জ সম্পন্ন!"))
+                        .setMessage(L.t("You completed a lock every day for 7 days straight. Well done!", "টানা ৭ দিন প্রতিদিন লক সম্পন্ন করেছেন। অভিনন্দন!"))
+                        .setPositiveButton(L.t("Thank you!", "ধন্যবাদ!"), null)
+                        .show()
+                }
+            }
+            "broken" -> {
+                detoxLabel.text = L.t("Day missed — the challenge broke. Start again!", "এক দিন মিস হয়েছে — চ্যালেঞ্জ ভেঙে গেছে। আবার শুরু করুন!")
+                detoxBtn.text = L.t("Restart challenge", "চ্যালেঞ্জ আবার শুরু করুন")
+                detoxBtn.visibility = View.VISIBLE
+            }
+            "active" -> {
+                detoxLabel.text = L.t("Complete a lock every day", "প্রতিদিন একটা লক সম্পন্ন করুন") +
+                    " · " + L.num(st.checked.toString()) + "/7"
+                detoxBtn.text = L.t("Restart challenge", "চ্যালেঞ্জ আবার শুরু করুন")
+                detoxBtn.visibility = View.VISIBLE
+            }
+            else -> {
+                detoxLabel.text = L.t("One completed lock a day, for 7 days in a row.", "টানা ৭ দিন, প্রতিদিন একটা লক সম্পন্ন করুন।")
+                detoxBtn.text = L.t("Start challenge", "চ্যালেঞ্জ শুরু করুন")
+                detoxBtn.visibility = View.VISIBLE
+            }
+        }
+    }
+
+    /** Pomodoro card: status label + start/stop buttons. Re-renders only when the phase changes. */
+    private fun updatePomodoro() {
+        val st = Pomodoro.state(a)
+        val sig = "${st.active}:${st.phase}:${st.round}"
+        if (sig == pomSig) return
+        pomSig = sig
+        when {
+            !st.active -> {
+                pomLabel.text = L.t(
+                    "25 min focus + 5 min break, 4 rounds, then a 15 min long break.",
+                    "২৫ মিনিট ফোকাস + ৫ মিনিট বিরতি, ৪ রাউন্ড, তারপর ১৫ মিনিটের লম্বা বিরতি।"
+                )
+                pomStartBtn.visibility = View.VISIBLE
+                pomStopBtn.visibility = View.GONE
+            }
+            st.phase == Pomodoro.PHASE_FOCUS -> {
+                pomLabel.text = L.t("Focus round ${st.round}/4 is running.", "ফোকাস রাউন্ড ${L.num(st.round.toString())}/৪ চলছে।")
+                pomStartBtn.visibility = View.GONE
+                pomStopBtn.visibility = View.GONE // use the main Stop button (with the code)
+            }
+            st.phase == Pomodoro.PHASE_LONG -> {
+                pomLabel.text = L.t("Long break — the set ends after this.", "লম্বা বিরতি চলছে — এর পর সেট শেষ।")
+                pomStartBtn.visibility = View.GONE
+                pomStopBtn.visibility = View.VISIBLE
+            }
+            else -> {
+                pomLabel.text = L.t(
+                    "Break — next: focus round ${st.round + 1}/4.",
+                    "বিরতি চলছে — পরের ফোকাস রাউন্ড ${L.num((st.round + 1).toString())}/৪।"
+                )
+                pomStartBtn.visibility = View.GONE
+                pomStopBtn.visibility = View.VISIBLE
+            }
+        }
+    }
+
+    private fun startPomodoro() {
+        if (Store.isActive(a) || Pomodoro.state(a).active) return
+        if (!Perm.accessibilityOn(a)) {
+            a.toast(L.t("Enable Accessibility first", "আগে Accessibility চালু করুন"))
+            return
+        }
+        a.dlg()
+            .setTitle(L.t("Start Pomodoro?", "পোমোডোরো শুরু করবেন?"))
+            .setMessage(
+                L.t(
+                    "4 focus rounds of 25 minutes with 5-minute breaks, then a 15-minute long break. Protection is on during focus rounds.",
+                    "২৫ মিনিটের ৪টা ফোকাস রাউন্ড, মাঝে ৫ মিনিটের বিরতি, শেষে ১৫ মিনিটের লম্বা বিরতি। ফোকাসের সময় প্রটেকশন চালু থাকবে।"
+                )
+            )
+            .setPositiveButton(L.t("Start", "শুরু করুন")) { _, _ ->
+                if (Pomodoro.start(a)) {
+                    a.toast(L.t("Pomodoro started — focus round 1", "পোমোডোরো শুরু — ফোকাস রাউন্ড ১"))
+                    tick()
+                }
+            }
+            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+            .show()
+    }
+
+    /** Habit checklist. Rebuilds only when the habits or today's checks change. */
+    private fun updateHabits() {
+        val habits = Store.habits(a)
+        val checks = Store.habitChecks(a)
+        val today = Store.dayKey(0)
+        val sig = habits.joinToString("|") { "${it.id}:${it.name}" } + "#" +
+            habits.joinToString("|") { if (today in (checks[it.id] ?: emptySet())) "1" else "0" }
+        if (sig == habitSig) return
+        habitSig = sig
+        habitBox.removeAllViews()
+        if (habits.isEmpty()) {
+            habitBox.addView(
+                a.tv(L.t("No habits yet. Add one below — e.g. drinking water, reading, exercise.", "এখনো কোনো অভ্যাস নেই। নিচে যোগ করুন — যেমন পানি খাওয়া, পড়া, ব্যায়াম।"), 13f, C.muted),
+                lp(MATCH, WRAP, t = a.dp(4))
+            )
+            return
+        }
+        for (h in habits) {
+            val done = today in (checks[h.id] ?: emptySet())
+            val streak = Store.habitStreak(a, h.id)
+            val r = LinearLayout(a)
+            r.gravity = Gravity.CENTER_VERTICAL
+            r.setPadding(0, a.dp(8), 0, a.dp(8))
+            val box = a.tv(if (done) "☑" else "☐", 22f, if (done) C.mint else C.muted, 1)
+            r.addView(box, lp(WRAP, WRAP, r = a.dp(12)))
+            val name = a.tv(h.name, 15f, if (done) C.mint else C.text, 1)
+            r.addView(name, lp(0, WRAP, weight = 1f))
+            if (streak > 0) {
+                r.addView(a.tv(L.num(streak.toString()) + " " + L.t("day streak", "দিনের স্ট্রিক"), 12f, C.muted))
+            }
+            r.pressFeedback()
+            r.setOnClickListener {
+                Store.toggleHabit(a, h.id)
+                updateHabits()
+            }
+            r.setOnLongClickListener {
+                habitOptionsDialog(h)
+                true
+            }
+            habitBox.addView(r)
+        }
+    }
+
+    private fun addHabitDialog() {
+        val et = a.edit(L.t("Habit name (e.g. Drink water)", "অভ্যাসের নাম (যেমন পানি খাওয়া)"), false)
+        val box = LinearLayout(a)
+        box.orientation = LinearLayout.VERTICAL
+        box.setPadding(a.dp(24), a.dp(8), a.dp(24), 0)
+        box.addView(et)
+        val d = a.dlg()
+            .setTitle(L.t("Add a habit", "অভ্যাস যোগ করুন"))
+            .setView(box)
+            .setPositiveButton(L.t("Add", "যোগ করুন"), null)
+            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+            .create()
+        d.show()
+        d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val name = et.text.toString().trim()
+            if (name.isEmpty()) {
+                et.error = L.t("Write a name", "নাম লিখুন")
+            } else {
+                Store.addHabit(a, name.take(40))
+                d.dismiss()
+                updateHabits()
+            }
+        }
+    }
+
+    private fun habitOptionsDialog(h: Habit) {
+        a.dlg()
+            .setTitle(h.name)
+            .setItems(
+                arrayOf(
+                    L.t("Rename", "নাম বদলান"),
+                    L.t("Delete", "মুছে ফেলুন")
+                )
+            ) { _, which ->
+                if (which == 0) renameHabitDialog(h) else deleteHabit(h)
+            }
+            .show()
+    }
+
+    private fun renameHabitDialog(h: Habit) {
+        val et = a.edit(L.t("Habit name", "অভ্যাসের নাম"), false)
+        et.setText(h.name)
+        val box = LinearLayout(a)
+        box.orientation = LinearLayout.VERTICAL
+        box.setPadding(a.dp(24), a.dp(8), a.dp(24), 0)
+        box.addView(et)
+        val d = a.dlg()
+            .setTitle(L.t("Rename habit", "অভ্যাসের নাম বদলান"))
+            .setView(box)
+            .setPositiveButton(L.t("Save", "সেভ করুন"), null)
+            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+            .create()
+        d.show()
+        d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val name = et.text.toString().trim()
+            if (name.isEmpty()) {
+                et.error = L.t("Write a name", "নাম লিখুন")
+            } else {
+                val list = Store.habits(a).map { if (it.id == h.id) it.copy(name = name.take(40)) else it }
+                Store.saveHabits(a, list)
+                d.dismiss()
+                updateHabits()
+            }
+        }
+    }
+
+    private fun deleteHabit(h: Habit) {
+        a.dlg()
+            .setTitle(L.t("Delete this habit?", "এই অভ্যাস মুছে ফেলবেন?"))
+            .setMessage(h.name)
+            .setPositiveButton(L.t("Delete", "মুছে ফেলুন")) { _, _ ->
+                Store.saveHabits(a, Store.habits(a).filter { it.id != h.id })
+                updateHabits()
+            }
+            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
             .show()
     }
 
@@ -1355,6 +1833,108 @@ class HomeScreen(private val a: MainActivity) {
             .show()
     }
 
+    // ---- today's mood: 1–5 quick log ----
+
+    private fun updateMoodRow() {
+        val today = Mood.todayDaily(a)
+        val sig = today?.toString() ?: "-"
+        if (sig == moodSig) return
+        moodSig = sig
+        for ((i, b) in moodBtns.withIndex()) {
+            val v = i + Mood.MIN
+            val sel = today == v
+            b.background = rounded(if (sel) C.selFill else C.card2, a.dp(22).toFloat())
+            b.setTextColor(if (sel) C.mint else C.muted)
+        }
+        moodLabel.setTextAnimated(
+            if (today != null) L.t("Today you feel: ", "আজ তোমার মুড: ") + Mood.label(today)
+            else L.t("How are you feeling today?", "আজ কেমন লাগছে?")
+        )
+    }
+
+    /** Optional after-lock mood question, from the session-complete dialog. Skippable. */
+    private fun showAfterMoodDialog() {
+        val labels = (Mood.MIN..Mood.MAX).map { Mood.label(it) }.toTypedArray()
+        a.dlg()
+            .setTitle(L.t("How do you feel after the lock?", "লকের পর কেমন লাগছে?"))
+            .setItems(labels) { _, which ->
+                Mood.logAfter(a, which + Mood.MIN)
+                a.toast(L.t("Thanks!", "ধন্যবাদ!"))
+            }
+            .setNegativeButton(L.t("Skip", "এড়িয়ে যান"), null)
+            .show()
+    }
+
+    /** Today's plan rows: tap a row to check it off, ✕ to delete it. */
+    private fun updatePlan() {
+        planBox.removeAllViews()
+        val tasks = Plan.tasksToday(a)
+        if (tasks.isEmpty()) {
+            planBox.addView(
+                a.tv(L.t("Nothing planned yet today.", "আজ এখনো কিছু পরিকল্পনা করা হয়নি।"), 13f, C.muted)
+            )
+        }
+        for (t in tasks) {
+            val r = LinearLayout(a)
+            r.gravity = Gravity.CENTER_VERTICAL
+            r.setPadding(0, a.dp(8), 0, a.dp(8))
+            val box = a.tv(if (t.done) "☑" else "☐", 20f, if (t.done) C.mint else C.muted, 1)
+            r.addView(box, lp(WRAP, WRAP, r = a.dp(10)))
+            val col2 = LinearLayout(a)
+            col2.orientation = LinearLayout.VERTICAL
+            val title = a.tv(t.title, 15f, if (t.done) C.muted else C.text)
+            if (t.done) title.paintFlags = title.paintFlags or Paint.STRIKE_THRU_TEXT_FLAG
+            col2.addView(title)
+            if (t.timeMin >= 0) col2.addView(a.tv(fmtMin(t.timeMin), 12f, C.primary))
+            r.addView(col2, lp(0, WRAP, weight = 1f))
+            val del = a.tv("✕", 16f, C.muted, 1)
+            del.setPadding(a.dp(10), a.dp(4), a.dp(4), a.dp(4))
+            del.setOnClickListener {
+                Plan.deleteTask(a, t.id)
+                updatePlan()
+            }
+            r.addView(del)
+            r.pressFeedback()
+            r.setOnClickListener {
+                Plan.toggleTask(a, t.id)
+                updatePlan()
+            }
+            planBox.addView(r)
+        }
+        planCarryBtn.visibility = if (Plan.yesterdayUndone(a).isNotEmpty()) View.VISIBLE else View.GONE
+    }
+
+    private fun addPlanDialog() {
+        val box = LinearLayout(a)
+        box.orientation = LinearLayout.VERTICAL
+        box.setPadding(a.dp(24), a.dp(8), a.dp(24), 0)
+        val et = a.edit(L.t("What will you do today?", "আজ কী করবে?"), false)
+        box.addView(et)
+        var timeMin = -1
+        val timeRow = a.tv(L.t("No reminder time — tap to set", "রিমাইন্ডারের সময় নেই — সেট করতে চাপুন"), 14f, C.primary)
+        timeRow.setPadding(0, a.dp(14), 0, a.dp(4))
+        timeRow.setOnClickListener {
+            val c = Calendar.getInstance()
+            TimePickerDialog(a, { _, h, m ->
+                timeMin = h * 60 + m
+                timeRow.text = fmtMin(timeMin)
+            }, c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE), false).show()
+        }
+        box.addView(timeRow)
+        a.dlg()
+            .setTitle(L.t("Add a task", "কাজ যোগ করুন"))
+            .setView(box)
+            .setPositiveButton(L.t("Add", "যোগ করুন")) { _, _ ->
+                val title = et.text.toString().trim()
+                if (title.isNotEmpty()) {
+                    Plan.addTask(a, title, timeMin)
+                    updatePlan()
+                }
+            }
+            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+            .show()
+    }
+
     /** Today's routine tasks: tap to check off. Overdue tasks show in warn colour;
      * a running penalty lock names the task that caused it. */
     private fun updateRoutine() {
@@ -1425,6 +2005,80 @@ class HomeScreen(private val a: MainActivity) {
         a.dlg()
             .setTitle(L.t("New badge!", "নতুন ব্যাজ!"))
             .setMessage(L.t(b.titleEn, b.titleBn) + "\n" + L.t(b.descEn, b.descBn))
+            .setPositiveButton(L.t("Great!", "ভালো হয়েছে!"), null)
+            .show()
+    }
+
+    /** XP & level line: updates only when the totals change. */
+    private fun updateXp() {
+        val (level, into, need) = Xp.progress(a)
+        val sig = "$level:$into:$need"
+        if (sig == xpSig) return
+        xpSig = sig
+        xpTitleText.text = L.t("Level $level", "লেভেল ${L.num(level.toString())}") + " · " + Xp.title(level)
+        xpBar.frac = if (need > 0) into.toFloat() / need.toFloat() else 1f
+        xpSubText.text = L.num(Xp.total(a).toString()) + " " + L.t("XP total", "মোট XP") + " · " +
+            L.num(into.toString()) + "/" + L.num(need.toString()) + " " + L.t("XP to the next level", "XP পরের লেভেলে")
+    }
+
+    /** Today's challenge with live progress (recomputed at most every 10 s). */
+    private fun updateChallenge() {
+        val now = System.currentTimeMillis()
+        if (now - chCheckedAt < 10_000 && chSig.isNotEmpty()) return
+        chCheckedAt = now
+        DailyChallenge.checkCompletion(a)
+        val def = DailyChallenge.today(a)
+        val (cur, target) = DailyChallenge.progress(a, def)
+        val done = DailyChallenge.isDone(a)
+        val sig = "${def.id}:$cur:$target:$done"
+        if (sig == chSig) return
+        chSig = sig
+        chTitleText.text = L.t(def.titleEn, def.titleBn)
+        chBar.frac = if (target > 0) cur.toFloat() / target.toFloat() else 0f
+        chDescText.text = if (done) {
+            L.t(
+                "Done! +${DailyChallenge.BONUS_XP} XP earned.",
+                "শেষ! +${L.num(DailyChallenge.BONUS_XP.toString())} XP পেয়েছো।"
+            )
+        } else {
+            when (def.kind) {
+                "focus", "morning" -> L.num(cur.toString()) + " / " + L.num(target.toString()) + " " + L.t("min", "মিনিট")
+                "locks" -> L.num(cur.toString()) + " / " + L.num(target.toString()) + " " + L.t("locks", "লক")
+                else -> L.t("Not done yet", "এখনো শেষ হয়নি")
+            }
+        }
+    }
+
+    /** One-time "level up" dialog after XP crosses a level threshold. */
+    private fun maybeShowLevelUp() {
+        if (levelUpShown) return
+        val lvl = Xp.levelUpPending(a) ?: return
+        levelUpShown = true
+        Xp.clearLevelUpPending(a)
+        a.dlg()
+            .setTitle(L.t("Level up!", "লেভেল আপ!"))
+            .setMessage(
+                L.t("You reached level $lvl", "তুমি লেভেল ${L.num(lvl.toString())} এ পৌঁছেছো") +
+                    ": " + Xp.title(lvl)
+            )
+            .setPositiveButton(L.t("Great!", "ভালো হয়েছে!"), null)
+            .show()
+    }
+
+    /** One-time dialog when today's challenge completes (+25 XP). */
+    private fun maybeShowChallenge() {
+        if (challengeShown) return
+        if (!DailyChallenge.pending(a)) return
+        challengeShown = true
+        DailyChallenge.clearPending(a)
+        a.dlg()
+            .setTitle(L.t("Challenge complete!", "চ্যালেঞ্জ সম্পন্ন!"))
+            .setMessage(
+                L.t(
+                    "Today's challenge is done — +${DailyChallenge.BONUS_XP} XP!",
+                    "আজকের চ্যালেঞ্জ শেষ — +${L.num(DailyChallenge.BONUS_XP.toString())} XP!"
+                )
+            )
             .setPositiveButton(L.t("Great!", "ভালো হয়েছে!"), null)
             .show()
     }
@@ -1524,6 +2178,7 @@ class HomeScreen(private val a: MainActivity) {
 
     private fun onStart() {
         if (Store.isActive(a)) return
+        if (Pomodoro.state(a).active) return
         if (!Perm.accessibilityOn(a)) {
             a.toast(L.t("Enable Accessibility first", "আগে Accessibility চালু করুন"))
             return
@@ -1700,6 +2355,7 @@ class HomeScreen(private val a: MainActivity) {
 
     private fun customDialog() {
         if (Store.isActive(a)) return
+        if (Pomodoro.state(a).active) return
         if (unlockMode() == UNLOCK_LOC) return
         val box = LinearLayout(a)
         box.orientation = LinearLayout.VERTICAL
@@ -2238,6 +2894,28 @@ class StatsScreen(private val a: MainActivity) {
         }
         col.addView(scoreCard, lp(MATCH, WRAP, b = a.dp(14)))
 
+        // XP & level: lifetime XP with progress to the next level
+        val (xpLevel, xpInto, xpNeed) = Xp.progress(a)
+        val xpCard = a.card()
+        xpCard.addView(a.section(L.t("XP & level", "XP ও লেভেল")))
+        val xpBig = LinearLayout(a)
+        xpBig.gravity = Gravity.CENTER_VERTICAL
+        xpBig.addView(a.tv(L.t("Level $xpLevel", "লেভেল ${L.num(xpLevel.toString())}"), 24f, C.text, 1))
+        xpBig.addView(a.tv(" · " + Xp.title(xpLevel), 16f, C.mint, 1), lp(WRAP, WRAP, l = a.dp(4)))
+        xpCard.addView(xpBig, lp(MATCH, WRAP, t = a.dp(8)))
+        val xpBarS = BarView(a)
+        xpBarS.frac = if (xpNeed > 0) xpInto.toFloat() / xpNeed.toFloat() else 1f
+        xpCard.addView(xpBarS, lp(MATCH, a.dp(10), t = a.dp(10)))
+        xpCard.addView(
+            a.tv(
+                L.num(Xp.total(a).toString()) + " " + L.t("XP total", "মোট XP") + " · " +
+                    L.num(xpInto.toString()) + "/" + L.num(xpNeed.toString()) + " " + L.t("XP to the next level", "XP পরের লেভেলে"),
+                13f, C.muted
+            ),
+            lp(MATCH, WRAP, t = a.dp(8))
+        )
+        col.addView(xpCard, lp(MATCH, WRAP, b = a.dp(14)))
+
         // focus journey: lifetime focus minutes walk Dhaka → Cox's Bazar (1 min = 1 km)
         val (journeys, journeyKm, _) = FocusJourney.progress(a)
         val journeyCard = a.card()
@@ -2328,6 +3006,33 @@ class StatsScreen(private val a: MainActivity) {
             routineCard.addView(r)
         }
         col.addView(routineCard, lp(MATCH, WRAP, b = a.dp(14)))
+
+        // mood: the last 7 days as a graph + the before/after-lock comparison
+        val moodCard = a.card()
+        moodCard.addView(a.section(L.t("Mood", "মুড")))
+        val moodWeek = Mood.weekValues(a)
+        if (moodWeek.all { it == null }) {
+            moodCard.addView(
+                a.tv(L.t("Log your mood on Home and the 7-day graph will show here.", "হোমে মুড লগ করলে এখানে ৭ দিনের গ্রাফ দেখাবে।"), 13f, C.muted),
+                lp(MATCH, WRAP, t = a.dp(6))
+            )
+        } else {
+            val graph = MoodGraphView(a)
+            graph.values = moodWeek
+            moodCard.addView(graph, lp(MATCH, a.dp(140), t = a.dp(8)))
+            val todayMood = Mood.todayDaily(a)
+            if (todayMood != null) {
+                moodCard.addView(
+                    a.tv(L.t("Today you feel: ", "আজ তোমার মুড: ") + Mood.label(todayMood), 14f, C.text),
+                    lp(MATCH, WRAP, t = a.dp(6))
+                )
+            }
+            val cmp = Mood.comparison(a)
+            if (cmp != null) {
+                moodCard.addView(a.tv(cmp, 14f, C.mint, 1), lp(MATCH, WRAP, t = a.dp(6)))
+            }
+        }
+        col.addView(moodCard, lp(MATCH, WRAP, b = a.dp(14)))
 
         // this week vs last week: focus minutes + completed locks (focus_days, 90 days kept)
         val cmpCard = a.card()

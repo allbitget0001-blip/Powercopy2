@@ -446,8 +446,8 @@ object Routine {
     private fun remindPending(ctx: Context, t: RoutineTask, dayKey: String): PendingIntent {
         val i = Intent(ctx, ReminderReceiver::class.java).setAction(ACTION_ROUTINE_REMIND)
             .putExtra("task_id", t.id).putExtra("day", dayKey)
-        // full-range code: the distinct intent actions keep remind and
-        // overdue PendingIntents apart for the same task
+        // full-range code (like Plan): the distinct intent actions keep
+        // remind and overdue PendingIntents apart for the same task
         return PendingIntent.getBroadcast(
             ctx, (t.id % Int.MAX_VALUE).toInt(), i,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
