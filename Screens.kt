@@ -57,6 +57,17 @@ class HomeScreen(private val a: MainActivity) {
     private lateinit var treeView: TreeView
     private lateinit var treeLabel: TextView
     private var treeSig = ""
+    private lateinit var xpTitleText: TextView
+    private lateinit var xpSubText: TextView
+    private lateinit var xpBar: BarView
+    private var xpSig = ""
+    private lateinit var chTitleText: TextView
+    private lateinit var chDescText: TextView
+    private lateinit var chBar: BarView
+    private var chSig = ""
+    private var chCheckedAt = 0L
+    private var levelUpShown = false
+    private var challengeShown = false
     private lateinit var profileRow: LinearLayout
     private lateinit var profileNameText: TextView
     private lateinit var profileSubText: TextView
@@ -167,6 +178,29 @@ class HomeScreen(private val a: MainActivity) {
         treeCard.addView(treeLabel, lp(MATCH, WRAP, t = a.dp(6)))
         col.addView(treeCard, lp(MATCH, WRAP, t = a.dp(16)))
 
+        // ---- XP & levels: every focus minute earns XP (tap for Statistics) ----
+        val xpCard = a.card(20)
+        xpTitleText = a.tv("", 18f, C.text, 1)
+        xpCard.addView(xpTitleText)
+        xpBar = BarView(a)
+        xpCard.addView(xpBar, lp(MATCH, a.dp(10), t = a.dp(10)))
+        xpSubText = a.tv("", 13f, C.muted)
+        xpCard.addView(xpSubText, lp(MATCH, WRAP, t = a.dp(8)))
+        xpCard.setOnClickListener { a.go(2) }
+        xpCard.pressFeedback()
+        col.addView(xpCard, lp(MATCH, WRAP, t = a.dp(16)))
+
+        // ---- daily challenge: one challenge a day, +25 XP when done ----
+        val chCard = a.card(20)
+        chCard.addView(a.tv(L.t("Daily challenge", "আজকের চ্যালেঞ্জ"), 18f, C.text, 1))
+        chTitleText = a.tv("", 15f, C.text, 1)
+        chCard.addView(chTitleText, lp(MATCH, WRAP, t = a.dp(6)))
+        chDescText = a.tv("", 13f, C.muted)
+        chCard.addView(chDescText, lp(MATCH, WRAP, t = a.dp(4)))
+        chBar = BarView(a)
+        chCard.addView(chBar, lp(MATCH, a.dp(10), t = a.dp(10)))
+        col.addView(chCard, lp(MATCH, WRAP, t = a.dp(16)))
+
         // ---- 7-day detox challenge: one completed lock a day, 7 days in a row ----
         val detox = a.card(20)
         detox.addView(a.tv(L.t("Detox challenge — 7 days", "ডিটক্স চ্যালেঞ্জ — ৭ দিন"), 18f, C.text, 1))
@@ -268,6 +302,24 @@ class HomeScreen(private val a: MainActivity) {
         noteBox.orientation = LinearLayout.VERTICAL
         note.addView(noteBox, lp(MATCH, WRAP, t = a.dp(6)))
         col.addView(note, lp(MATCH, WRAP, t = a.dp(16)))
+
+        // ---- mini-games: five one-minute games for a break ----
+        val games = a.card(20)
+        games.addView(a.tv(L.t("Mini-games", "মিনি-গেম"), 18f, C.text, 1))
+        games.addView(
+            a.tv(L.t("Quick one-minute games for a break.", "বিরতির জন্য এক মিনিটের ছোট খেলা।"), 13f, C.muted),
+            lp(MATCH, WRAP, t = a.dp(4))
+        )
+        fun gameRow(title: String, sub: String, open: () -> Unit) {
+            val chev = a.tv("›", 22f, C.muted, 1)
+            games.addView(a.row(title, sub, chev, open))
+        }
+        gameRow(L.t("Memory cards", "মেমোরি কার্ড"), L.t("Match all 6 pairs", "৬ জোড়া মিলান")) { MiniGames.showMemory(a) }
+        gameRow(L.t("Colour-word", "রঙ-শব্দ"), L.t("Tap the colour, not the word", "শব্দ নয়, রঙটা চাপুন")) { MiniGames.showStroop(a) }
+        gameRow(L.t("Math quiz", "গণিত কুইজ"), L.t("10 quick sums", "১০টা দ্রুত অঙ্ক")) { MiniGames.showMath(a) }
+        gameRow(L.t("Reaction game", "প্রতিক্রিয়া খেলা"), L.t("How fast can you tap?", "কত দ্রুত চাপতে পারো?")) { MiniGames.showReaction(a) }
+        gameRow(L.t("Daily riddle", "দিনের ধাঁধা"), L.t("One riddle a day", "প্রতিদিন একটা ধাঁধা")) { MiniGames.showRiddle(a) }
+        col.addView(games, lp(MATCH, WRAP, t = a.dp(16)))
 
         // ---- lock templates: one tap starts a lock with that duration ----
         col.addView(a.heading(L.t("Lock templates", "লক টেমপ্লেট")), lp(MATCH, WRAP, t = a.dp(26), b = a.dp(4)))
@@ -805,6 +857,8 @@ class HomeScreen(private val a: MainActivity) {
         updateHabits()
         updateNotes()
         updateRoutine()
+        updateXp()
+        updateChallenge()
         // midnight rollover: the plan card shows the new day's tasks
         if (Store.dayKey(0) != lastPlanDay) {
             lastPlanDay = Store.dayKey(0)
@@ -813,6 +867,9 @@ class HomeScreen(private val a: MainActivity) {
         maybeShowTreeOutcome()
         maybeShowSummary()
         maybeShowBadge()
+        maybeShowLevelUp()
+        maybeShowChallenge()
+        maybeCelebrateRoutine()
     }
 
     /** Live screen time today: the stored day total (re-read at most every 10 s)
@@ -1458,6 +1515,87 @@ class HomeScreen(private val a: MainActivity) {
             .setMessage(L.t(b.titleEn, b.titleBn) + "\n" + L.t(b.descEn, b.descBn))
             .setPositiveButton(L.t("Great!", "ভালো হয়েছে!"), null)
             .show()
+    }
+
+    /** XP & level line: updates only when the totals change. */
+    private fun updateXp() {
+        val (level, into, need) = Xp.progress(a)
+        val sig = "$level:$into:$need"
+        if (sig == xpSig) return
+        xpSig = sig
+        xpTitleText.text = L.t("Level $level", "লেভেল ${L.num(level.toString())}") + " · " + Xp.title(level)
+        xpBar.frac = if (need > 0) into.toFloat() / need.toFloat() else 1f
+        xpSubText.text = L.num(Xp.total(a).toString()) + " " + L.t("XP total", "মোট XP") + " · " +
+            L.num(into.toString()) + "/" + L.num(need.toString()) + " " + L.t("XP to the next level", "XP পরের লেভেলে")
+    }
+
+    /** Today's challenge with live progress (recomputed at most every 10 s). */
+    private fun updateChallenge() {
+        val now = System.currentTimeMillis()
+        if (now - chCheckedAt < 10_000 && chSig.isNotEmpty()) return
+        chCheckedAt = now
+        DailyChallenge.checkCompletion(a)
+        val def = DailyChallenge.today(a)
+        val (cur, target) = DailyChallenge.progress(a, def)
+        val done = DailyChallenge.isDone(a)
+        val sig = "${def.id}:$cur:$target:$done"
+        if (sig == chSig) return
+        chSig = sig
+        chTitleText.text = L.t(def.titleEn, def.titleBn)
+        chBar.frac = if (target > 0) cur.toFloat() / target.toFloat() else 0f
+        chDescText.text = if (done) {
+            L.t(
+                "Done! +${DailyChallenge.BONUS_XP} XP earned.",
+                "শেষ! +${L.num(DailyChallenge.BONUS_XP.toString())} XP পেয়েছো।"
+            )
+        } else {
+            when (def.kind) {
+                "focus", "morning" -> L.num(cur.toString()) + " / " + L.num(target.toString()) + " " + L.t("min", "মিনিট")
+                "locks" -> L.num(cur.toString()) + " / " + L.num(target.toString()) + " " + L.t("locks", "লক")
+                else -> L.t("Not done yet", "এখনো শেষ হয়নি")
+            }
+        }
+    }
+
+    /** One-time "level up" dialog after XP crosses a level threshold. */
+    private fun maybeShowLevelUp() {
+        if (levelUpShown) return
+        val lvl = Xp.levelUpPending(a) ?: return
+        levelUpShown = true
+        Xp.clearLevelUpPending(a)
+        a.dlg()
+            .setTitle(L.t("Level up!", "লেভেল আপ!"))
+            .setMessage(
+                L.t("You reached level $lvl", "তুমি লেভেল ${L.num(lvl.toString())} এ পৌঁছেছো") +
+                    ": " + Xp.title(lvl)
+            )
+            .setPositiveButton(L.t("Great!", "ভালো হয়েছে!"), null)
+            .show()
+    }
+
+    /** One-time dialog when today's challenge completes (+25 XP). */
+    private fun maybeShowChallenge() {
+        if (challengeShown) return
+        if (!DailyChallenge.pending(a)) return
+        challengeShown = true
+        DailyChallenge.clearPending(a)
+        a.dlg()
+            .setTitle(L.t("Challenge complete!", "চ্যালেঞ্জ সম্পন্ন!"))
+            .setMessage(
+                L.t(
+                    "Today's challenge is done — +${DailyChallenge.BONUS_XP} XP!",
+                    "আজকের চ্যালেঞ্জ শেষ — +${L.num(DailyChallenge.BONUS_XP.toString())} XP!"
+                )
+            )
+            .setPositiveButton(L.t("Great!", "ভালো হয়েছে!"), null)
+            .show()
+    }
+
+    /** Confetti when the day's routine is fully complete (once a day, never after locks). */
+    private fun maybeCelebrateRoutine() {
+        if (!Confetti.shouldCelebrate(a)) return
+        Confetti.markShown(a)
+        Confetti.show(a)
     }
 
     private fun warnCard(icon: String, title: String, sub: String, onClick: () -> Unit): View {
@@ -2260,6 +2398,28 @@ class StatsScreen(private val a: MainActivity) {
             scoreCard.addView(r)
         }
         col.addView(scoreCard, lp(MATCH, WRAP, b = a.dp(14)))
+
+        // XP & level: lifetime XP with progress to the next level
+        val (xpLevel, xpInto, xpNeed) = Xp.progress(a)
+        val xpCard = a.card()
+        xpCard.addView(a.section(L.t("XP & level", "XP ও লেভেল")))
+        val xpBig = LinearLayout(a)
+        xpBig.gravity = Gravity.CENTER_VERTICAL
+        xpBig.addView(a.tv(L.t("Level $xpLevel", "লেভেল ${L.num(xpLevel.toString())}"), 24f, C.text, 1))
+        xpBig.addView(a.tv(" · " + Xp.title(xpLevel), 16f, C.mint, 1), lp(WRAP, WRAP, l = a.dp(4)))
+        xpCard.addView(xpBig, lp(MATCH, WRAP, t = a.dp(8)))
+        val xpBarS = BarView(a)
+        xpBarS.frac = if (xpNeed > 0) xpInto.toFloat() / xpNeed.toFloat() else 1f
+        xpCard.addView(xpBarS, lp(MATCH, a.dp(10), t = a.dp(10)))
+        xpCard.addView(
+            a.tv(
+                L.num(Xp.total(a).toString()) + " " + L.t("XP total", "মোট XP") + " · " +
+                    L.num(xpInto.toString()) + "/" + L.num(xpNeed.toString()) + " " + L.t("XP to the next level", "XP পরের লেভেলে"),
+                13f, C.muted
+            ),
+            lp(MATCH, WRAP, t = a.dp(8))
+        )
+        col.addView(xpCard, lp(MATCH, WRAP, b = a.dp(14)))
 
         // routine: streak + today's progress + the last 7 days
         val (rDone, rTotal) = Routine.todaySummary(a)

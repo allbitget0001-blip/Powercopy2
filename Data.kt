@@ -841,6 +841,7 @@ object Store {
         }
         lock(ctx).edit().putString("sessions", arr.toString()).apply()
         if (s.ok) recordFocus(ctx, s)
+        if (s.ok) Xp.awardForSession(ctx, s) // XP: minutes + 10 per completed lock
         if (s.ok) saveSessionSummary(ctx, s)
         if (s.ok) Badges.check(ctx)
         if (s.ok) FocusScore.recordToday(ctx)
