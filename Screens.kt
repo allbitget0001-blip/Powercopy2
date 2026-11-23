@@ -21,11 +21,9 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
-import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -51,12 +49,6 @@ class HomeScreen(private val a: MainActivity) {
     private var cachedUsageSec = -1L
     private var cachedUsageAt = 0L
     private var cachedUsageDay = ""
-    private lateinit var scoreText: TextView
-    private var cachedScore: ScoreBreakdown? = null
-    private var cachedScoreAt = 0L
-    private lateinit var treeView: TreeView
-    private lateinit var treeLabel: TextView
-    private var treeSig = ""
     private lateinit var profileRow: LinearLayout
     private lateinit var profileNameText: TextView
     private lateinit var profileSubText: TextView
@@ -75,9 +67,6 @@ class HomeScreen(private val a: MainActivity) {
     private lateinit var planBox: LinearLayout
     private lateinit var planCarryBtn: TextView
     private var lastPlanDay = ""
-    private lateinit var noteBox: LinearLayout
-    private lateinit var noteEdit: EditText
-    private var noteSig = ""
     private var badgeShown = false
     private lateinit var startBtn: LinearLayout
     private lateinit var stopBtn: LinearLayout
@@ -153,16 +142,6 @@ class HomeScreen(private val a: MainActivity) {
         sc.addView(extendBtn, lp(MATCH, a.dp(60), t = a.dp(12)))
         col.addView(sc, lp(MATCH, WRAP, t = a.dp(16)))
 
-        // ---- focus tree: grows while a lock runs, withers if stopped early ----
-        val treeCard = a.card(20)
-        treeCard.addView(a.tv(L.t("Focus tree", "ফোকাস গাছ"), 18f, C.text, 1))
-        treeView = TreeView(a)
-        treeCard.addView(treeView, lp(MATCH, a.dp(170), t = a.dp(8)))
-        treeLabel = a.tv("", 13f, C.muted)
-        treeLabel.gravity = Gravity.CENTER
-        treeCard.addView(treeLabel, lp(MATCH, WRAP, t = a.dp(6)))
-        col.addView(treeCard, lp(MATCH, WRAP, t = a.dp(16)))
-
         // ---- 7-day detox challenge: one completed lock a day, 7 days in a row ----
         val detox = a.card(20)
         detox.addView(a.tv(L.t("Detox challenge — 7 days", "ডিটক্স চ্যালেঞ্জ — ৭ দিন"), 18f, C.text, 1))
@@ -234,24 +213,6 @@ class HomeScreen(private val a: MainActivity) {
         plan.addView(planCarryBtn, lp(MATCH, a.dp(48), t = a.dp(8)))
         col.addView(plan, lp(MATCH, WRAP, t = a.dp(16)))
 
-        // ---- focus note: jot a thought during a lock without breaking it ----
-        val note = a.card(20)
-        note.addView(a.tv(L.t("Focus note", "ফোকাস নোট"), 18f, C.text, 1))
-        note.addView(a.tv(L.t("A thought during a lock? Write it down in seconds.", "লকের সময় কোনো চিন্তা? কয়েক সেকেন্ডে লিখে রাখুন।"), 13f, C.muted), lp(MATCH, WRAP, t = a.dp(4)))
-        val noteRow = LinearLayout(a)
-        noteRow.gravity = Gravity.CENTER_VERTICAL
-        noteEdit = a.edit(L.t("Write a note…", "নোট লিখুন…"), false)
-        noteEdit.gravity = Gravity.CENTER_VERTICAL or Gravity.START
-        noteRow.addView(noteEdit, lp(0, WRAP, weight = 1f, r = a.dp(10)))
-        val noteSave = a.outlineBtn(L.t("Save", "সেভ"), C.primary)
-        noteSave.setOnClickListener { saveNote() }
-        noteRow.addView(noteSave, lp(WRAP, a.dp(48)))
-        note.addView(noteRow, lp(MATCH, WRAP, t = a.dp(10)))
-        noteBox = LinearLayout(a)
-        noteBox.orientation = LinearLayout.VERTICAL
-        note.addView(noteBox, lp(MATCH, WRAP, t = a.dp(6)))
-        col.addView(note, lp(MATCH, WRAP, t = a.dp(16)))
-
         // ---- lock templates: one tap starts a lock with that duration ----
         col.addView(a.heading(L.t("Lock templates", "লক টেমপ্লেট")), lp(MATCH, WRAP, t = a.dp(26), b = a.dp(4)))
         val templates = listOf(
@@ -297,11 +258,6 @@ class HomeScreen(private val a: MainActivity) {
         // live screen time today: stored totals + the app open right now
         screenTimeText = a.tv("", 13f, C.muted)
         col.addView(screenTimeText, lp(MATCH, WRAP, t = a.dp(4)))
-        // focus score today (0–100): tap to see the breakdown in Statistics
-        scoreText = a.tv("", 13f, C.primary, 1)
-        scoreText.setOnClickListener { a.go(2) }
-        scoreText.pressFeedback()
-        col.addView(scoreText, lp(MATCH, WRAP, t = a.dp(4)))
 
         // ---- unlock condition: time only, location only, or either one ----
         col.addView(a.heading(L.t("When does the lock open?", "লক খুলবে কখন?")), lp(MATCH, WRAP, t = a.dp(26), b = a.dp(4)))
@@ -776,18 +732,14 @@ class HomeScreen(private val a: MainActivity) {
         updateWarnings()
         updateLastSummary()
         updateScreenTime()
-        updateFocusScore()
-        updateTree()
         updateDetox()
         updatePomodoro()
         updateHabits()
-        updateNotes()
         // midnight rollover: the plan card shows the new day's tasks
         if (Store.dayKey(0) != lastPlanDay) {
             lastPlanDay = Store.dayKey(0)
             updatePlan()
         }
-        maybeShowTreeOutcome()
         maybeShowSummary()
         maybeShowBadge()
     }
@@ -811,18 +763,6 @@ class HomeScreen(private val a: MainActivity) {
             }
         }
         screenTimeText.text = L.t("Screen time today: ", "আজকের স্ক্রিন টাইম: ") + fmtDur(total * 1000L)
-    }
-
-    /** Today's focus score (0–100), recomputed at most every 10 s. */
-    private fun updateFocusScore() {
-        val now = System.currentTimeMillis()
-        if (cachedScore == null || now - cachedScoreAt > 10_000) {
-            cachedScore = FocusScore.today(a)
-            cachedScoreAt = now
-            FocusScore.recordToday(a, cachedScore!!)
-        }
-        val b = cachedScore ?: return
-        scoreText.text = L.t("Focus score today: ", "আজকের ফোকাস স্কোর: ") + L.num("${b.total}/100")
     }
 
     // ---------- lock profile (extra apps for this session) ----------
@@ -905,59 +845,6 @@ class HomeScreen(private val a: MainActivity) {
         lastSummaryText.text = L.t("Last session: ", "গত সেশন: ") + fmtDur(s.durMs) + " · " + blocksTxt
     }
 
-    /** The focus tree: live while a lock runs, else the garden's newest tree. */
-    private fun updateTree() {
-        val active = Store.isActive(a)
-        if (active && FocusTree.isPlanted(a)) {
-            val frac = FocusTree.currentFraction(a)
-            val stage = FocusTree.stageFor(frac)
-            treeView.frac = frac
-            treeView.alive = true
-            treeView.invalidate()
-            // label every tick: the % keeps counting inside a stage
-            treeSig = "live:$stage"
-            treeLabel.text = FocusTree.stageName(stage) + " · " +
-                L.num((frac * 100).toInt().toString()) + "%"
-            return
-        }
-        val last = FocusTree.garden(a).firstOrNull()
-        if (last == null) {
-            val sig = "empty"
-            if (sig != treeSig) {
-                treeSig = sig
-                treeView.frac = 0f
-                treeView.alive = true
-                treeView.invalidate()
-                treeLabel.text = L.t("Start a lock and a seed will be planted", "লক শুরু করলে বীজ রোপণ হবে")
-            }
-            return
-        }
-        val sig = "garden:${last.endMs}"
-        if (sig != treeSig) {
-            treeSig = sig
-            treeView.frac = last.stage * 0.25f
-            treeView.alive = last.alive
-            treeView.invalidate()
-            treeLabel.text = FocusTree.stageName(last.stage) + " · " + fmtDate(last.endMs) +
-                if (last.alive) "" else " · " + L.t("withered", "শুকিয়ে গেছে")
-        }
-    }
-
-    /** One-time tree message after a lock ends: withered = toast, survived = in the summary dialog. */
-    private fun maybeShowTreeOutcome() {
-        when (FocusTree.outcomePending(a)) {
-            "dead" -> {
-                FocusTree.clearOutcome(a)
-                a.toast(L.t("The tree withered", "গাছটা মরে গেল"))
-            }
-            "alive" -> {
-                // the summary dialog carries the survived message; if no summary
-                // is pending (edge case), just drop the flag
-                if (!Store.summaryPending(a)) FocusTree.clearOutcome(a)
-            }
-        }
-    }
-
     /** Shows the session-summary dialog once, the first time Home ticks after a lock completes. */
     private fun maybeShowSummary() {
         if (summaryShown) return
@@ -968,10 +855,6 @@ class HomeScreen(private val a: MainActivity) {
         }
         summaryShown = true
         Store.clearSummaryPending(a)
-        val treeLine = if (FocusTree.outcomePending(a) == "alive") {
-            FocusTree.clearOutcome(a)
-            "\n\n" + L.t("Your tree survived!", "তোমার গাছ বেঁচে গেল!")
-        } else ""
         val blocksTxt = if (s.blocks > 0) {
             L.num(s.blocks.toString()) + " " + L.t("times an app was blocked", "বার অ্যাপ ব্লক হয়েছে")
         } else {
@@ -981,7 +864,7 @@ class HomeScreen(private val a: MainActivity) {
             .setTitle(L.t("Session completed!", "সেশন সম্পন্ন!"))
             .setMessage(
                 L.t("Focus time: ", "ফোকাস সময়: ") + fmtDur(s.durMs) + "\n" + blocksTxt +
-                    treeLine + "\n\n" + Quotes.random()
+                    "\n\n" + Quotes.random()
             )
             .setPositiveButton(L.t("Great!", "ভালো হয়েছে!"), null)
             .show()
@@ -1227,72 +1110,6 @@ class HomeScreen(private val a: MainActivity) {
             .show()
     }
 
-    /** Focus notes, newest first. Rebuilds only when the notes change. */
-    private fun updateNotes() {
-        val notes = Store.focusNotes(a).asReversed()
-        val sig = notes.joinToString("|") { "${it.id}:${it.text.hashCode()}" }
-        if (sig == noteSig) return
-        noteSig = sig
-        noteBox.removeAllViews()
-        if (notes.isEmpty()) {
-            noteBox.addView(
-                a.tv(L.t("No notes yet. A thought during a lock goes here — it takes seconds.", "এখনো কোনো নোট নেই। লকের সময়ের চিন্তা এখানে লিখুন — কয়েক সেকেন্ড লাগে।"), 13f, C.muted),
-                lp(MATCH, WRAP, t = a.dp(4))
-            )
-            return
-        }
-        for (n in notes) {
-            val r = LinearLayout(a)
-            r.orientation = LinearLayout.VERTICAL
-            r.setPadding(0, a.dp(8), 0, a.dp(8))
-            val text = a.tv(n.text, 15f, C.text)
-            text.maxLines = 2
-            text.ellipsize = TextUtils.TruncateAt.END
-            r.addView(text)
-            val meta = fmtDate(n.time) + " · " + fmtClock(n.time) +
-                if (n.duringLock) "  ·  " + L.t("During lock", "লকের সময়") else ""
-            r.addView(a.tv(meta, 12f, if (n.duringLock) C.mint else C.muted), lp(MATCH, WRAP, t = a.dp(2)))
-            r.pressFeedback()
-            r.setOnClickListener { viewNoteDialog(n) }
-            r.setOnLongClickListener {
-                deleteNoteDialog(n)
-                true
-            }
-            noteBox.addView(r)
-        }
-    }
-
-    private fun saveNote() {
-        val text = noteEdit.text.toString().trim()
-        if (text.isEmpty()) {
-            a.toast(L.t("Write something first", "আগে কিছু লিখুন"))
-            return
-        }
-        Store.addFocusNote(a, text, Store.isActive(a))
-        noteEdit.setText("")
-        updateNotes()
-    }
-
-    private fun viewNoteDialog(n: FocusNote) {
-        a.dlg()
-            .setTitle(fmtDate(n.time) + " · " + fmtClock(n.time))
-            .setMessage(n.text)
-            .setPositiveButton(L.t("Close", "বন্ধ করুন"), null)
-            .show()
-    }
-
-    private fun deleteNoteDialog(n: FocusNote) {
-        a.dlg()
-            .setTitle(L.t("Delete this note?", "এই নোট মুছে ফেলবেন?"))
-            .setMessage(if (n.text.length > 80) n.text.take(77) + "…" else n.text)
-            .setPositiveButton(L.t("Delete", "মুছে ফেলুন")) { _, _ ->
-                Store.deleteFocusNote(a, n.id)
-                updateNotes()
-            }
-            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
-            .show()
-    }
-
     /** Today's plan rows: tap a row to check it off, ✕ to delete it. */
     private fun updatePlan() {
         planBox.removeAllViews()
@@ -1397,12 +1214,7 @@ class HomeScreen(private val a: MainActivity) {
     private fun updateWarnings() {
         val acc = Perm.accessibilityOn(a)
         val bat = Perm.batteryOk(a)
-        val adminActive = DeviceAdmin.isActive(a)
-        if (adminActive) DeviceAdmin.noteActive(a)
-        // warn only while a lock runs: the admin was on, now it is off, so
-        // the app could be uninstalled mid-lock
-        val adminOff = Store.isActive(a) && DeviceAdmin.wasActive(a) && !adminActive
-        val sig = "$acc|$bat|$adminOff|${L.bn}"
+        val sig = "$acc|$bat|${L.bn}"
         if (sig == warnSig) return
         warnSig = sig
         warnBox.removeAllViews()
@@ -1427,22 +1239,6 @@ class HomeScreen(private val a: MainActivity) {
                         a.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
                     } catch (e: Exception) {
                         Log.e(TAG, "battery settings", e)
-                    }
-                },
-                lp(MATCH, WRAP, b = a.dp(8))
-            )
-        }
-        if (adminOff) {
-            warnBox.addView(
-                warnCard(
-                    "!",
-                    L.t("Device admin is off", "ডিভাইস অ্যাডমিন বন্ধ হয়ে গেছে"),
-                    L.t("Uninstall protection is off — the app can now be uninstalled during this lock. Tap to turn it back on.", "আনইনস্টল সুরক্ষা বন্ধ — এই লক চলাকালীন অ্যাপ আনইনস্টল করা যাবে। আবার চালু করতে চাপুন।")
-                ) {
-                    try {
-                        a.startActivity(DeviceAdmin.enableIntent(a))
-                    } catch (e: Exception) {
-                        Log.e(TAG, "admin enable", e)
                     }
                 },
                 lp(MATCH, WRAP, b = a.dp(8))
@@ -1941,58 +1737,6 @@ class StatsScreen(private val a: MainActivity) {
         }
         col.addView(focus7, lp(MATCH, WRAP, b = a.dp(14)))
 
-        // focus score: today's total with the visible breakdown + 7-day list
-        val scoreWeek = FocusScore.week(a)
-        val scoreToday = scoreWeek[6]
-        FocusScore.recordToday(a, scoreToday)
-        val scoreCard = a.card()
-        scoreCard.addView(a.section(L.t("Focus score", "ফোকাস স্কোর")))
-        val scoreBig = LinearLayout(a)
-        scoreBig.gravity = Gravity.CENTER_VERTICAL
-        scoreBig.addView(a.tv(L.num(scoreToday.total.toString()), 34f, C.mint, 1))
-        scoreBig.addView(a.tv(L.t(" / 100 today", " / ১০০ আজ"), 16f, C.muted), lp(WRAP, WRAP, l = a.dp(4)))
-        scoreCard.addView(scoreBig, lp(MATCH, WRAP, t = a.dp(8)))
-        fun scoreRow(label: String, pts: Int, max: Int) {
-            val r = LinearLayout(a)
-            r.gravity = Gravity.CENTER_VERTICAL
-            r.setPadding(0, a.dp(6), 0, a.dp(6))
-            r.addView(a.tv(label, 14f, C.text, 1), lp(0, WRAP, weight = 1f))
-            r.addView(a.tv(L.num("$pts/$max"), 14f, C.mint, 1))
-            scoreCard.addView(r)
-        }
-        scoreRow(
-            L.t("Focus ${scoreToday.focusMin} min (goal ${FocusScore.GOAL_MIN})", "ফোকাস ${L.num(scoreToday.focusMin.toString())} মিনিট (লক্ষ্য ${L.num(FocusScore.GOAL_MIN.toString())})"),
-            scoreToday.focusPts, 40
-        )
-        scoreRow(
-            L.t("Completed locks: ${scoreToday.locks}", "সম্পন্ন লক: ${L.num(scoreToday.locks.toString())}টি"),
-            scoreToday.locksPts, 20
-        )
-        scoreRow(
-            L.t("Streak: ${scoreToday.streak} days", "স্ট্রিক: ${L.num(scoreToday.streak.toString())} দিন"),
-            scoreToday.streakPts, 20
-        )
-        scoreRow(
-            L.t("Temptation attempts: ${scoreToday.attempts}", "প্রলোভন: ${L.num(scoreToday.attempts.toString())} বার"),
-            scoreToday.calmPts, 20
-        )
-        // 7-day scores: stored totals when recorded, else rebuilt from data
-        scoreCard.addView(a.tv(L.t("Last 7 days", "গত ৭ দিন"), 13f, C.muted, 1), lp(MATCH, WRAP, t = a.dp(12)))
-        for (i in 6 downTo 0) {
-            val c = Calendar.getInstance()
-            c.add(Calendar.DAY_OF_YEAR, -i)
-            val label = if (i == 0) L.t("Today", "আজ") else L.dayLong(dayIdx(c))
-            val total = if (i == 0) scoreToday.total
-                else FocusScore.storedTotal(a, i) ?: scoreWeek[6 - i].total
-            val r = LinearLayout(a)
-            r.gravity = Gravity.CENTER_VERTICAL
-            r.setPadding(0, a.dp(6), 0, a.dp(6))
-            r.addView(a.tv(label, 14f, C.text, 1), lp(0, WRAP, weight = 1f))
-            r.addView(a.tv(L.num(total.toString()), 14f, if (total > 0) C.mint else C.muted, 1))
-            scoreCard.addView(r)
-        }
-        col.addView(scoreCard, lp(MATCH, WRAP, b = a.dp(14)))
-
         // this week vs last week: focus minutes + completed locks (focus_days, 90 days kept)
         val cmpCard = a.card()
         cmpCard.addView(a.section(L.t("This week vs last week", "এই সপ্তাহ বনাম গত সপ্তাহ")))
@@ -2114,57 +1858,6 @@ class StatsScreen(private val a: MainActivity) {
         calCard.addView(calDetail, lp(MATCH, WRAP, t = a.dp(10)))
         col.addView(calCard, lp(MATCH, WRAP, b = a.dp(14)))
         buildCalendar()
-
-        // garden: every finished tree, newest first (dead ones withered and grey)
-        val gardenCard = a.card()
-        gardenCard.addView(a.section(L.t("Garden", "বাগান")))
-        val trees = FocusTree.garden(a)
-        if (trees.isEmpty()) {
-            gardenCard.addView(
-                a.tv(L.t("No trees yet — complete a lock and your first tree will grow here.", "এখনো কোনো গাছ নেই — একটা লক সম্পন্ন করলে প্রথম গাছ এখানে জন্মাবে।"), 13f, C.muted),
-                lp(MATCH, WRAP, t = a.dp(6))
-            )
-        } else {
-            var i = 0
-            while (i < trees.size) {
-                val row = LinearLayout(a)
-                for (j in 0 until 3) {
-                    val t = trees.getOrNull(i + j)
-                    val cell = LinearLayout(a)
-                    cell.orientation = LinearLayout.VERTICAL
-                    cell.gravity = Gravity.CENTER_HORIZONTAL
-                    if (t != null) {
-                        val tv = TreeView(a)
-                        tv.frac = t.stage * 0.25f
-                        tv.alive = t.alive
-                        cell.addView(tv, lp(a.dp(96), a.dp(96)))
-                        val dl = a.tv(fmtDate(t.endMs), 11f, C.muted, 1)
-                        dl.gravity = Gravity.CENTER
-                        cell.addView(dl, lp(MATCH, WRAP, t = a.dp(2)))
-                        val ml = a.tv(fmtDur(t.durMin * 60000L), 11f, if (t.alive) C.primary else C.muted, 1)
-                        ml.gravity = Gravity.CENTER
-                        cell.addView(ml)
-                        cell.pressFeedback()
-                        cell.setOnClickListener {
-                            a.dlg()
-                                .setTitle(FocusTree.stageName(t.stage))
-                                .setMessage(
-                                    fmtDate(t.endMs) + "\n" +
-                                        L.t("Lock time: ", "লকের সময়: ") + fmtDur(t.durMin * 60000L) + "\n" +
-                                        if (t.alive) L.t("The tree survived", "গাছটা বেঁচে গেছে")
-                                        else L.t("The tree withered — the lock was stopped early", "গাছটা শুকিয়ে গেছে — লক আগেই বন্ধ করা হয়েছিল")
-                                )
-                                .setPositiveButton(L.t("OK", "ঠিক আছে"), null)
-                                .show()
-                        }
-                    }
-                    row.addView(cell, lp(0, WRAP, weight = 1f))
-                }
-                gardenCard.addView(row, lp(MATCH, WRAP, t = a.dp(8)))
-                i += 3
-            }
-        }
-        col.addView(gardenCard, lp(MATCH, WRAP, b = a.dp(14)))
 
         // today's app usage (from the daily-limits tracker): most-used first.
         // Tapping a row opens its daily-limit setting.
@@ -2585,65 +2278,6 @@ class SettingsScreen(private val a: MainActivity) {
         else L.t("Changes apply from the next session.", "পরিবর্তন পরের সেশন থেকে কার্যকর হবে।")
         strictCard.addView(a.tv(note, 12f, if (locked) C.warn else C.muted), lp(MATCH, WRAP, t = a.dp(8)))
         col.addView(strictCard, lp(MATCH, WRAP, b = a.dp(12)))
-
-        // device admin: while active, Android blocks uninstalling the app
-        if (DeviceAdmin.isActive(a)) DeviceAdmin.noteActive(a)
-        val adminCard = a.card()
-        adminCard.addView(a.section(L.t("Device admin", "ডিভাইস অ্যাডমিন")))
-        val adminOn = DeviceAdmin.isActive(a)
-        if (adminOn) {
-            adminCard.addView(
-                a.tv(L.t("✔ Active — PowerLock 2 cannot be uninstalled right now.", "✔ চালু আছে — এখন PowerLock 2 আনইনস্টল করা যাবে না।"), 14f, C.mint, 1),
-                lp(MATCH, WRAP, t = a.dp(8))
-            )
-            adminCard.addView(
-                a.tv(
-                    L.t("To turn it off: system Settings → Security → Device admin apps. That deliberate step is the whole point — it stops impulsive uninstalls during a lock.", "বন্ধ করতে: সিস্টেম সেটিংস → নিরাপত্তা → ডিভাইস অ্যাডমিন অ্যাপ। এই ভেবেচিন্তে করা ধাপটাই সুরক্ষা — লক চলাকালীন হঠাৎ আনইনস্টল ঠেকায়।"),
-                    13f, C.muted
-                ),
-                lp(MATCH, WRAP, t = a.dp(8))
-            )
-            adminCard.addView(
-                a.row(L.t("Open security settings", "নিরাপত্তা সেটিংস খুলুন"), null, a.tv("›", 22f, C.muted)) {
-                    launch(Intent(Settings.ACTION_SECURITY_SETTINGS))
-                }
-            )
-        } else {
-            adminCard.addView(
-                a.tv(
-                    L.t("While active, Android blocks uninstalling PowerLock 2 — you must first turn the admin off in system Settings. It stops impulsive uninstalls during a lock.", "চালু থাকলে Android PowerLock 2 আনইনস্টল আটকাবে — আগে সিস্টেম সেটিংসে অ্যাডমিন বন্ধ করতে হবে। লক চলাকালীন হঠাৎ আনইনস্টল ঠেকায়।"),
-                    13f, C.muted
-                ),
-                lp(MATCH, WRAP, t = a.dp(8))
-            )
-            val offAt = DeviceAdmin.deactivatedAt(a)
-            if (offAt > 0) {
-                adminCard.addView(
-                    a.tv(
-                        L.t("Turned off: ", "বন্ধ করা হয়েছিল: ") + fmtDate(offAt) + " " + fmtClock(offAt),
-                        13f, C.warn
-                    ),
-                    lp(MATCH, WRAP, t = a.dp(8))
-                )
-            }
-            val enableBtn = a.outlineBtn(L.t("Enable device admin", "ডিভাইস অ্যাডমিন চালু করুন"), C.primary)
-            enableBtn.setOnClickListener {
-                try {
-                    a.startActivity(DeviceAdmin.enableIntent(a))
-                } catch (e: Exception) {
-                    Log.e(TAG, "admin enable failed", e)
-                }
-            }
-            adminCard.addView(enableBtn, lp(MATCH, a.dp(48), t = a.dp(12)))
-        }
-        adminCard.addView(
-            a.tv(
-                L.t("Honest note: turning the admin off always allows uninstalling — this only makes it a deliberate two-step action, not a one-tap impulse.", "সত্যি কথা: অ্যাডমিন বন্ধ করলেই আনইনস্টল করা যাবে — এটা শুধু এক চাপের বদলে ভেবেচিন্তে দুই ধাপে করতে হয়।"),
-                12f, C.muted
-            ),
-            lp(MATCH, WRAP, t = a.dp(10))
-        )
-        col.addView(adminCard, lp(MATCH, WRAP, b = a.dp(12)))
 
         // location lock first, then focus mode (defined in Features.kt)
         col.addView(a.locationCard(), lp(MATCH, WRAP, b = a.dp(12)))

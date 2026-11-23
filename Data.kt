@@ -97,9 +97,6 @@ data class BadgeDef(val id: String, val icon: Ic, val titleEn: String, val title
 /** A daily habit: checked off once a day, with a consecutive-day streak. */
 data class Habit(val id: Long, val name: String, val created: Long)
 
-/** One focus note: a quick thought jotted during (or outside) a lock. */
-data class FocusNote(val id: Long, val text: String, val time: Long, val duringLock: Boolean)
-
 /** One task in today's plan: optional reminder time in minutes since midnight (-1 = none). */
 data class PlanTask(val id: Long, val title: String, val timeMin: Int, val done: Boolean)
 
@@ -261,154 +258,6 @@ object Dnd {
     }
 }
 
-// ---------- focus score (0–100, one day) ----------
-
-/** One day's focus score with its visible breakdown. */
-data class ScoreBreakdown(
-    val total: Int,
-    val focusPts: Int,
-    val locksPts: Int,
-    val streakPts: Int,
-    val calmPts: Int,
-    val focusMin: Int,
-    val locks: Int,
-    val streak: Int,
-    val attempts: Int
-)
-
-/**
- * Daily focus score, 0–100, computed transparently from existing data:
- *  - focus minutes: up to 40 pts against a 120-minute daily goal
- *  - completed locks: up to 20 pts (10 per lock)
- *  - streak: up to 20 pts (2 per streak day)
- *  - low temptation: up to 20 pts (20 minus 1 per blocked-open attempt, min 0)
- * Today's score includes the running lock's elapsed minutes, so it moves
- * live; past days are rebuilt from focus_days / sessions / attempts.
- * Each day's score is stored date-keyed ("focus_scores") so the 7-day
- * list stays stable even as the attempts list is pruned.
- */
-object FocusScore {
-    const val GOAL_MIN = 120
-
-    private fun build(focusMin: Int, locks: Int, streak: Int, attempts: Int): ScoreBreakdown {
-        val focusPts = (focusMin * 40 / GOAL_MIN).coerceIn(0, 40)
-        val locksPts = (locks * 10).coerceIn(0, 20)
-        val streakPts = (streak * 2).coerceIn(0, 20)
-        val calmPts = (20 - attempts).coerceIn(0, 20)
-        val total = (focusPts + locksPts + streakPts + calmPts).coerceIn(0, 100)
-        return ScoreBreakdown(total, focusPts, locksPts, streakPts, calmPts, focusMin, locks, streak, attempts)
-    }
-
-    /** Streak ending on the day N days ago (today: ending today or yesterday). */
-    private fun streakFor(focusMap: Map<String, Int>, daysAgo: Int): Int {
-        fun hasDay(ago: Int) = (focusMap[Store.dayKey(ago)] ?: 0) > 0
-        val startAgo = if (daysAgo == 0) {
-            if (hasDay(0)) 0 else if (hasDay(1)) 1 else -1
-        } else if (hasDay(daysAgo)) daysAgo else -1
-        if (startAgo < 0) return 0
-        var streak = 0
-        var i = startAgo
-        while (hasDay(i)) {
-            streak++
-            i++
-        }
-        return streak
-    }
-
-    /** Elapsed minutes of the lock running right now (0 when idle). */
-    private fun liveMin(ctx: Context): Int {
-        if (!Store.isActive(ctx)) return 0
-        val start = Store.lock(ctx).getLong("start", 0L)
-        if (start <= 0) return 0
-        return ((System.currentTimeMillis() - start) / 60000L).toInt().coerceAtLeast(0)
-    }
-
-    fun forDay(ctx: Context, daysAgo: Int): ScoreBreakdown {
-        val key = Store.dayKey(daysAgo)
-        val focusMap = Store.focusDayMap(ctx)
-        var focusMin = focusMap[key] ?: 0
-        if (daysAgo == 0) focusMin += liveMin(ctx)
-        val locks = Store.sessions(ctx).count { it.ok && Store.dayKeyFor(it.end) == key }
-        val now = System.currentTimeMillis()
-        val from = Store.dayStart(now, -daysAgo)
-        val to = Store.dayStart(now, -daysAgo + 1)
-        val attempts = Extra.attempts(ctx).count { it.first >= from && it.first < to }
-        return build(focusMin, locks, streakFor(focusMap, daysAgo), attempts)
-    }
-
-    fun today(ctx: Context): ScoreBreakdown = forDay(ctx, 0)
-
-    /** Scores for the last 7 days, oldest first — one pass over the stored data. */
-    fun week(ctx: Context): List<ScoreBreakdown> {
-        val focusMap = Store.focusDayMap(ctx)
-        val locksByDay = HashMap<String, Int>()
-        for (s in Store.sessions(ctx)) {
-            if (!s.ok) continue
-            val k = Store.dayKeyFor(s.end)
-            locksByDay[k] = (locksByDay[k] ?: 0) + 1
-        }
-        val attemptsByDay = HashMap<String, Int>()
-        for ((t, _) in Extra.attempts(ctx)) {
-            val k = Store.dayKeyFor(t)
-            attemptsByDay[k] = (attemptsByDay[k] ?: 0) + 1
-        }
-        val live = liveMin(ctx)
-        val out = ArrayList<ScoreBreakdown>()
-        for (ago in 6 downTo 0) {
-            val key = Store.dayKey(ago)
-            var focusMin = focusMap[key] ?: 0
-            if (ago == 0) focusMin += live
-            out.add(build(focusMin, locksByDay[key] ?: 0, streakFor(focusMap, ago), attemptsByDay[key] ?: 0))
-        }
-        return out
-    }
-
-    /** Persist today's score date-keyed (only when the total changed). */
-    fun recordToday(ctx: Context, b: ScoreBreakdown = today(ctx)) {
-        try {
-            val p = Store.lock(ctx)
-            val obj = try {
-                JSONObject(p.getString("focus_scores", "{}"))
-            } catch (e: Exception) {
-                JSONObject()
-            }
-            val key = Store.dayKey(0)
-            val prev = obj.optJSONObject(key)?.optInt("t", -1) ?: -1
-            if (prev == b.total) return
-            val o = JSONObject()
-            o.put("t", b.total)
-            o.put("f", b.focusPts)
-            o.put("l", b.locksPts)
-            o.put("s", b.streakPts)
-            o.put("c", b.calmPts)
-            obj.put(key, o)
-            // keep 90 days, like focus_days
-            val keep = (0 until 90).map { Store.dayKey(it) }.toSet()
-            val keys = obj.keys()
-            val drop = ArrayList<String>()
-            while (keys.hasNext()) {
-                val k = keys.next()
-                if (k !in keep) drop.add(k)
-            }
-            for (k in drop) obj.remove(k)
-            p.edit().putString("focus_scores", obj.toString()).apply()
-        } catch (e: Exception) {
-            Log.e(TAG, "focus score record failed", e)
-        }
-    }
-
-    /** Stored total for a day, or null when it was never recorded. */
-    fun storedTotal(ctx: Context, daysAgo: Int): Int? {
-        return try {
-            val obj = JSONObject(Store.lock(ctx).getString("focus_scores", "{}"))
-            val o = obj.optJSONObject(Store.dayKey(daysAgo)) ?: return null
-            o.optInt("t", -1).takeIf { it >= 0 }
-        } catch (e: Exception) {
-            null
-        }
-    }
-}
-
 // ---------- persistent storage ----------
 
 object Store {
@@ -432,7 +281,6 @@ object Store {
         if (System.currentTimeMillis() < end) return
         val src = p.getString("src", "manual") ?: "manual"
         addSession(ctx, Session(p.getLong("start", end), end, p.getLong("total", 0), true, src))
-        FocusTree.recordOutcome(ctx, true, end) // the lock completed: the tree survives
         val e = p.edit().putBoolean("active", false).putLong("lastDone", end)
         clearUnlock(e)
         e.remove("s_profile_apps").remove("s_profile_name")
@@ -474,7 +322,6 @@ object Store {
         val start = p.getLong("start", now)
         val src = p.getString("src", "manual") ?: "manual"
         addSession(ctx, Session(start, now, now - start, true, src))
-        FocusTree.recordOutcome(ctx, true, now) // arrived: the lock completed, the tree survives
         val e = p.edit().putBoolean("active", false).putLong("lastDone", now).putLong("end", now)
         clearUnlock(e)
         e.remove("s_profile_apps").remove("s_profile_name")
@@ -531,8 +378,6 @@ object Store {
         } else {
             clearUnlock(e)
         }
-        // a normal lock plants a seed; Pomodoro focus rounds never grow trees
-        if (src == "pomodoro") e.remove("tree_planted") else e.putBoolean("tree_planted", true)
         e.apply()
         Dnd.apply(ctx) // lock started: silence notifications if the user wants it
         FocusSound.sync(ctx) // lock started: play the chosen focus sound, if any
@@ -576,7 +421,6 @@ object Store {
         val start = p.getLong("start", now)
         val src = p.getString("src", "manual") ?: "manual"
         addSession(ctx, Session(start, now, now - start, false, src))
-        FocusTree.recordOutcome(ctx, false, now) // stopped early: the tree withers
         val w = Scheduler.activeWindowEnd(ctx, now)
         val e = p.edit().putBoolean("active", false).putLong("end", now)
         if (w != null) e.putLong("suppress", w)
@@ -803,7 +647,6 @@ object Store {
         if (s.ok) recordFocus(ctx, s)
         if (s.ok) saveSessionSummary(ctx, s)
         if (s.ok) Badges.check(ctx)
-        if (s.ok) FocusScore.recordToday(ctx)
     }
 
     /** The last completed lock's summary (duration + blocks fired in its window),
@@ -1056,50 +899,6 @@ object Store {
             i++
         }
         return streak
-    }
-
-    // ----- focus notes: quick thoughts jotted during a lock -----
-
-    /** All notes, in creation order (oldest first). */
-    fun focusNotes(ctx: Context): List<FocusNote> {
-        val out = ArrayList<FocusNote>()
-        try {
-            val arr = JSONArray(settings(ctx).getString("focus_notes", "[]"))
-            for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                out.add(FocusNote(o.getLong("id"), o.getString("t"), o.optLong("tm", 0), o.optBoolean("l", false)))
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "focus notes read failed", e)
-        }
-        return out
-    }
-
-    fun saveFocusNotes(ctx: Context, list: List<FocusNote>) {
-        val arr = JSONArray()
-        for (n in list.takeLast(100)) {
-            val o = JSONObject()
-            o.put("id", n.id)
-            o.put("t", n.text)
-            o.put("tm", n.time)
-            o.put("l", n.duringLock)
-            arr.put(o)
-        }
-        settings(ctx).edit().putString("focus_notes", arr.toString()).apply()
-    }
-
-    /** Adds a note; capped at 100, the oldest are dropped. Empty text is ignored. */
-    fun addFocusNote(ctx: Context, text: String, duringLock: Boolean) {
-        val clean = text.trim()
-        if (clean.isEmpty()) return
-        val list = focusNotes(ctx).toMutableList()
-        val now = System.currentTimeMillis()
-        list.add(FocusNote(now, clean.take(500), now, duringLock))
-        saveFocusNotes(ctx, list)
-    }
-
-    fun deleteFocusNote(ctx: Context, id: Long) {
-        saveFocusNotes(ctx, focusNotes(ctx).filter { it.id != id })
     }
 
     /** Lifetime block count (the attempts list is capped at 1000): seeded once from the list. */
