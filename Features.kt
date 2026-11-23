@@ -78,7 +78,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "60"
+    const val BUILD_ID = "61"
 
     // ---------- presets ----------
 
@@ -2949,8 +2949,11 @@ object Quotes {
         "The next hour is yours too — use it well." to "পরের ঘণ্টাটাও তোমার — ভালো করে ব্যবহার করো।"
     )
 
+    /** One random quote in both languages (the voice reader needs both). */
+    fun randomPair(): Pair<String, String> = all.random()
+
     fun random(): String {
-        val q = all.random()
+        val q = randomPair()
         return L.t(q.first, q.second)
     }
 }

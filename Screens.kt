@@ -4,11 +4,13 @@ import android.animation.ArgbEvaluator
 import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
 import android.app.AlertDialog
+import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
@@ -20,6 +22,7 @@ import android.os.Build
 import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
+import android.text.InputType
 import android.util.Log
 import android.text.TextUtils
 import android.view.Gravity
@@ -29,6 +32,8 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.TextView
 import java.util.Calendar
 import java.util.Locale
@@ -105,6 +110,12 @@ class HomeScreen(private val a: MainActivity) {
     private lateinit var noteBox: LinearLayout
     private lateinit var noteEdit: EditText
     private var noteSig = ""
+    private lateinit var capsuleBox: LinearLayout
+    private var capsuleSig = ""
+    private var lastCapsuleCheck = 0L
+    private val moodBtns = ArrayList<TextView>()
+    private lateinit var moodLabel: TextView
+    private var moodSig = ""
     private var badgeShown = false
     private lateinit var startBtn: LinearLayout
     private lateinit var stopBtn: LinearLayout
@@ -357,6 +368,21 @@ class HomeScreen(private val a: MainActivity) {
         note.addView(noteBox, lp(MATCH, WRAP, t = a.dp(6)))
         col.addView(note, lp(MATCH, WRAP, t = a.dp(16)))
 
+        // ---- time capsule: a letter to your future self, sealed until a date ----
+        val capsule = a.card(20)
+        capsule.addView(a.tv(L.t("Time capsule", "টাইম ক্যাপসুল"), 18f, C.text, 1))
+        capsule.addView(
+            a.tv(L.t("Write to your future self — the letter opens on its date.", "ভবিষ্যতের নিজেকে চিঠি লিখুন — তারিখ এলে চিঠি খুলবে।"), 13f, C.muted),
+            lp(MATCH, WRAP, t = a.dp(4))
+        )
+        capsuleBox = LinearLayout(a)
+        capsuleBox.orientation = LinearLayout.VERTICAL
+        capsule.addView(capsuleBox, lp(MATCH, WRAP, t = a.dp(6)))
+        val capsuleAdd = a.outlineBtn(L.t("+ Write a letter", "+ চিঠি লিখুন"), C.primary)
+        capsuleAdd.setOnClickListener { createCapsuleDialog() }
+        capsule.addView(capsuleAdd, lp(MATCH, a.dp(48), t = a.dp(12)))
+        col.addView(capsule, lp(MATCH, WRAP, t = a.dp(16)))
+
         // ---- mini-games: five one-minute games for a break ----
         val games = a.card(20)
         games.addView(a.tv(L.t("Mini-games", "মিনি-গেম"), 18f, C.text, 1))
@@ -374,6 +400,29 @@ class HomeScreen(private val a: MainActivity) {
         gameRow(L.t("Reaction game", "প্রতিক্রিয়া খেলা"), L.t("How fast can you tap?", "কত দ্রুত চাপতে পারো?")) { MiniGames.showReaction(a) }
         gameRow(L.t("Daily riddle", "দিনের ধাঁধা"), L.t("One riddle a day", "প্রতিদিন একটা ধাঁধা")) { MiniGames.showRiddle(a) }
         col.addView(games, lp(MATCH, WRAP, t = a.dp(16)))
+
+        // ---- today's mood: a quick 1–5 daily log ----
+        val moodCard = a.card(20)
+        moodCard.addView(a.tv(L.t("Today's mood", "আজকের মুড"), 18f, C.text, 1))
+        moodLabel = a.tv(L.t("How are you feeling today?", "আজ কেমন লাগছে?"), 13f, C.muted)
+        moodCard.addView(moodLabel, lp(MATCH, WRAP, t = a.dp(4)))
+        val moodRow = LinearLayout(a)
+        moodRow.gravity = Gravity.CENTER_VERTICAL
+        for (v in Mood.MIN..Mood.MAX) {
+            val b = a.tv(L.num(v.toString()), 16f, C.muted, 1)
+            b.gravity = Gravity.CENTER
+            b.background = rounded(C.card2, a.dp(22).toFloat())
+            b.setOnClickListener {
+                Mood.logDaily(a, v)
+                updateMoodRow()
+                a.toast(Mood.label(v))
+            }
+            b.pressFeedback()
+            moodBtns.add(b)
+            moodRow.addView(b, lp(0, a.dp(44), weight = 1f, r = if (v < Mood.MAX) a.dp(8) else 0))
+        }
+        moodCard.addView(moodRow, lp(MATCH, WRAP, t = a.dp(12)))
+        col.addView(moodCard, lp(MATCH, WRAP, t = a.dp(16)))
 
         // ---- lock templates: one tap starts a lock with that duration ----
         col.addView(a.heading(L.t("Lock templates", "লক টেমপ্লেট")), lp(MATCH, WRAP, t = a.dp(26), b = a.dp(4)))
@@ -915,6 +964,13 @@ class HomeScreen(private val a: MainActivity) {
         updatePomodoro()
         updateHabits()
         updateNotes()
+        updateCapsules()
+        updateMoodRow()
+        // capsule due check (throttled: a capsule may open while the app is open)
+        if (now - lastCapsuleCheck > 60_000) {
+            lastCapsuleCheck = now
+            TimeCapsules.checkDue(a)
+        }
         updateRoutine()
         updateXp()
         updateChallenge()
@@ -1278,13 +1334,31 @@ class HomeScreen(private val a: MainActivity) {
         } else {
             L.t("No app needed blocking", "কোনো অ্যাপ ব্লক করতে হয়নি")
         }
+        val quotePair = Quotes.randomPair()
+        val message =
+            L.t("Focus time: ", "ফোকাস সময়: ") + fmtDur(s.durMs) + "\n" + blocksTxt +
+                treeLine + petLine + storyLine + journeyLine + "\n\n" +
+                L.t(quotePair.first, quotePair.second) +
+                "\n\n" + L.t("Fun fact: ", "মজার তথ্য: ") + FunFacts.random(a)
+        // custom view: the message + a "listen" button for the quote + the optional mood question
+        val msgBox = LinearLayout(a)
+        msgBox.orientation = LinearLayout.VERTICAL
+        msgBox.setPadding(a.dp(24), a.dp(8), a.dp(24), 0)
+        msgBox.addView(a.tv(message, 15f, C.text))
+        val actRow = LinearLayout(a)
+        actRow.gravity = Gravity.CENTER_VERTICAL
+        val listenBtn = a.outlineBtn(L.t("Listen", "শোনাও"), C.primary)
+        listenBtn.setOnClickListener { VoiceQuotes.speak(a, quotePair.first, quotePair.second) }
+        actRow.addView(listenBtn, lp(0, a.dp(48), weight = 1f, r = a.dp(8)))
+        val moodBtn = a.outlineBtn(L.t("How do you feel?", "কেমন লাগছে?"), C.mint)
+        moodBtn.setOnClickListener { showAfterMoodDialog() }
+        actRow.addView(moodBtn, lp(0, a.dp(48), weight = 1f))
+        msgBox.addView(actRow, lp(MATCH, WRAP, t = a.dp(14)))
+        val scroll = ScrollView(a)
+        scroll.addView(msgBox)
         val builder = a.dlg()
             .setTitle(L.t("Session completed!", "সেশন সম্পন্ন!"))
-            .setMessage(
-                L.t("Focus time: ", "ফোকাস সময়: ") + fmtDur(s.durMs) + "\n" + blocksTxt +
-                    treeLine + petLine + storyLine + journeyLine + "\n\n" + Quotes.random() +
-                    "\n\n" + L.t("Fun fact: ", "মজার তথ্য: ") + FunFacts.random(a)
-            )
+            .setView(scroll)
         if (LuckyWheel.spins(a) > 0) {
             builder.setNeutralButton(L.t("Spin the wheel", "চাকা ঘোরাও")) { _, _ ->
                 LuckyWheel.showWheel(a) { tick() }
@@ -1598,6 +1672,194 @@ class HomeScreen(private val a: MainActivity) {
                 updateNotes()
             }
             .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+            .show()
+    }
+
+    // ---- time capsule: sealed letters list + create/view/delete ----
+
+    private fun updateCapsules() {
+        val list = TimeCapsules.all(a).asReversed()
+        val sig = Store.dayKey(0) + "|" + list.joinToString("|") { "${it.id}:${it.open}:${it.opened}" }
+        if (sig == capsuleSig) return
+        capsuleSig = sig
+        capsuleBox.removeAllViews()
+        if (list.isEmpty()) {
+            capsuleBox.addView(
+                a.tv(L.t("No letters yet. Write one to your future self — it opens on its date.", "এখনো কোনো চিঠি নেই। ভবিষ্যতের নিজেকে একটা চিঠি লিখুন — তারিখ এলে খুলবে।"), 13f, C.muted),
+                lp(MATCH, WRAP, t = a.dp(4))
+            )
+            return
+        }
+        val now = System.currentTimeMillis()
+        for (c in list) {
+            val due = TimeCapsules.isDue(c, now)
+            val r = LinearLayout(a)
+            r.orientation = LinearLayout.VERTICAL
+            r.setPadding(0, a.dp(8), 0, a.dp(8))
+            val title = if (due) {
+                L.t("Open now!", "এখন খুলুন!") + " · " + fmtDate(c.open)
+            } else {
+                L.t("Opens: ", "খুলবে: ") + fmtDate(c.open)
+            }
+            r.addView(a.tv(title, 15f, if (due) C.mint else C.text, if (due) 1 else 0))
+            val sub = if (c.opened) L.t("Opened", "খোলা হয়েছে") else TimeCapsules.countdown(c, now)
+            r.addView(a.tv(sub, 12f, C.muted), lp(MATCH, WRAP, t = a.dp(2)))
+            r.pressFeedback()
+            r.setOnClickListener {
+                if (due) {
+                    TimeCapsules.markOpened(a, c.id)
+                    viewCapsuleDialog(c)
+                    updateCapsules()
+                } else {
+                    // sealed: show only the countdown, never the content
+                    a.dlg()
+                        .setTitle(L.t("Still sealed", "এখনো সিল করা"))
+                        .setMessage(
+                            L.t("This letter opens on ", "এই চিঠি খুলবে ") + fmtDate(c.open) +
+                                "\n" + TimeCapsules.countdown(c, System.currentTimeMillis())
+                        )
+                        .setPositiveButton(L.t("OK", "ঠিক আছে"), null)
+                        .show()
+                }
+            }
+            r.setOnLongClickListener {
+                deleteCapsuleDialog(c)
+                true
+            }
+            capsuleBox.addView(r)
+        }
+    }
+
+    private fun viewCapsuleDialog(c: TimeCapsule) {
+        a.dlg()
+            .setTitle(L.t("A letter from your past self", "তোমার অতীতের নিজের চিঠি"))
+            .setMessage(L.t("Written: ", "লেখা: ") + fmtDate(c.created) + "\n\n" + c.text)
+            .setPositiveButton(L.t("Close", "বন্ধ করুন"), null)
+            .show()
+    }
+
+    private fun deleteCapsuleDialog(c: TimeCapsule) {
+        a.dlg()
+            .setTitle(L.t("Delete this letter?", "এই চিঠি মুছে ফেলবেন?"))
+            .setMessage(
+                if (TimeCapsules.isDue(c)) L.t("This letter has already opened.", "এই চিঠি এরই মধ্যে খুলে গেছে।")
+                else L.t("Opens: ", "খুলবে: ") + fmtDate(c.open)
+            )
+            .setPositiveButton(L.t("Delete", "মুছে ফেলুন")) { _, _ ->
+                TimeCapsules.delete(a, c.id)
+                updateCapsules()
+            }
+            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+            .show()
+    }
+
+    /** Seals a new letter: the text + an open date (7/30/90 days, or a picked date). */
+    private fun createCapsuleDialog() {
+        val box = LinearLayout(a)
+        box.orientation = LinearLayout.VERTICAL
+        box.setPadding(a.dp(24), a.dp(8), a.dp(24), 0)
+        val et = a.edit(L.t("Write to your future self…", "ভবিষ্যতের নিজেকে লিখুন…"), false)
+        et.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+        et.gravity = Gravity.START or Gravity.TOP
+        et.minLines = 4
+        box.addView(et, lp(MATCH, WRAP))
+        box.addView(a.tv(L.t("Opens in", "খুলবে"), 13f, C.muted), lp(WRAP, WRAP, t = a.dp(14)))
+        var openMs = Store.dayStart(System.currentTimeMillis(), 30)
+        val dateVal = a.tv(fmtDate(openMs), 16f, C.primary, 1)
+        val chips = ArrayList<TextView>()
+        fun styleDateChips() {
+            val now = System.currentTimeMillis()
+            val days = listOf(7, 30, 90)
+            for (i in chips.indices) {
+                val sel = openMs == Store.dayStart(now, days[i])
+                chips[i].background = rounded(if (sel) C.selFill else C.card2, a.dp(12).toFloat())
+                chips[i].setTextColor(if (sel) C.mint else C.muted)
+            }
+            dateVal.setTextAnimated(fmtDate(openMs))
+        }
+        val chipRow = LinearLayout(a)
+        for ((i, d) in listOf(7, 30, 90).withIndex()) {
+            val ch = a.tv(L.num(d.toString()) + " " + L.t("days", "দিন"), 14f, C.muted, 1)
+            ch.gravity = Gravity.CENTER
+            ch.setPadding(0, a.dp(10), 0, a.dp(10))
+            ch.setOnClickListener {
+                openMs = Store.dayStart(System.currentTimeMillis(), d)
+                styleDateChips()
+            }
+            ch.pressFeedback()
+            chips.add(ch)
+            chipRow.addView(ch, lp(0, WRAP, weight = 1f, r = if (i < 2) a.dp(8) else 0))
+        }
+        box.addView(chipRow, lp(MATCH, WRAP, t = a.dp(8)))
+        val pickBtn = a.outlineBtn(L.t("Pick a date", "তারিখ বাছুন"), C.primary)
+        pickBtn.setOnClickListener {
+            val c = Calendar.getInstance()
+            c.timeInMillis = openMs
+            val dlg = DatePickerDialog(
+                a,
+                { _, y, m, d ->
+                    val cal = Calendar.getInstance()
+                    cal.set(y, m, d, 0, 0, 0)
+                    cal.set(Calendar.MILLISECOND, 0)
+                    openMs = cal.timeInMillis
+                    styleDateChips()
+                },
+                c.get(Calendar.YEAR), c.get(Calendar.MONTH), c.get(Calendar.DAY_OF_MONTH)
+            )
+            dlg.datePicker.minDate = Store.dayStart(System.currentTimeMillis(), 1)
+            dlg.show()
+        }
+        box.addView(pickBtn, lp(MATCH, a.dp(48), t = a.dp(10)))
+        val dateRow = LinearLayout(a)
+        dateRow.gravity = Gravity.CENTER_VERTICAL
+        dateRow.addView(a.tv(L.t("Opens on ", "খুলবে "), 14f, C.text), lp(WRAP, WRAP))
+        dateRow.addView(dateVal, lp(WRAP, WRAP, l = a.dp(4)))
+        box.addView(dateRow, lp(MATCH, WRAP, t = a.dp(12)))
+        styleDateChips()
+        a.dlg()
+            .setTitle(L.t("Time capsule", "টাইম ক্যাপসুল"))
+            .setView(box)
+            .setPositiveButton(L.t("Seal the letter", "চিঠি সিল করুন")) { _, _ ->
+                if (TimeCapsules.add(a, et.text.toString(), openMs)) {
+                    updateCapsules()
+                    a.toast(L.t("Sealed! It opens on ", "সিল হয়ে গেছে! খুলবে ") + fmtDate(openMs))
+                } else {
+                    a.toast(L.t("Write something first", "আগে কিছু লিখুন"))
+                }
+            }
+            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+            .show()
+    }
+
+    // ---- today's mood: 1–5 quick log ----
+
+    private fun updateMoodRow() {
+        val today = Mood.todayDaily(a)
+        val sig = today?.toString() ?: "-"
+        if (sig == moodSig) return
+        moodSig = sig
+        for ((i, b) in moodBtns.withIndex()) {
+            val v = i + Mood.MIN
+            val sel = today == v
+            b.background = rounded(if (sel) C.selFill else C.card2, a.dp(22).toFloat())
+            b.setTextColor(if (sel) C.mint else C.muted)
+        }
+        moodLabel.setTextAnimated(
+            if (today != null) L.t("Today you feel: ", "আজ তোমার মুড: ") + Mood.label(today)
+            else L.t("How are you feeling today?", "আজ কেমন লাগছে?")
+        )
+    }
+
+    /** Optional after-lock mood question, from the session-complete dialog. Skippable. */
+    private fun showAfterMoodDialog() {
+        val labels = (Mood.MIN..Mood.MAX).map { Mood.label(it) }.toTypedArray()
+        a.dlg()
+            .setTitle(L.t("How do you feel after the lock?", "লকের পর কেমন লাগছে?"))
+            .setItems(labels) { _, which ->
+                Mood.logAfter(a, which + Mood.MIN)
+                a.toast(L.t("Thanks!", "ধন্যবাদ!"))
+            }
+            .setNegativeButton(L.t("Skip", "এড়িয়ে যান"), null)
             .show()
     }
 
@@ -2740,6 +3002,33 @@ class StatsScreen(private val a: MainActivity) {
         }
         col.addView(routineCard, lp(MATCH, WRAP, b = a.dp(14)))
 
+        // mood: the last 7 days as a graph + the before/after-lock comparison
+        val moodCard = a.card()
+        moodCard.addView(a.section(L.t("Mood", "মুড")))
+        val moodWeek = Mood.weekValues(a)
+        if (moodWeek.all { it == null }) {
+            moodCard.addView(
+                a.tv(L.t("Log your mood on Home and the 7-day graph will show here.", "হোমে মুড লগ করলে এখানে ৭ দিনের গ্রাফ দেখাবে।"), 13f, C.muted),
+                lp(MATCH, WRAP, t = a.dp(6))
+            )
+        } else {
+            val graph = MoodGraphView(a)
+            graph.values = moodWeek
+            moodCard.addView(graph, lp(MATCH, a.dp(140), t = a.dp(8)))
+            val todayMood = Mood.todayDaily(a)
+            if (todayMood != null) {
+                moodCard.addView(
+                    a.tv(L.t("Today you feel: ", "আজ তোমার মুড: ") + Mood.label(todayMood), 14f, C.text),
+                    lp(MATCH, WRAP, t = a.dp(6))
+                )
+            }
+            val cmp = Mood.comparison(a)
+            if (cmp != null) {
+                moodCard.addView(a.tv(cmp, 14f, C.mint, 1), lp(MATCH, WRAP, t = a.dp(6)))
+            }
+        }
+        col.addView(moodCard, lp(MATCH, WRAP, b = a.dp(14)))
+
         // this week vs last week: focus minutes + completed locks (focus_days, 90 days kept)
         val cmpCard = a.card()
         cmpCard.addView(a.section(L.t("This week vs last week", "এই সপ্তাহ বনাম গত সপ্তাহ")))
@@ -3271,6 +3560,7 @@ class SettingsScreen(private val a: MainActivity) {
             add(FocusSound.WHITE)
             add(FocusSound.BROWN)
             add(FocusSound.RAIN)
+            add(FocusSound.MIX) // the user's own mix from the sound mixer
             if (LuckyWheel.isOceanUnlocked(a)) add(FocusSound.OCEAN) // wheel-only
         }
         val labels = choices.map { FocusSound.label(it) }.toTypedArray()
@@ -3282,6 +3572,8 @@ class SettingsScreen(private val a: MainActivity) {
                 FocusSound.setChoice(a, picked)
                 if (picked == FocusSound.OFF) {
                     FocusSound.stop()
+                } else if (picked == FocusSound.MIX && SoundMixer.activeChannels(a).isEmpty()) {
+                    a.toast(L.t("Turn on at least one sound in the mixer first", "আগে মিক্সারে অন্তত একটা সাউন্ড চালু করুন"))
                 } else if (Store.isActive(a)) {
                     // explicit choice: start even on silent/vibrate
                     FocusSound.startExplicit(a)
@@ -3290,6 +3582,88 @@ class SettingsScreen(private val a: MainActivity) {
                 a.go(3)
             }
             .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+            .show()
+    }
+
+    /** Sound mixer: per-channel volume sliders, a preview, and one saved mix ("My mix"). */
+    private fun mixerDialog() {
+        val vols = SoundMixer.volumes(a).toMutableMap()
+        val box = LinearLayout(a)
+        box.orientation = LinearLayout.VERTICAL
+        box.setPadding(a.dp(24), a.dp(8), a.dp(24), 0)
+        box.addView(
+            a.tv(L.t("Mix the focus sounds — each slider is one sound's volume.", "ফোকাস সাউন্ড মেশান — প্রতিটা স্লাইডার একটা সাউন্ডের ভলিউম।"), 13f, C.muted),
+            lp(MATCH, WRAP, t = a.dp(4))
+        )
+        for (ch in SoundMixer.CHANNELS) {
+            val locked = ch == FocusSound.OCEAN && !LuckyWheel.isOceanUnlocked(a)
+            val head = LinearLayout(a)
+            head.gravity = Gravity.CENTER_VERTICAL
+            head.addView(
+                a.tv(
+                    FocusSound.label(ch) + if (locked) " · " + L.t("win it on the wheel", "চাকায় জিতুন") else "",
+                    14f, if (locked) C.muted else C.text, 1
+                ),
+                lp(0, WRAP, weight = 1f)
+            )
+            val valTxt = a.tv(L.num((vols[ch] ?: 0).toString()) + "%", 14f, C.primary, 1)
+            head.addView(valTxt)
+            box.addView(head, lp(MATCH, WRAP, t = a.dp(14)))
+            val seek = SeekBar(a)
+            seek.max = 100
+            seek.progress = vols[ch] ?: 0
+            seek.isEnabled = !locked
+            seek.progressTintList = ColorStateList.valueOf(C.primary)
+            seek.progressBackgroundTintList = ColorStateList.valueOf(C.card2)
+            seek.thumbTintList = ColorStateList.valueOf(C.mint)
+            seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+                    vols[ch] = p
+                    valTxt.setTextAnimated(L.num(p.toString()) + "%")
+                }
+
+                override fun onStartTrackingTouch(s: SeekBar?) {}
+                override fun onStopTrackingTouch(s: SeekBar?) {}
+            })
+            box.addView(seek, lp(MATCH, WRAP, t = a.dp(4)))
+        }
+        // preview: plays the current (unsaved) slider values right away
+        val previewRow = LinearLayout(a)
+        previewRow.gravity = Gravity.CENTER_VERTICAL
+        val playBtn = a.outlineBtn(L.t("Listen", "শুনুন"), C.primary)
+        playBtn.setOnClickListener {
+            if (SoundMixer.activeChannels(a, vols).isEmpty()) {
+                a.toast(L.t("Turn on at least one sound first", "আগে অন্তত একটা সাউন্ড চালু করুন"))
+            } else {
+                FocusSound.previewMix(a, vols)
+            }
+        }
+        previewRow.addView(playBtn, lp(0, a.dp(48), weight = 1f, r = a.dp(8)))
+        val stopBtn = a.outlineBtn(L.t("Stop", "থামান"), C.muted)
+        stopBtn.setOnClickListener {
+            FocusSound.stop()
+            FocusSound.sync(a)
+        }
+        previewRow.addView(stopBtn, lp(0, a.dp(48), weight = 1f))
+        box.addView(previewRow, lp(MATCH, WRAP, t = a.dp(16)))
+        a.dlg()
+            .setTitle(L.t("Sound mixer", "সাউন্ড মিক্সার"))
+            .setView(box)
+            .setPositiveButton(L.t("Save my mix", "আমার মিক্স সেভ করুন")) { _, _ ->
+                SoundMixer.save(a, vols)
+                // a playing mix restarts with the saved volumes; a preview stops
+                FocusSound.stop()
+                FocusSound.sync(a)
+                a.toast(L.t("Mix saved — pick \"My mix\" in the focus sounds", "মিক্স সেভ হয়েছে — ফোকাস সাউন্ডে \"আমার মিক্স\" বাছুন"))
+                a.go(3)
+            }
+            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+            .setOnDismissListener {
+                // a preview must never keep playing after the dialog closes;
+                // the lock's own sound (if any) is restored by sync()
+                FocusSound.stop()
+                FocusSound.sync(a)
+            }
             .show()
     }
 
@@ -3618,6 +3992,14 @@ class SettingsScreen(private val a: MainActivity) {
                 FocusSound.label(FocusSound.choice(a)) + " · " + L.t("plays during a lock", "লক চলাকালীন বাজবে"),
                 a.tv("›", 22f, C.muted)
             ) { focusSoundDialog() }
+        )
+        // sound mixer: blend the generated sounds into one custom mix
+        gen.addView(
+            a.row(
+                L.t("Sound mixer", "সাউন্ড মিক্সার"),
+                SoundMixer.summary(a),
+                a.tv("›", 22f, C.muted)
+            ) { mixerDialog() }
         )
         // home background photo: a gallery photo behind the Home screen, dimmed
         gen.addView(

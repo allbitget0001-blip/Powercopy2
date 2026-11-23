@@ -25,6 +25,7 @@ object FocusSound {
     const val BROWN = "brown"
     const val RAIN = "rain"
     const val OCEAN = "ocean" // wheel-only: unlocked from the lucky wheel
+    const val MIX = "mix" // the user's own mix from the sound mixer
 
     fun choice(ctx: Context): String = Store.settings(ctx).getString("focus_sound", OFF) ?: OFF
 
@@ -37,12 +38,14 @@ object FocusSound {
         BROWN -> L.t("Brown noise", "ব্রাউন নয়েজ")
         RAIN -> L.t("Rain", "বৃষ্টি")
         OCEAN -> L.t("Ocean waves", "সমুদ্রের ঢেউ")
+        MIX -> L.t("My mix", "আমার মিক্স")
         else -> L.t("Off", "বন্ধ")
     }
 
     private const val RATE = 22050
-    private var track: AudioTrack? = null
-    private var worker: Thread? = null
+    // one track + one generator thread per playing channel (a mix plays up to 4)
+    private var tracks = ArrayList<AudioTrack>()
+    private var workers = ArrayList<Thread>()
     private var appCtx: Context? = null
     private var focusReq: AudioFocusRequest? = null
     @Volatile private var running = false
@@ -62,6 +65,16 @@ object FocusSound {
         if (choice(ctx) != OFF) startInternal(ctx, explicit = true)
     }
 
+    /** Mixer preview: plays the given (unsaved) volumes right away, even without a lock. */
+    @Synchronized
+    fun previewMix(ctx: Context, vols: Map<String, Int>) {
+        if (SoundMixer.activeChannels(ctx, vols).isEmpty()) {
+            stop()
+            return
+        }
+        startInternal(ctx, explicit = true, forceChoice = MIX, forceVols = vols)
+    }
+
     @Synchronized
     fun stop() {
         wantsPlay = false
@@ -71,18 +84,22 @@ object FocusSound {
     /** Stops playback but keeps [wantsPlay], so an audio-focus regain can resume. */
     private fun halt() {
         running = false
-        worker?.interrupt()
-        try {
-            worker?.join(500)
-        } catch (_: Exception) {
+        for (w in workers) w.interrupt()
+        for (w in workers) {
+            try {
+                w.join(500)
+            } catch (_: Exception) {
+            }
         }
-        worker = null
-        try {
-            track?.stop()
-            track?.release()
-        } catch (_: Exception) {
+        workers.clear()
+        for (tr in tracks) {
+            try {
+                tr.stop()
+                tr.release()
+            } catch (_: Exception) {
+            }
         }
-        track = null
+        tracks.clear()
         currentChoice = OFF
         try {
             val am = appCtx?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
@@ -93,13 +110,28 @@ object FocusSound {
         focusReq = null
     }
 
-    private fun startInternal(ctx: Context, explicit: Boolean) {
-        val ch = choice(ctx)
+    /**
+     * Starts playback. [forceChoice]/[forceVols] are for the mixer preview
+     * (unsaved volumes, even without a lock); otherwise the stored choice
+     * and mix are used. A mix starts one track per active channel.
+     */
+    private fun startInternal(ctx: Context, explicit: Boolean, forceChoice: String? = null, forceVols: Map<String, Int>? = null) {
+        val ch = forceChoice ?: choice(ctx)
         if (ch == OFF) {
             stop()
             return
         }
-        if (running && currentChoice == ch) {
+        // the channels to play: the mix's active channels, or the single chosen sound
+        val channels: List<Pair<String, Float>> = if (ch == MIX) {
+            SoundMixer.activeChannels(ctx, forceVols)
+        } else {
+            listOf(ch to 0.6f)
+        }
+        if (channels.isEmpty()) {
+            stop()
+            return
+        }
+        if (forceChoice == null && forceVols == null && running && currentChoice == ch) {
             wantsPlay = true
             return
         }
@@ -144,29 +176,35 @@ object FocusSound {
         try {
             val minBuf = AudioTrack.getMinBufferSize(RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
             val bufSize = (minBuf * 2).coerceAtLeast(RATE / 2)
-            val tr = AudioTrack.Builder()
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                        .build()
-                )
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setSampleRate(RATE)
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                        .build()
-                )
-                .setBufferSizeInBytes(bufSize)
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .build()
-            tr.setVolume(0.6f)
-            tr.play()
-            track = tr
+            for ((sound, vol) in channels) {
+                val tr = AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                            .build()
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setSampleRate(RATE)
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                            .build()
+                    )
+                    .setBufferSizeInBytes(bufSize)
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .build()
+                tr.setVolume(vol)
+                tr.play()
+                tracks.add(tr)
+            }
             currentChoice = ch
             running = true
-            worker = Thread { writeLoop(ch, tr) }.apply { start() }
+            for ((i, soundVol) in channels.withIndex()) {
+                val w = Thread { writeLoop(soundVol.first, tracks[i]) }
+                workers.add(w)
+                w.start()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "focus sound: start failed", e)
             wantsPlay = false
