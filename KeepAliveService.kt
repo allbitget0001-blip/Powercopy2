@@ -38,6 +38,7 @@ class KeepAliveService : Service() {
             Store.lock(this).edit().putLong("kas_heartbeat", System.currentTimeMillis()).apply()
             // backup arrival check for a location-unlock session (cheap, last known fix only)
             PlaceWatcher.checkUnlockLastKnown(this)
+            LockWidget.refresh(this) // keep the widget countdown fresh while the app is closed
         } catch (e: Exception) {
             Log.e(TAG, "heartbeat failed", e)
         }
@@ -242,6 +243,7 @@ class KeepAliveService : Service() {
                 .setContentText(L.t("Protection is off", "প্রটেকশন বন্ধ আছে"))
         }
         startForeground(1, b.build())
+        LockWidget.refresh(this) // the notification and the widget show the same state
     }
 
     private fun onFinished() {

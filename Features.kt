@@ -71,7 +71,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "47"
+    const val BUILD_ID = "48"
 
     // ---------- presets ----------
 
@@ -132,7 +132,7 @@ object Extra {
 
     private val lastLog = HashMap<String, Long>()
 
-    /** kind: "power", "settings", "focus", "appblock", "reels", "msgsearch" or "image". At most one entry per kind every 3 seconds. */
+    /** kind: "power", "settings", "focus", "appblock", "reels", "msgsearch", "limit" or "image". At most one entry per kind every 3 seconds. */
     @Synchronized
     fun logAttempt(ctx: Context, kind: String) {
         try {
@@ -230,6 +230,93 @@ object Extra {
 
     fun setManualPackages(ctx: Context, apps: Set<String>) {
         Store.settings(ctx).edit().putString("ab_manual", apps.joinToString(",")).apply()
+    }
+
+    // ---------- daily app limits (work without a lock) ----------
+
+    /** Per-app daily minute limits: {package: minutes}. 0 / absent = no limit. */
+    fun dailyLimits(ctx: Context): Map<String, Int> {
+        val out = HashMap<String, Int>()
+        try {
+            val obj = JSONObject(Store.settings(ctx).getString("dl_limits", "{}"))
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                val v = obj.optInt(k, 0)
+                if (v > 0) out[k] = v
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "daily limits read failed", e)
+        }
+        return out
+    }
+
+    /** Set a daily minute limit for one app (min <= 0 removes it). */
+    fun setDailyLimit(ctx: Context, pkg: String, min: Int) {
+        try {
+            val obj = JSONObject(Store.settings(ctx).getString("dl_limits", "{}"))
+            if (min > 0) obj.put(pkg, min) else obj.remove(pkg)
+            Store.settings(ctx).edit().putString("dl_limits", obj.toString()).apply()
+        } catch (e: Exception) {
+            Log.e(TAG, "daily limit save failed", e)
+        }
+    }
+
+    fun dailyLimit(ctx: Context, pkg: String): Int = dailyLimits(ctx)[pkg] ?: 0
+
+    // ---------- daily usage (foreground seconds per app, keyed by day) ----------
+
+    private fun usagePrefs(ctx: Context) = ctx.getSharedPreferences("usage", Context.MODE_PRIVATE)
+
+    /** Add foreground seconds for one app today (prunes days older than 7). */
+    fun addUsage(ctx: Context, pkg: String, seconds: Long) {
+        if (seconds <= 0) return
+        try {
+            val p = usagePrefs(ctx)
+            val day = Store.dayKey(0)
+            val obj = JSONObject(p.getString("u_$day", "{}"))
+            obj.put(pkg, obj.optLong(pkg, 0) + seconds)
+            val e = p.edit().putString("u_$day", obj.toString())
+            val keep = (0 until 7).map { "u_" + Store.dayKey(it) }.toSet()
+            for (k in p.all.keys) if (k.startsWith("u_") && k !in keep) e.remove(k)
+            e.apply()
+        } catch (e: Exception) {
+            Log.e(TAG, "usage save failed", e)
+        }
+    }
+
+    /** Today's foreground seconds for every tracked app. */
+    fun usageTodayAll(ctx: Context): Map<String, Long> {
+        val out = HashMap<String, Long>()
+        try {
+            val obj = JSONObject(usagePrefs(ctx).getString("u_" + Store.dayKey(0), "{}"))
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                out[k] = obj.optLong(k, 0)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "usage read failed", e)
+        }
+        return out
+    }
+
+    fun usageTodaySec(ctx: Context, pkg: String): Long = usageTodayAll(ctx)[pkg] ?: 0L
+
+    /** Seconds left today for an app with a limit, or null when it has none. */
+    fun remainingTodaySec(ctx: Context, pkg: String): Long? {
+        val lim = dailyLimit(ctx, pkg)
+        if (lim <= 0) return null
+        return (lim * 60L - usageTodaySec(ctx, pkg)).coerceAtLeast(0L)
+    }
+
+    // ---------- custom block-screen message ----------
+
+    /** The user's own motivational message, shown on the block screen (blank = default). */
+    fun blockMessage(ctx: Context): String = Store.settings(ctx).getString("block_msg", "") ?: ""
+
+    fun setBlockMessage(ctx: Context, msg: String) {
+        Store.settings(ctx).edit().putString("block_msg", msg).apply()
     }
 
     /** All launchable apps (label + icon), loaded once per session: loading ~150 icons is slow. */
@@ -1473,6 +1560,162 @@ fun MainActivity.lockedAppsCard(mode: String): View {
 }
 
 // =====================================================================
+// UI: daily app limits (Protection — work without a lock)
+// =====================================================================
+
+/** Per-app daily minute limits, with today's remaining time. Works without a lock. */
+fun MainActivity.dailyLimitsCard(): View {
+    val c = card()
+    c.addView(section(L.t("Daily limits", "দৈনিক লিমিট")))
+    c.addView(
+        tv(
+            L.t("Works without a lock: when an app's daily time runs out, it stays blocked until midnight.", "লক না চললেও কাজ করে: অ্যাপের দৈনিক সময় শেষ হলে রাত ১২টা পর্যন্ত ব্লক থাকবে।"),
+            13f, C.muted
+        ),
+        lp(MATCH, WRAP, t = dp(6))
+    )
+    val limits = Extra.dailyLimits(this)
+    val pm = packageManager
+    if (limits.isEmpty()) {
+        c.addView(
+            tv(L.t("No limits yet. Add an app below.", "এখনো কোনো লিমিট নেই। নিচে অ্যাপ যোগ করুন।"), 13f, C.muted),
+            lp(MATCH, WRAP, t = dp(6))
+        )
+    } else {
+        data class Row(val pkg: String, val label: String, val icon: Drawable?, val min: Int)
+        val rows = ArrayList<Row>()
+        for ((pkg, min) in limits) {
+            try {
+                val ai = pm.getApplicationInfo(pkg, 0)
+                rows.add(Row(pkg, pm.getApplicationLabel(ai).toString(), pm.getApplicationIcon(ai), min))
+            } catch (e: Exception) {
+                // uninstalled since the limit was set: drop the stale limit
+                Extra.setDailyLimit(this, pkg, 0)
+            }
+        }
+        rows.sortBy { it.label.lowercase() }
+        for (row in rows) {
+            val r = LinearLayout(this)
+            r.gravity = Gravity.CENTER_VERTICAL
+            r.setPadding(0, dp(8), 0, dp(8))
+            if (row.icon != null) {
+                val icon = ImageView(this)
+                icon.setImageDrawable(row.icon)
+                r.addView(icon, lp(dp(36), dp(36), r = dp(12)))
+            } else {
+                r.addView(View(this), lp(dp(36), dp(36), r = dp(12)))
+            }
+            val labelCol = LinearLayout(this)
+            labelCol.orientation = LinearLayout.VERTICAL
+            labelCol.addView(tv(row.label, 15f, C.text))
+            val left = Extra.remainingTodaySec(this, row.pkg) ?: 0L
+            val used = Extra.usageTodaySec(this, row.pkg)
+            val sub = if (left <= 0) {
+                L.t("Limit reached — blocked until midnight", "লিমিট শেষ — রাত ১২টা পর্যন্ত ব্লক")
+            } else {
+                L.t("Left today: ", "আজ বাকি: ") + fmtDur(left * 1000L) + " · " +
+                    L.t("used ", "ব্যবহৃত ") + fmtDur(used * 1000L) + " / " + fmtDur(row.min * 60_000L)
+            }
+            labelCol.addView(tv(sub, 12f, if (left <= 0) C.warn else C.muted))
+            r.addView(labelCol, lp(0, WRAP, weight = 1f))
+            r.addView(tv("›", 22f, C.muted))
+            r.pressFeedback()
+            r.setOnClickListener { limitChoiceDialog(row.pkg, row.label, row.min) { go(4) } }
+            c.addView(r, lp(MATCH, WRAP, t = dp(4)))
+        }
+    }
+    val add = outlineBtn(L.t("Add an app", "অ্যাপ যোগ করুন"), C.primary)
+    add.setOnClickListener { dailyLimitPicker { go(4) } }
+    c.addView(add, lp(MATCH, dp(48), t = dp(10)))
+    if (!Perm.accessibilityOn(this)) {
+        c.addView(tv(L.t("Accessibility is off — limits need it. Turn it on from Settings.", "Accessibility বন্ধ — লিমিটের জন্য এটা লাগবে। সেটিংস থেকে চালু করুন।"), 12f, C.warn), lp(MATCH, WRAP, t = dp(8)))
+    }
+    return c
+}
+
+/** Pick an app, then choose its daily limit. Reuses the cached launchable-app list. */
+private fun MainActivity.dailyLimitPicker(done: () -> Unit) {
+    val cached = Extra.appListCache
+    if (cached != null) {
+        showDailyLimitPicker(cached, done)
+        return
+    }
+    val loading = dlg()
+        .setTitle(L.t("Loading apps…", "অ্যাপ লোড হচ্ছে…"))
+        .setView(tv(L.t("Please wait…", "একটু অপেক্ষা করুন…"), 14f, C.muted).apply {
+            setPadding(dp(20), dp(16), dp(20), dp(16))
+        })
+        .setCancelable(false)
+        .show()
+    Thread {
+        val apps = loadLaunchableApps()
+        runOnUiThread {
+            try { loading.dismiss() } catch (_: Exception) { }
+            if (apps.isEmpty()) {
+                toast(L.t("No apps found", "কোনো অ্যাপ পাওয়া যায়নি"))
+                return@runOnUiThread
+            }
+            Extra.appListCache = apps
+            showDailyLimitPicker(apps, done)
+        }
+    }.start()
+}
+
+private fun MainActivity.showDailyLimitPicker(apps: List<Triple<String, String, Drawable>>, done: () -> Unit) {
+    lateinit var pickerDlg: AlertDialog
+    val list = LinearLayout(this)
+    list.orientation = LinearLayout.VERTICAL
+    list.setPadding(dp(20), dp(4), dp(20), dp(4))
+    for (info in apps) {
+        val r = LinearLayout(this)
+        r.gravity = Gravity.CENTER_VERTICAL
+        r.setPadding(0, dp(8), 0, dp(8))
+        val icon = ImageView(this)
+        icon.setImageDrawable(info.third)
+        r.addView(icon, lp(dp(40), dp(40), r = dp(14)))
+        r.addView(tv(info.second, 15f, C.text), lp(0, WRAP, weight = 1f))
+        val cur = Extra.dailyLimit(this, info.first)
+        if (cur > 0) r.addView(tv(fmtDur(cur * 60_000L) + L.t(" / day", " / দিন"), 13f, C.primary, 1))
+        r.pressFeedback()
+        r.setOnClickListener {
+            pickerDlg.dismiss()
+            limitChoiceDialog(info.first, info.second, cur, done)
+        }
+        list.addView(r)
+    }
+    val sv = ScrollView(this)
+    sv.addView(list)
+    pickerDlg = dlg()
+        .setTitle(L.t("Choose an app", "অ্যাপ বাছুন"))
+        .setView(sv)
+        .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+        .create()
+    pickerDlg.show()
+}
+
+/** Minute options for one app's daily limit (0 = remove the limit). */
+private fun MainActivity.limitChoiceDialog(pkg: String, label: String, current: Int, done: () -> Unit) {
+    val options = intArrayOf(15, 30, 60, 90, 120, 180, 240)
+    val items = ArrayList<String>()
+    for (m in options) items.add(fmtDur(m * 60_000L) + " " + L.t("per day", "প্রতিদিন"))
+    if (current > 0) items.add(L.t("Remove limit", "লিমিট তুলে দিন"))
+    dlg()
+        .setTitle(label)
+        .setItems(items.toTypedArray()) { _, which ->
+            if (which < options.size) {
+                Extra.setDailyLimit(this, pkg, options[which])
+                toast(L.t("Limit set: ", "লিমিট দেওয়া হয়েছে: ") + label + " — " + fmtDur(options[which] * 60_000L) + L.t(" / day", " / দিন"))
+            } else {
+                Extra.setDailyLimit(this, pkg, 0)
+                toast(L.t("Limit removed: ", "লিমিট তোলা হয়েছে: ") + label)
+            }
+            done()
+        }
+        .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+        .show()
+}
+
+// =====================================================================
 // UI: location lock (Settings)
 // =====================================================================
 
@@ -1858,6 +2101,7 @@ fun MainActivity.attemptsCard(): View {
     var nAppBlock = 0
     var nReels = 0
     var nMsgSearch = 0
+    var nLimit = 0
     var nImage = 0
     for ((t, k) in list) {
         if (t >= today) nToday++
@@ -1868,6 +2112,7 @@ fun MainActivity.attemptsCard(): View {
             "appblock" -> nAppBlock++
             "reels" -> nReels++
             "msgsearch" -> nMsgSearch++
+            "limit" -> nLimit++
             "image" -> nImage++
             else -> nFocus++
         }
@@ -1906,8 +2151,8 @@ fun MainActivity.attemptsCard(): View {
     c.addView(
         tv(
             L.t(
-                "Power menu: $nPower · App settings: $nSettings · Focus apps: $nFocus · App block: $nAppBlock · Reels block: $nReels · Search block: $nMsgSearch · Image guard: $nImage",
-                "পাওয়ার মেনু: $nPower · অ্যাপ সেটিংস: $nSettings · ফোকাস অ্যাপ: $nFocus · অ্যাপ ব্লক: $nAppBlock · রিলস ব্লক: $nReels · সার্চ ব্লক: $nMsgSearch · ছবি সুরক্ষা: $nImage"
+                "Power menu: $nPower · App settings: $nSettings · Focus apps: $nFocus · App block: $nAppBlock · Reels block: $nReels · Search block: $nMsgSearch · Daily limit: $nLimit · Image guard: $nImage",
+                "পাওয়ার মেনু: $nPower · অ্যাপ সেটিংস: $nSettings · ফোকাস অ্যাপ: $nFocus · অ্যাপ ব্লক: $nAppBlock · রিলস ব্লক: $nReels · সার্চ ব্লক: $nMsgSearch · দৈনিক লিমিট: $nLimit · ছবি সুরক্ষা: $nImage"
             ),
             12f, C.muted
         ),

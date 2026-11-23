@@ -1,6 +1,7 @@
 package com.powerlock.app
 
 import android.app.AlarmManager
+import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -64,6 +65,10 @@ enum class PStatus { READY, ACTIVE, SCHEDULED, COMPLETED }
 data class Schedule(val id: Long, val days: Int, val startMin: Int, val endMin: Int, val enabled: Boolean)
 
 data class Session(val start: Long, val end: Long, val dur: Long, val ok: Boolean, val src: String)
+
+/** Focus report: current streak in days, total focus minutes, completed locks,
+ * and focus minutes for the last 7 days (oldest first). */
+data class FocusStats(val streak: Int, val totalMin: Long, val completed: Int, val last7: List<Int>)
 
 /** Unlock condition for a running session: time only, location only, or either one. */
 const val UNLOCK_TIME = "time"
@@ -176,6 +181,61 @@ object Perm {
     }
 }
 
+// ---------- Do Not Disturb during a lock ----------
+
+/**
+ * Silences notifications (and calls) while a lock runs, and restores the
+ * previous interruption mode when the lock ends. Alarms always ring
+ * (INTERRUPTION_FILTER_ALARMS). If the user revokes the DND permission,
+ * the feature turns itself off instead of crashing.
+ */
+object Dnd {
+    fun isGranted(ctx: Context): Boolean {
+        return try {
+            (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).isNotificationPolicyAccessGranted
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    fun isOn(ctx: Context): Boolean = Store.settings(ctx).getBoolean("dnd_on", false)
+
+    /** Called when a lock starts: silence notifications/calls (alarms still ring). */
+    fun apply(ctx: Context) {
+        try {
+            if (!isOn(ctx)) return
+            val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (!nm.isNotificationPolicyAccessGranted) {
+                Store.settings(ctx).edit().putBoolean("dnd_on", false).apply()
+                return
+            }
+            val p = Store.lock(ctx)
+            if (!p.contains("dnd_prev")) {
+                p.edit().putInt("dnd_prev", nm.currentInterruptionFilter).apply()
+            }
+            nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALARMS)
+        } catch (e: Exception) {
+            Log.e(TAG, "DND apply failed", e)
+        }
+    }
+
+    /** Called when a lock ends: restore the previous interruption mode. */
+    fun restore(ctx: Context) {
+        try {
+            val p = Store.lock(ctx)
+            if (!p.contains("dnd_prev")) return
+            val prev = p.getInt("dnd_prev", NotificationManager.INTERRUPTION_FILTER_ALL)
+            p.edit().remove("dnd_prev").apply()
+            val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (nm.isNotificationPolicyAccessGranted) {
+                nm.setInterruptionFilter(prev)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "DND restore failed", e)
+        }
+    }
+}
+
 // ---------- persistent storage ----------
 
 object Store {
@@ -202,6 +262,8 @@ object Store {
         val e = p.edit().putBoolean("active", false).putLong("lastDone", end)
         clearUnlock(e)
         e.apply()
+        Dnd.restore(ctx) // lock over: notifications come back
+        LockWidget.refresh(ctx)
         PlaceWatcher.sync(ctx) // no session left: stop watching unless the location lock needs it
     }
 
@@ -238,6 +300,8 @@ object Store {
         val e = p.edit().putBoolean("active", false).putLong("lastDone", now).putLong("end", now)
         clearUnlock(e)
         e.apply()
+        Dnd.restore(ctx) // lock over: notifications come back
+        LockWidget.refresh(ctx)
         PlaceWatcher.sync(ctx) // no session left: stop watching unless the location lock needs it
         kickService(ctx) // refresh the notification: the lock is off now
         return true
@@ -278,6 +342,8 @@ object Store {
             clearUnlock(e)
         }
         e.apply()
+        Dnd.apply(ctx) // lock started: silence notifications if the user wants it
+        LockWidget.refresh(ctx)
         kickService(ctx)
         return true
     }
@@ -316,6 +382,8 @@ object Store {
         if (w != null) e.putLong("suppress", w)
         clearUnlock(e)
         e.apply()
+        Dnd.restore(ctx) // lock over: notifications come back
+        LockWidget.refresh(ctx)
         PlaceWatcher.sync(ctx) // no session left: stop watching unless the location lock needs it
         kickService(ctx)
     }
@@ -341,6 +409,13 @@ object Store {
     fun dayKey(daysAgo: Int): String {
         val c = Calendar.getInstance()
         c.add(Calendar.DAY_OF_YEAR, -daysAgo)
+        return String.format(Locale.US, "%04d%02d%02d", c.get(Calendar.YEAR), c.get(Calendar.MONTH) + 1, c.get(Calendar.DAY_OF_MONTH))
+    }
+
+    /** Day key ("yyyyMMdd") for an arbitrary timestamp. */
+    fun dayKeyFor(ms: Long): String {
+        val c = Calendar.getInstance()
+        c.timeInMillis = ms
         return String.format(Locale.US, "%04d%02d%02d", c.get(Calendar.YEAR), c.get(Calendar.MONTH) + 1, c.get(Calendar.DAY_OF_MONTH))
     }
 
@@ -522,6 +597,73 @@ object Store {
             arr.put(o)
         }
         lock(ctx).edit().putString("sessions", arr.toString()).apply()
+        if (s.ok) recordFocus(ctx, s)
+    }
+
+    /** A completed lock counts toward the streak + focus totals (date-keyed, kept 90 days). */
+    private fun recordFocus(ctx: Context, s: Session) {
+        try {
+            val p = lock(ctx)
+            val day = dayKeyFor(s.end)
+            val min = (s.dur / 60000L).toInt().coerceAtLeast(1)
+            val obj = JSONObject(p.getString("focus_days", "{}"))
+            obj.put(day, obj.optInt(day, 0) + min)
+            val keep = (0 until 90).map { dayKey(it) }.toSet()
+            val keys = obj.keys()
+            val drop = ArrayList<String>()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                if (k !in keep) drop.add(k)
+            }
+            for (k in drop) obj.remove(k)
+            p.edit().putString("focus_days", obj.toString())
+                .putLong("focus_total_min", p.getLong("focus_total_min", 0) + min)
+                .apply()
+        } catch (e: Exception) {
+            Log.e(TAG, "focus record failed", e)
+        }
+    }
+
+    /** Streak (consecutive days with a completed lock, ending today or yesterday),
+     * total focus minutes, completed locks, and focus minutes for the last 7 days
+     * (oldest first). */
+    fun focusStats(ctx: Context): FocusStats {
+        val p = lock(ctx)
+        // one-time backfill: older builds recorded sessions but no focus store
+        if (!p.contains("focus_days")) {
+            try {
+                val all = sessions(ctx)
+                val obj = JSONObject()
+                var total = 0L
+                for (s in all) {
+                    if (!s.ok) continue
+                    val day = dayKeyFor(s.end)
+                    val min = (s.dur / 60000L).toInt().coerceAtLeast(1)
+                    obj.put(day, obj.optInt(day, 0) + min)
+                    total += min
+                }
+                p.edit().putString("focus_days", obj.toString()).putLong("focus_total_min", total).apply()
+            } catch (e: Exception) {
+                Log.e(TAG, "focus backfill failed", e)
+                p.edit().putString("focus_days", "{}").apply()
+            }
+        }
+        val obj = try {
+            JSONObject(p.getString("focus_days", "{}"))
+        } catch (e: Exception) {
+            JSONObject()
+        }
+        fun hasDay(daysAgo: Int) = obj.optInt(dayKey(daysAgo), 0) > 0
+        var streak = 0
+        if (hasDay(0) || hasDay(1)) {
+            var i = if (hasDay(0)) 0 else 1
+            while (hasDay(i)) {
+                streak++
+                i++
+            }
+        }
+        val last7 = (6 downTo 0).map { obj.optInt(dayKey(it), 0) }
+        return FocusStats(streak, p.getLong("focus_total_min", 0), sessions(ctx).count { it.ok }, last7)
     }
 
     fun dayStart(ms: Long, offsetDays: Int): Long {

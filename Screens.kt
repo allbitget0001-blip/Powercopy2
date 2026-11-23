@@ -40,6 +40,7 @@ class HomeScreen(private val a: MainActivity) {
     private lateinit var extendBtn: LinearLayout
     private lateinit var warnBox: LinearLayout
     private val chips = ArrayList<TextView>()
+    private val tplChips = ArrayList<TextView>()
     private val quick = listOf(5, 10, 15, 30, 60)
     private val modeChips = ArrayList<TextView>()
     private val modes = listOf(UNLOCK_TIME, UNLOCK_LOC, UNLOCK_EITHER)
@@ -107,6 +108,26 @@ class HomeScreen(private val a: MainActivity) {
         extendBtn.setOnClickListener { a.extendFlow { tick() } }
         sc.addView(extendBtn, lp(MATCH, a.dp(60), t = a.dp(12)))
         col.addView(sc, lp(MATCH, WRAP, t = a.dp(16)))
+
+        // ---- lock templates: one tap starts a lock with that duration ----
+        col.addView(a.heading(L.t("Lock templates", "লক টেমপ্লেট")), lp(MATCH, WRAP, t = a.dp(26), b = a.dp(4)))
+        val templates = listOf(
+            25 to L.t("Focus 25 min", "ফোকাস ২৫ মিনিট"),
+            120 to L.t("Study 2 h", "পড়াশোনা ২ ঘণ্টা"),
+            60 to L.t("Work 1 h", "কাজ ১ ঘণ্টা"),
+            480 to L.t("Sleep 8 h", "ঘুম ৮ ঘণ্টা")
+        )
+        val tplRow1 = LinearLayout(a)
+        val tplRow2 = LinearLayout(a)
+        for ((i, t) in templates.withIndex()) {
+            val c = a.chip(t.second, false)
+            c.setOnClickListener { startTemplate(t.first) }
+            tplChips.add(c)
+            val target = if (i < 2) tplRow1 else tplRow2
+            target.addView(c, lp(0, a.dp(56), r = if (i % 2 == 0) a.dp(10) else 0, t = a.dp(10), weight = 1f))
+        }
+        col.addView(tplRow1)
+        col.addView(tplRow2)
 
         // ---- duration ----
         col.addView(a.heading(L.t("Select Lock Duration", "লক সময় বাছুন")), lp(MATCH, WRAP, t = a.dp(26), b = a.dp(4)))
@@ -207,6 +228,7 @@ class HomeScreen(private val a: MainActivity) {
             if (animate) a.animateChip(c, sel) else a.styleChip(c, sel)
             c.alpha = if (active || locOnly) 0.4f else 1f
         }
+        for (c in tplChips) c.alpha = if (active) 0.4f else 1f
     }
 
     private fun pick(m: Int) {
@@ -215,6 +237,20 @@ class HomeScreen(private val a: MainActivity) {
         a.selectedMin = m
         refreshChips(true)
         tick()
+    }
+
+    /** A template is a time-only lock: set the duration + mode, then use the normal start flow. */
+    private fun startTemplate(min: Int) {
+        if (Store.isActive(a)) return
+        if (!Perm.accessibilityOn(a)) {
+            a.toast(L.t("Enable Accessibility first", "আগে Accessibility চালু করুন"))
+            return
+        }
+        setUnlockMode(UNLOCK_TIME)
+        a.selectedMin = min
+        refreshChips(true)
+        refreshModeChips()
+        startTimeSession()
     }
 
     // ---------- unlock condition (time / location / either) ----------
@@ -974,6 +1010,13 @@ class StatsScreen(private val a: MainActivity) {
             col.addView(r, lp(MATCH, WRAP, b = a.dp(10)))
         }
 
+        // streak + total focus (completed locks only)
+        val fs = Store.focusStats(a)
+        pair(
+            statCard(Ic.CHECK, L.t("Day streak", "দিনের স্ট্রিক"), L.num(fs.streak.toString())),
+            statCard(Ic.CLOCK, L.t("Total focus", "মোট ফোকাস"), fmtDur(fs.totalMin * 60000L))
+        )
+
         pair(
             statCard(Ic.CLOCK, L.t("Today", "আজ"), fmtDur(Store.sumRange(all, today, end))),
             statCard(Ic.CAL, L.t("Last 7 days", "গত ৭ দিন"), fmtDur(Store.sumRange(all, week, end)))
@@ -1005,6 +1048,23 @@ class StatsScreen(private val a: MainActivity) {
         chart.labels = labs
         chartCard.addView(chart, lp(MATCH, a.dp(150), t = a.dp(12)))
         col.addView(chartCard, lp(MATCH, WRAP, t = a.dp(4), b = a.dp(14)))
+
+        // focus minutes per day (completed locks only), last 7 days
+        val focus7 = a.card()
+        focus7.addView(a.section(L.t("Focus — last 7 days", "ফোকাস — গত ৭ দিন")))
+        for (i in 6 downTo 0) {
+            val c = Calendar.getInstance()
+            c.add(Calendar.DAY_OF_YEAR, -i)
+            val label = if (i == 0) L.t("Today", "আজ") else L.dayLong(dayIdx(c))
+            val min = fs.last7[6 - i]
+            val r = LinearLayout(a)
+            r.gravity = Gravity.CENTER_VERTICAL
+            r.setPadding(0, a.dp(6), 0, a.dp(6))
+            r.addView(a.tv(label, 14f, C.text, 1), lp(0, WRAP, weight = 1f))
+            r.addView(a.tv(if (min > 0) fmtDur(min * 60000L) else "—", 14f, if (min > 0) C.mint else C.muted, 1))
+            focus7.addView(r)
+        }
+        col.addView(focus7, lp(MATCH, WRAP, b = a.dp(14)))
 
         // history
         val hist = a.card()
@@ -1095,6 +1155,29 @@ class SettingsScreen(private val a: MainActivity) {
         } catch (e: Exception) {
             Log.e(TAG, "open settings failed", e)
         }
+    }
+
+    private fun blockMessageDialog() {
+        val et = a.edit(L.t("Your message", "তোমার মেসেজ"), false)
+        et.setText(Extra.blockMessage(a))
+        et.setSelection(et.text.length)
+        val body = LinearLayout(a)
+        body.orientation = LinearLayout.VERTICAL
+        body.setPadding(a.dp(20), a.dp(12), a.dp(20), a.dp(4))
+        body.addView(et, lp(MATCH, WRAP))
+        body.addView(
+            a.tv(L.t("Shown on the block screen when an app is blocked. Empty means the default message.", "অ্যাপ ব্লক হলে এই মেসেজ ব্লক স্ক্রিনে দেখাবে। খালি রাখলে আগের মেসেজই দেখাবে।"), 13f, C.muted),
+            lp(MATCH, WRAP, t = a.dp(10))
+        )
+        a.dlg()
+            .setTitle(L.t("Block screen message", "ব্লক স্ক্রিনের মেসেজ"))
+            .setView(body)
+            .setPositiveButton(L.t("Save", "সংরক্ষণ")) { _, _ ->
+                Extra.setBlockMessage(a, et.text.toString().trim())
+                a.go(3)
+            }
+            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+            .show()
     }
 
     fun build(): View {
@@ -1190,6 +1273,42 @@ class SettingsScreen(private val a: MainActivity) {
                 a.toggle(Store.soundVib(a)) { v -> Store.settings(a).edit().putBoolean("sound", v).apply() }
             )
         )
+        // silence notifications during a lock (DND) — if the permission was
+        // revoked, the toggle turns itself off with a toast, never a crash
+        if (Dnd.isOn(a) && !Dnd.isGranted(a)) {
+            Store.settings(a).edit().putBoolean("dnd_on", false).apply()
+            a.toast(L.t("Do Not Disturb permission was revoked — silencing turned off", "Do Not Disturb পারমিশন তুলে নেওয়া হয়েছে — নোটিফিকেশন বন্ধের অপশন বন্ধ করা হলো"))
+        }
+        lateinit var dndSw: PremiumSwitch
+        dndSw = a.toggle(Dnd.isOn(a)) { v ->
+            if (v && !Dnd.isGranted(a)) {
+                dndSw.setCheckedImmediate(false)
+                a.toast(L.t("Allow Do Not Disturb access first, then turn this on again", "আগে Do Not Disturb অনুমতি দিন, তারপর আবার চালু করুন"))
+                try {
+                    a.startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+                } catch (e: Exception) {
+                    Log.e(TAG, "DND settings failed", e)
+                }
+                return@toggle
+            }
+            Store.settings(a).edit().putBoolean("dnd_on", v).apply()
+        }
+        gen.addView(
+            a.row(
+                L.t("Silence notifications during lock", "লক চলাকালীন নোটিফিকেশন বন্ধ"),
+                L.t("Calls are silenced too — alarms still ring.", "কলও চুপ থাকবে — অ্যালার্ম বাজবে।"),
+                dndSw
+            )
+        )
+        // custom message on the block screen
+        val msg = Extra.blockMessage(a)
+        gen.addView(
+            a.row(
+                L.t("Block screen message", "ব্লক স্ক্রিনের মেসেজ"),
+                if (msg.isBlank()) L.t("Tap to write your own motivational message", "নিজের মোটিভেশনাল মেসেজ লিখতে চাপুন") else msg,
+                a.tv("›", 22f, C.muted)
+            ) { blockMessageDialog() }
+        )
         gen.addView(
             a.row(L.t("Notification settings", "নোটিফিকেশন সেটিংস"), null, a.tv("›", 22f, C.muted)) {
                 launch(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, a.packageName))
@@ -1261,6 +1380,7 @@ class ProtectionScreen(private val a: MainActivity) {
         col.addView(a.lockedAppsCard("reels"), lp(MATCH, WRAP, b = a.dp(12)))
         col.addView(a.appBlockModeCard("msg"), lp(MATCH, WRAP, b = a.dp(12)))
         col.addView(a.lockedAppsCard("msg"), lp(MATCH, WRAP, b = a.dp(12)))
+        col.addView(a.dailyLimitsCard(), lp(MATCH, WRAP, b = a.dp(12)))
         col.addView(a.diagnosticCard(), lp(MATCH, WRAP, b = a.dp(12)))
         return sv
     }

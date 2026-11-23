@@ -21,6 +21,7 @@ class WatchdogWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, param
         return try {
             val c = applicationContext
             L.load(c)
+            LockWidget.refresh(c) // keep the widget countdown fresh (at least every 15 min)
             if (Store.isActive(c) || Store.isLocProtecting(c)) {
                 // startForegroundService from a background worker throws on Android 12+,
                 // so ask for an alarm-clock restart instead: it needs no permission and

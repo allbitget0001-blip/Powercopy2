@@ -47,12 +47,20 @@ class MainActivity : Activity() {
             try {
                 Store.finalizeIfExpired(this@MainActivity)
                 home?.tick()
+                // widget countdown: every 30 s is enough (the service heartbeat
+                // updates it every 60 s while the app is closed)
+                if (System.currentTimeMillis() - lastWidgetRefresh >= 30_000) {
+                    lastWidgetRefresh = System.currentTimeMillis()
+                    LockWidget.refresh(this@MainActivity)
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "tick failed", e)
             }
             handler.postDelayed(this, 1000)
         }
     }
+
+    private var lastWidgetRefresh = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

@@ -16,6 +16,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
 import android.view.View
@@ -107,6 +108,18 @@ class PowerBlockService : AccessibilityService() {
     @Volatile
     private var abMsg: Set<String> = emptySet()
 
+    // Daily limits: foreground time per app, counted without any lock running.
+    @Volatile
+    private var limitMap: Map<String, Int> = emptyMap()
+    private var usagePkg: String? = null
+    private var usageSince = 0L
+    private var usageDay = ""
+    private val usageToday = HashMap<String, Long>()
+    private var imePkg: String? = null
+    private var imeCheckedAt = 0L
+    private var limitBlockActive = false // the overlay is up for a daily limit (no lock needed)
+    private var blockMsg = "" // the user's own message on the block screen
+
 
     private var lastAppBlockAction = 0L
     private var lastReelsScan = 0L
@@ -119,6 +132,7 @@ class PowerBlockService : AccessibilityService() {
     private var blockOverlay: View? = null
     private var blockOverlayTitle: TextView? = null
     private var blockOverlaySub: TextView? = null
+    private var blockOverlayMsg: TextView? = null
     private var blockOverlayIcon: IconView? = null
     private var blockOverlayAttached = false
     private var blockedPkg: String? = null
@@ -170,6 +184,7 @@ class PowerBlockService : AccessibilityService() {
         try {
             L.load(this)
             readState()
+            loadUsage()
             Store.lock(this).registerOnSharedPreferenceChangeListener(prefsListener)
             Store.settings(this).registerOnSharedPreferenceChangeListener(prefsListener)
             ensureOverlay() // pre-build the shield so it can appear instantly
@@ -215,6 +230,8 @@ class PowerBlockService : AccessibilityService() {
         abFull = Extra.appBlockFull(this)
         abReels = Extra.appBlockReels(this)
         abMsg = Extra.appBlockMsg(this)
+        limitMap = Extra.dailyLimits(this)
+        blockMsg = Extra.blockMessage(this)
     }
 
     private fun protecting(): Boolean = (active && System.currentTimeMillis() < endAt) || locProtecting
@@ -244,10 +261,13 @@ class PowerBlockService : AccessibilityService() {
         val pkg = e.packageName?.toString() ?: return
         try {
             maybeReviveKeepAlive() // the system re-binds this service, so it revives the keep-alive service
+            // daily limits work without a lock: track foreground time on every app switch
+            if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) trackUsage(pkg)
             // the block screen follows the foreground app: hide it once protection ends,
             // or once a real window change shows another app in front. Our own package
-            // is excluded: taps on the overlay itself must not dismiss it.
-            if (blockOverlayAttached && !protecting()) {
+            // is excluded: taps on the overlay itself must not dismiss it. A daily-limit
+            // block stays up without a lock — only leaving the app dismisses it.
+            if (blockOverlayAttached && !protecting() && !limitBlockActive) {
                 hideBlockOverlay()
             } else if (blockOverlayAttached && e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
                 !pkg.contains("systemui") && pkg != packageName && pkg != blockedPkg
@@ -257,6 +277,8 @@ class PowerBlockService : AccessibilityService() {
             if (pkg.contains("systemui")) {
                 // the power menu: even when the flag is not set yet, the location lock may apply
                 onSystemUi(e)
+            } else if (limitReached(pkg)) {
+                onLimitBlockedApp(e)
             } else if (!protecting()) {
                 return
             } else if (abOn && abFull.contains(pkg)) {
@@ -354,8 +376,90 @@ class PowerBlockService : AccessibilityService() {
         if (pkg == lastBlockPkg && now - lastBlockAt < 1000 && blockOverlayAttached) return
         lastBlockPkg = pkg
         lastBlockAt = now
+        limitBlockActive = false // a lock block, not a limit block
         showBlockOverlay(pkg) // screen first: it must cover the app before anything else runs
         Extra.logAttempt(this, "appblock")
+    }
+
+    // ---------- daily limits ----------
+
+    /** Today's usage, loaded once at start; trackUsage keeps it fresh in memory. */
+    private fun loadUsage() {
+        try {
+            usageDay = Store.dayKey(0)
+            usageToday.clear()
+            usageToday.putAll(Extra.usageTodayAll(this))
+        } catch (e: Exception) {
+            Log.e(TAG, "loadUsage failed", e)
+        }
+    }
+
+    /** The current keyboard package (cached 60 s): typing must not count as leaving the app. */
+    private fun currentImePackage(): String? {
+        val now = SystemClock.uptimeMillis()
+        if (now - imeCheckedAt < 60_000) return imePkg
+        imeCheckedAt = now
+        imePkg = try {
+            Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD)
+                ?.substringBefore("/")
+        } catch (e: Exception) {
+            null
+        }
+        return imePkg
+    }
+
+    /**
+     * Called on every window-state change: closes the previous app's time slice
+     * (persisted only for apps that have a limit) and opens one for the new app.
+     * System UI, the permission screen, our own package and the keyboard never
+     * switch the slice. At midnight the counters reset.
+     */
+    private fun trackUsage(pkg: String) {
+        try {
+            if (pkg.contains("systemui") || pkg == packageName || pkg.contains("permissioncontroller")) return
+            if (pkg == currentImePackage()) return
+            val now = SystemClock.uptimeMillis()
+            val day = Store.dayKey(0)
+            if (day != usageDay) {
+                usageDay = day
+                usageToday.clear()
+                usageToday.putAll(Extra.usageTodayAll(this))
+            }
+            val prev = usagePkg
+            if (prev != null && prev != pkg) {
+                val secs = (now - usageSince) / 1000
+                if (secs > 0 && limitMap.containsKey(prev)) {
+                    Extra.addUsage(this, prev, secs)
+                    usageToday[prev] = (usageToday[prev] ?: 0L) + secs
+                }
+            }
+            if (prev != pkg) {
+                usagePkg = pkg
+                usageSince = now
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "trackUsage failed", e)
+        }
+    }
+
+    /** True when the app has a daily limit and today's time (including the live slice) is up. */
+    private fun limitReached(pkg: String): Boolean {
+        val lim = limitMap[pkg] ?: return false
+        val used = usageToday[pkg] ?: 0L
+        val live = if (pkg == usagePkg) (SystemClock.uptimeMillis() - usageSince) / 1000 else 0L
+        return used + live >= lim * 60L
+    }
+
+    /** Daily-limit block: the same protection screen as a full block, until midnight. */
+    private fun onLimitBlockedApp(e: AccessibilityEvent) {
+        val pkg = e.packageName?.toString() ?: return
+        val now = SystemClock.uptimeMillis()
+        if (pkg == lastBlockPkg && now - lastBlockAt < 1000 && blockOverlayAttached) return
+        lastBlockPkg = pkg
+        lastBlockAt = now
+        limitBlockActive = true
+        showBlockOverlay(pkg, L.t("Daily limit reached — opens again tomorrow", "দৈনিক লিমিট শেষ — আগামীকাল আবার খুলবে"))
+        Extra.logAttempt(this, "limit")
     }
 
 
@@ -390,6 +494,10 @@ class PowerBlockService : AccessibilityService() {
         sub.gravity = Gravity.CENTER
         root.addView(sub, lp(WRAP, WRAP, t = dp(8)))
         blockOverlaySub = sub
+        val msg = tv("", 15f, C.mint, 1)
+        msg.gravity = Gravity.CENTER
+        root.addView(msg, lp(WRAP, WRAP, t = dp(10)))
+        blockOverlayMsg = msg
         val btn = primaryBtn(L.t("Back to Home", "হোমে ফিরুন"))
         btn.setOnClickListener {
             hideBlockOverlay()
@@ -408,6 +516,8 @@ class PowerBlockService : AccessibilityService() {
         if (blockOverlayAttached) {
             blockOverlayTitle?.text = appLabel(pkg)
             blockOverlaySub?.text = subText
+            blockOverlayMsg?.text = blockMsg
+            blockOverlayMsg?.visibility = if (blockMsg.isBlank()) View.GONE else View.VISIBLE
             return
         }
         try {
@@ -429,6 +539,8 @@ class PowerBlockService : AccessibilityService() {
             blockOverlayAttached = true
             blockOverlayTitle?.text = appLabel(pkg)
             blockOverlaySub?.text = subText
+            blockOverlayMsg?.text = blockMsg
+            blockOverlayMsg?.visibility = if (blockMsg.isBlank()) View.GONE else View.VISIBLE
             // entrance: the screen fades in and the shield pops
             v.animate().alpha(1f).setDuration(200)
                 .setInterpolator(AccelerateDecelerateInterpolator()).start()
@@ -448,6 +560,7 @@ class PowerBlockService : AccessibilityService() {
     }
 
     private fun hideBlockOverlay() {
+        limitBlockActive = false
         if (!blockOverlayAttached) {
             blockedPkg = null
             return
