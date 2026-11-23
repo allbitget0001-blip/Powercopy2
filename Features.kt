@@ -68,11 +68,20 @@ data class PlaceEvent(val placeId: Long, val name: String, val inTime: Long, val
 /** A named set of apps (Protection tab). Blocking stays per-app; a group is a shortcut. */
 data class AppGroup(val id: Long, val name: String, val pkgs: List<String>)
 
+/**
+ * A named, saved lock configuration: duration, strict on/off, and unlock
+ * mode. Applying one fills the Home lock setup with its values. This is NOT
+ * the old Preset feature: profiles are a separate named list with their own
+ * storage key and no chips row on Home. The unlock destination is not part
+ * of a profile — it stays the global destination picked on the map.
+ */
+data class LockProfile(val id: Long, val name: String, val minutes: Int, val strict: Boolean, val mode: String)
+
 object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "53"
+    const val BUILD_ID = "54"
 
     // ---------- extend time (never reduce) ----------
 
@@ -349,6 +358,84 @@ object Extra {
         Store.settings(ctx).edit().putString("block_msg", msg).apply()
     }
 
+    // ---------- site block (DNS VPN; the VPN itself lives in SiteBlockService.kt) ----------
+
+    /** Starter blocklist, used until the user edits the list. Subdomains are blocked too. */
+    val SITE_DEFAULT_DOMAINS = listOf(
+        "pornhub.com", "xvideos.com", "xnxx.com", "xhamster.com", "redtube.com",
+        "youporn.com", "brazzers.com", "onlyfans.com", "chaturbate.com", "livejasmin.com"
+    )
+
+    fun siteOn(ctx: Context): Boolean = Store.settings(ctx).getBoolean("site_on", false)
+
+    fun setSiteOn(ctx: Context, on: Boolean) {
+        Store.settings(ctx).edit().putBoolean("site_on", on).apply()
+    }
+
+    /** Blocked domains (lowercase, no scheme/path). Defaults apply until the user saves a list. */
+    fun siteDomains(ctx: Context): List<String> {
+        val raw = Store.settings(ctx).getString("site_domains", null) ?: return SITE_DEFAULT_DOMAINS
+        return try {
+            val arr = JSONArray(raw)
+            val out = ArrayList<String>()
+            for (i in 0 until arr.length()) {
+                val d = normalizeDomain(arr.optString(i, "")) ?: continue
+                if (d !in out) out.add(d)
+            }
+            out.sorted()
+        } catch (e: Exception) {
+            Log.e(TAG, "site domains read failed", e)
+            SITE_DEFAULT_DOMAINS
+        }
+    }
+
+    fun setSiteDomains(ctx: Context, list: List<String>) {
+        val arr = JSONArray()
+        for (d in list) {
+            val n = normalizeDomain(d) ?: continue
+            arr.put(n)
+        }
+        Store.settings(ctx).edit().putString("site_domains", arr.toString()).apply()
+    }
+
+    /** Adds one domain. Returns false when it is invalid or already listed. */
+    fun addSiteDomain(ctx: Context, raw: String): Boolean {
+        val d = normalizeDomain(raw) ?: return false
+        val list = siteDomains(ctx).toMutableList()
+        if (d in list) return false
+        list.add(d)
+        setSiteDomains(ctx, list)
+        return true
+    }
+
+    fun removeSiteDomain(ctx: Context, domain: String) {
+        setSiteDomains(ctx, siteDomains(ctx).filter { it != domain })
+    }
+
+    /**
+     * Normalizes user input ("https://www.Example.com/path" -> "example.com").
+     * Returns null for anything that is not a plain domain name.
+     */
+    fun normalizeDomain(raw: String): String? {
+        var s = raw.trim().lowercase()
+        if (s.startsWith("http://")) s = s.substring(7)
+        if (s.startsWith("https://")) s = s.substring(8)
+        if (s.startsWith("www.")) s = s.substring(4)
+        val slash = s.indexOf('/')
+        if (slash >= 0) s = s.substring(0, slash)
+        s = s.trimEnd('.')
+        if (s.isEmpty() || s.length > 253) return null
+        if (!s.contains('.')) return null
+        for (part in s.split('.')) {
+            if (part.isEmpty() || part.length > 63) return null
+            if (part.startsWith('-') || part.endsWith('-')) return null
+            for (c in part) {
+                if (!(c in 'a'..'z' || c in '0'..'9' || c == '-')) return null
+            }
+        }
+        return s
+    }
+
     // ---------- app groups (named sets; blocking itself stays per-app) ----------
 
     /** A named set of apps. Groups never block by themselves — "block all" just
@@ -410,6 +497,87 @@ object Extra {
 
     fun deleteAppGroup(ctx: Context, id: Long) {
         saveAppGroups(ctx, appGroups(ctx).filter { it.id != id })
+    }
+
+    // ---------- lock profiles (named, saved lock setups) ----------
+
+    /** At most 10 saved profiles. */
+    const val MAX_PROFILES = 10
+
+    fun lockProfiles(ctx: Context): List<LockProfile> {
+        val out = ArrayList<LockProfile>()
+        try {
+            val arr = JSONArray(Store.settings(ctx).getString("lock_profiles", "[]"))
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val mode = o.optString("m", UNLOCK_TIME)
+                out.add(
+                    LockProfile(
+                        o.getLong("id"),
+                        o.getString("n"),
+                        o.getInt("min").coerceIn(1, MAX_MIN),
+                        o.getBoolean("s"),
+                        if (mode == UNLOCK_LOC || mode == UNLOCK_EITHER) mode else UNLOCK_TIME
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "lock profiles read failed", e)
+        }
+        return out
+    }
+
+    fun saveLockProfiles(ctx: Context, list: List<LockProfile>) {
+        val arr = JSONArray()
+        for (x in list.take(MAX_PROFILES)) {
+            val o = JSONObject()
+            o.put("id", x.id)
+            o.put("n", x.name)
+            o.put("min", x.minutes)
+            o.put("s", x.strict)
+            o.put("m", x.mode)
+            arr.put(o)
+        }
+        Store.settings(ctx).edit().putString("lock_profiles", arr.toString()).apply()
+    }
+
+    /** Adds a profile; returns null when the list is full. */
+    fun addLockProfile(ctx: Context, name: String, minutes: Int, strict: Boolean, mode: String): LockProfile? {
+        val list = lockProfiles(ctx).toMutableList()
+        if (list.size >= MAX_PROFILES) return null
+        val p = LockProfile(System.currentTimeMillis(), name, minutes.coerceIn(1, MAX_MIN), strict, mode)
+        list.add(p)
+        saveLockProfiles(ctx, list)
+        return p
+    }
+
+    fun updateLockProfile(ctx: Context, id: Long, name: String, minutes: Int, strict: Boolean, mode: String) {
+        saveLockProfiles(
+            ctx,
+            lockProfiles(ctx).map {
+                if (it.id == id) it.copy(name = name, minutes = minutes.coerceIn(1, MAX_MIN), strict = strict, mode = mode) else it
+            }
+        )
+    }
+
+    fun deleteLockProfile(ctx: Context, id: Long) {
+        saveLockProfiles(ctx, lockProfiles(ctx).filter { it.id != id })
+    }
+
+    /**
+     * Applies a profile to the Home lock setup: duration, strict mode and
+     * unlock mode. Returns false when a session is running (setup is locked
+     * then). The unlock destination is untouched — it stays the global one.
+     */
+    fun applyLockProfile(ctx: Context, p: LockProfile): Boolean {
+        if (Store.isActive(ctx)) return false
+        val st = Store.settings(ctx)
+        st.edit()
+            .putInt("sel_min", p.minutes)
+            .putBoolean("strict", p.strict)
+            .putString("unlock_mode", p.mode)
+            .apply()
+        return true
     }
 
     /** Starter groups by well-known package names; only installed apps are kept. */
@@ -922,6 +1090,350 @@ private fun MainActivity.customExtend(done: () -> Unit) {
             d.dismiss()
             confirmExtend(total.toInt(), done)
         }
+    }
+}
+
+// =====================================================================
+// UI: site block (Settings)
+// =====================================================================
+
+/**
+ * Site block card: on/off switch + editable blocked-domain list. The VPN
+ * itself runs only while a lock is active. While a session runs the list is
+ * add-only, like the app-block lists: domains can be added, not removed.
+ */
+fun MainActivity.siteBlockCard(): View {
+    val c = card()
+    c.addView(section(L.t("Site block", "সাইট ব্লক")))
+    val locked = Store.isActive(this)
+    val on = Extra.siteOn(this)
+    lateinit var sw: PremiumSwitch
+    sw = toggle(on) { v ->
+        if (v) {
+            Extra.setSiteOn(this, true)
+            if (SiteBlockService.vpnGranted(this)) {
+                SiteBlockService.sync(this)
+                toast(
+                    if (Store.isActive(this)) L.t("Site block is on", "সাইট ব্লক চালু হয়েছে")
+                    else L.t("Site block will start with the next lock", "সাইট ব্লক পরের লক থেকে চালু হবে")
+                )
+                go(3)
+            } else {
+                // first enable: Android asks once for VPN permission
+                val pi = SiteBlockService.prepareIntent(this)
+                if (pi != null) {
+                    try {
+                        startActivityForResult(pi, REQ_VPN_CONSENT)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "vpn consent launch failed", e)
+                        Extra.setSiteOn(this, false)
+                        sw.setCheckedImmediate(false)
+                        toast(L.t("Could not open the VPN permission screen", "VPN অনুমতির স্ক্রিন খোলা যায়নি"))
+                    }
+                } else {
+                    SiteBlockService.sync(this)
+                    go(3)
+                }
+            }
+        } else {
+            Extra.setSiteOn(this, false)
+            SiteBlockService.sync(this) // stops the VPN right away
+            go(3)
+        }
+    }
+    c.addView(
+        row(
+            L.t("Block websites during a lock", "লক চলাকালীন ওয়েবসাইট ব্লক"),
+            when {
+                !on -> L.t("Off — blocked sites open normally.", "বন্ধ — ব্লক করা সাইট সাধারণভাবে খুলবে।")
+                SiteBlockService.isRunning -> L.t("Active now — blocked sites cannot open.", "এখন সক্রিয় — ব্লক করা সাইট খুলবে না।")
+                locked -> L.t("On, but the VPN did not start — check the VPN permission.", "চালু, কিন্তু VPN শুরু হয়নি — VPN অনুমতি দেখুন।")
+                else -> L.t("On — starts when the next lock starts.", "চালু — পরের লক শুরু হলে চালু হবে।")
+            },
+            sw
+        ),
+        lp(MATCH, WRAP, t = dp(6))
+    )
+    c.addView(
+        tv(
+            L.t(
+                "Blocked sites get no answer (NXDOMAIN). SafeSearch is enforced for Google, Bing, DuckDuckGo and YouTube. Only DNS is handled — your other traffic never goes through the VPN.",
+                "ব্লক করা সাইটের কোনো উত্তর আসে না। Google, Bing, DuckDuckGo ও YouTube-এ SafeSearch চালু থাকে। শুধু DNS দেখা হয় — বাকি ট্রাফিক VPN দিয়ে যায় না।"
+            ),
+            12f, C.muted
+        ),
+        lp(MATCH, WRAP, t = dp(4))
+    )
+    val domains = Extra.siteDomains(this)
+    for (d in domains) {
+        val r = LinearLayout(this)
+        r.gravity = Gravity.CENTER_VERTICAL
+        r.setPadding(0, dp(8), 0, dp(8))
+        r.addView(tv(d, 15f, C.text), lp(0, WRAP, weight = 1f))
+        val remove = tv(L.t("Remove", "সরান"), 13f, if (locked) C.muted else C.warn)
+        remove.setPadding(dp(8), dp(8), dp(8), dp(8))
+        remove.pressFeedback()
+        remove.setOnClickListener {
+            if (Store.isActive(this)) {
+                toast(L.t("Locked while a session is active — you can still add domains", "সেশন চলাকালীন সরানো যাবে না — তবে নতুন ডোমেইন যোগ করা যাবে"))
+            } else {
+                Extra.removeSiteDomain(this, d)
+                go(3)
+            }
+        }
+        r.addView(remove)
+        c.addView(r, lp(MATCH, WRAP, t = dp(4)))
+    }
+    if (locked) {
+        c.addView(
+            tv(L.t("While a session runs, domains cannot be removed here — but new ones can be added below.", "সেশন চলাকালীন এখান থেকে সরানো যাবে না — তবে নিচে নতুন যোগ করা যাবে।"), 12f, C.warn),
+            lp(MATCH, WRAP, t = dp(8))
+        )
+    }
+    val add = outlineBtn(L.t("Add a domain", "ডোমেইন যোগ করুন"), C.primary)
+    add.setOnClickListener { addSiteDomainDialog() }
+    c.addView(add, lp(MATCH, dp(48), t = dp(10)))
+    return c
+}
+
+private fun MainActivity.addSiteDomainDialog() {
+    val et = edit(L.t("example.com", "example.com"), false)
+    val body = LinearLayout(this)
+    body.orientation = LinearLayout.VERTICAL
+    body.setPadding(dp(20), dp(12), dp(20), dp(4))
+    body.addView(et, lp(MATCH, WRAP))
+    body.addView(
+        tv(L.t("Subdomains are blocked too (mail.example.com as well as example.com).", "সাবডোমেইনও ব্লক হয় (example.com-এর সঙ্গে mail.example.com-ও)।"), 13f, C.muted),
+        lp(MATCH, WRAP, t = dp(10))
+    )
+    dlg()
+        .setTitle(L.t("Block a website", "ওয়েবসাইট ব্লক করুন"))
+        .setView(body)
+        .setPositiveButton(L.t("Add", "যোগ করুন")) { _, _ ->
+            val raw = et.text.toString()
+            if (Extra.addSiteDomain(this, raw)) {
+                SiteBlockService.sync(this) // reload the list in the running VPN
+                toast(L.t("Domain added", "ডোমেইন যোগ হয়েছে"))
+                go(3)
+            } else {
+                toast(L.t("Not a valid domain, or already in the list", "সঠিক ডোমেইন নয়, অথবা তালিকায় আগেই আছে"))
+            }
+        }
+        .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+        .show()
+}
+
+// =====================================================================
+// UI: uninstall block (Settings)
+// =====================================================================
+
+/**
+ * Uninstall block card: shows whether the device admin is active and offers
+ * to enable it (system flow) or remove it. Removing is disabled while a
+ * session runs — protections may only be strengthened during a lock.
+ */
+fun MainActivity.uninstallBlockCard(): View {
+    val c = card()
+    c.addView(section(L.t("Uninstall block", "আনইনস্টল ব্লক")))
+    val locked = Store.isActive(this)
+    val active = UninstallBlock.isActive(this)
+    c.addView(
+        row(
+            if (active) L.t("Uninstall block is active", "আনইনস্টল ব্লক সক্রিয়")
+            else L.t("Uninstall block is not active", "আনইনস্টল ব্লক সক্রিয় নয়"),
+            if (active) L.t("The app cannot be uninstalled until the admin is removed.", "অ্যাডমিন না সরানো পর্যন্ত অ্যাপ আনইনস্টল করা যাবে না।")
+            else L.t("The app can be uninstalled normally right now.", "এখন অ্যাপ সাধারণভাবে আনইনস্টল করা যাবে।"),
+            tv(if (active) "✔" else "✘", 18f, if (active) C.primary else C.muted, 1)
+        ),
+        lp(MATCH, WRAP, t = dp(6))
+    )
+    c.addView(
+        tv(
+            L.t(
+                "Enabling this makes PowerLock 2 a device admin (Android asks once). It requests no policies — it only stops uninstalls.",
+                "এটি চালু করলে PowerLock 2 ডিভাইস অ্যাডমিন হবে (Android একবার জিজ্ঞেস করবে)। কোনো পলিসি চাওয়া হয় না — শুধু আনইনস্টল আটকায়।"
+            ),
+            12f, C.muted
+        ),
+        lp(MATCH, WRAP, t = dp(4))
+    )
+    if (active) {
+        val remove = outlineBtn(L.t("Remove admin", "অ্যাডমিন সরান"), C.warn)
+        if (locked) remove.alpha = 0.4f
+        remove.setOnClickListener {
+            if (Store.isActive(this)) {
+                toast(L.t("Locked while a session is active", "সেশন চলাকালীন বদলানো যাবে না"))
+                return@setOnClickListener
+            }
+            dlg()
+                .setTitle(L.t("Remove uninstall block?", "আনইনস্টল ব্লক সরাবেন?"))
+                .setMessage(L.t("After this, the app can be uninstalled normally.", "এরপর অ্যাপ সাধারণভাবে আনইনস্টল করা যাবে।"))
+                .setPositiveButton(L.t("Remove", "সরান")) { _, _ ->
+                    if (UninstallBlock.remove(this)) {
+                        toast(L.t("Uninstall block removed", "আনইনস্টল ব্লক সরানো হয়েছে"))
+                    } else {
+                        toast(L.t("Could not remove the admin — try in system Settings", "অ্যাডমিন সরানো যায়নি — সিস্টেম Settings থেকে চেষ্টা করুন"))
+                    }
+                    go(3)
+                }
+                .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+                .show()
+        }
+        c.addView(remove, lp(MATCH, dp(48), t = dp(10)))
+    } else {
+        val enable = outlineBtn(L.t("Enable uninstall block", "আনইনস্টল ব্লক চালু করুন"), C.primary)
+        enable.setOnClickListener {
+            try {
+                startActivity(UninstallBlock.enableIntent(this))
+            } catch (e: Exception) {
+                Log.e(TAG, "device admin enable failed", e)
+                toast(L.t("Could not open the device admin screen", "ডিভাইস অ্যাডমিন স্ক্রিন খোলা যায়নি"))
+            }
+        }
+        c.addView(enable, lp(MATCH, dp(48), t = dp(10)))
+    }
+    return c
+}
+
+// =====================================================================
+// UI: lock profiles (Settings)
+// =====================================================================
+
+private fun profileModeLabel(mode: String): String {
+    return when (mode) {
+        UNLOCK_LOC -> L.t("Location only", "শুধু লোকেশন")
+        UNLOCK_EITHER -> L.t("Either one", "যেকোনো একটা")
+        else -> L.t("Time only", "শুধু সময়")
+    }
+}
+
+/** Saved lock setups: apply one to fill the Home lock setup, or create/edit/delete. */
+fun MainActivity.lockProfilesCard(): View {
+    val c = card()
+    c.addView(section(L.t("Lock profiles", "লক প্রোফাইল")))
+    val profiles = Extra.lockProfiles(this)
+    if (profiles.isEmpty()) {
+        c.addView(
+            tv(L.t("Save a lock setup — duration, strict mode and unlock mode — and apply it in one tap.", "লক সেটআপ সংরক্ষণ করুন — সময়, স্ট্রিক্ট মোড ও খোলার শর্ত — এক চাপে চালু করুন।"), 13f, C.muted),
+            lp(MATCH, WRAP, t = dp(6))
+        )
+    }
+    for (p in profiles) {
+        val r = LinearLayout(this)
+        r.gravity = Gravity.CENTER_VERTICAL
+        r.setPadding(0, dp(10), 0, dp(10))
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.addView(tv(p.name, 15f, C.text, 1))
+        val strictTxt = if (p.strict) L.t("Strict", "স্ট্রিক্ট") else L.t("Not strict", "স্ট্রিক্ট নয়")
+        col.addView(tv(fmtDur(p.minutes * 60_000L) + " · " + strictTxt + " · " + profileModeLabel(p.mode), 12f, C.muted))
+        r.addView(col, lp(0, WRAP, weight = 1f))
+        val edit = tv(L.t("Edit", "এডিট"), 13f, C.muted)
+        edit.setPadding(dp(8), dp(8), dp(8), dp(8))
+        edit.pressFeedback()
+        edit.setOnClickListener { profileEditorDialog(p) }
+        r.addView(edit)
+        val apply = tv(L.t("Apply", "চালু করুন"), 13f, C.mint, 1)
+        apply.setPadding(dp(8), dp(8), dp(8), dp(8))
+        apply.pressFeedback()
+        apply.setOnClickListener {
+            if (Store.isActive(this)) {
+                toast(L.t("Locked while a session is active", "সেশন চলাকালীন বদলানো যাবে না"))
+                return@setOnClickListener
+            }
+            if (!Extra.applyLockProfile(this, p)) {
+                toast(L.t("Locked while a session is active", "সেশন চলাকালীন বদলানো যাবে না"))
+                return@setOnClickListener
+            }
+            if (p.mode != UNLOCK_TIME && Store.settings(this).getString("unlock_dest", null) == null) {
+                toast(L.t("Profile applied — pick a destination on the map before starting", "প্রোফাইল চালু হয়েছে — শুরু করার আগে ম্যাপে গন্তব্য বাছুন"))
+            } else {
+                toast(L.t("Profile applied", "প্রোফাইল চালু হয়েছে"))
+            }
+            go(0)
+        }
+        r.addView(apply)
+        c.addView(r, lp(MATCH, WRAP, t = dp(4)))
+    }
+    val add = outlineBtn(L.t("New profile", "নতুন প্রোফাইল"), C.primary)
+    add.setOnClickListener {
+        if (Extra.lockProfiles(this).size >= Extra.MAX_PROFILES) {
+            toast(L.t("At most ${Extra.MAX_PROFILES} profiles", "সর্বোচ্চ ${Extra.MAX_PROFILES}টি প্রোফাইল"))
+            return@setOnClickListener
+        }
+        profileEditorDialog(null)
+    }
+    c.addView(add, lp(MATCH, dp(48), t = dp(10)))
+    return c
+}
+
+/** Create-or-edit dialog for one profile. [existing] is null for a new profile. */
+private fun MainActivity.profileEditorDialog(existing: LockProfile?) {
+    val nameEt = edit(L.t("Profile name", "প্রোফাইলের নাম"), false)
+    nameEt.setText(existing?.name ?: "")
+    val minEt = edit(L.t("Minutes (1–21600)", "মিনিট (১–২১৬০০)"), true)
+    minEt.setText((existing?.minutes ?: 30).toString())
+    var strictVal = existing?.strict ?: false
+    var modeVal = existing?.mode ?: UNLOCK_TIME
+    val body = LinearLayout(this)
+    body.orientation = LinearLayout.VERTICAL
+    body.setPadding(dp(20), dp(12), dp(20), dp(4))
+    body.addView(nameEt, lp(MATCH, WRAP))
+    body.addView(minEt, lp(MATCH, WRAP, t = dp(10)))
+    val strictRow = LinearLayout(this)
+    strictRow.gravity = Gravity.CENTER_VERTICAL
+    strictRow.setPadding(0, dp(14), 0, dp(6))
+    strictRow.addView(tv(L.t("Strict mode", "স্ট্রিক্ট মোড"), 15f, C.text, 1), lp(0, WRAP, weight = 1f))
+    strictRow.addView(toggle(strictVal) { v -> strictVal = v })
+    body.addView(strictRow)
+    body.addView(tv(L.t("When does the lock open?", "লক খুলবে কখন?"), 13f, C.muted, 1), lp(MATCH, WRAP, t = dp(10)))
+    val modeRow = LinearLayout(this)
+    val modeChips = ArrayList<TextView>()
+    val modes = listOf(UNLOCK_TIME, UNLOCK_LOC, UNLOCK_EITHER)
+    for ((i, m) in modes.withIndex()) {
+        val ch = chip(profileModeLabel(m), m == modeVal)
+        ch.setOnClickListener {
+            modeVal = m
+            for ((j, other) in modeChips.withIndex()) styleChip(other, modes[j] == modeVal)
+        }
+        modeChips.add(ch)
+        modeRow.addView(ch, lp(0, WRAP, r = if (i < 2) dp(8) else 0, t = dp(8), weight = 1f))
+    }
+    body.addView(modeRow)
+    val d = dlg()
+        .setTitle(if (existing == null) L.t("New profile", "নতুন প্রোফাইল") else L.t("Edit profile", "প্রোফাইল এডিট"))
+        .setView(body)
+        .setPositiveButton(L.t("Save", "সংরক্ষণ"), null)
+        .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+        .create()
+    if (existing != null) {
+        d.setButton(AlertDialog.BUTTON_NEUTRAL, L.t("Delete", "মুছুন")) { _, _ ->
+            Extra.deleteLockProfile(this, existing.id)
+            go(3)
+        }
+    }
+    d.show()
+    d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+        val name = nameEt.text.toString().trim()
+        val min = minEt.text.toString().toIntOrNull() ?: 0
+        if (name.isEmpty()) {
+            nameEt.error = L.t("Give the profile a name", "প্রোফাইলের নাম দিন")
+            return@setOnClickListener
+        }
+        if (min < 1 || min > MAX_MIN) {
+            minEt.error = L.t("1 minute to 15 days", "১ মিনিট থেকে ১৫ দিন")
+            return@setOnClickListener
+        }
+        if (existing == null) {
+            if (Extra.addLockProfile(this, name, min, strictVal, modeVal) == null) {
+                toast(L.t("At most ${Extra.MAX_PROFILES} profiles", "সর্বোচ্চ ${Extra.MAX_PROFILES}টি প্রোফাইল"))
+                return@setOnClickListener
+            }
+        } else {
+            Extra.updateLockProfile(this, existing.id, name, min, strictVal, modeVal)
+        }
+        d.dismiss()
+        go(3)
     }
 }
 

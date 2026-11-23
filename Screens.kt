@@ -21,6 +21,7 @@ import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -504,7 +505,8 @@ class HomeScreen(private val a: MainActivity) {
         a.dlg()
             .setTitle(L.t("Session completed!", "সেশন সম্পন্ন!"))
             .setMessage(
-                L.t("Focus time: ", "ফোকাস সময়: ") + fmtDur(s.durMs) + "\n" + blocksTxt
+                L.t("Focus time: ", "ফোকাস সময়: ") + fmtDur(s.durMs) + "\n" + blocksTxt +
+                    "\n\n“" + Quotes.today() + "”"
             )
             .setPositiveButton(L.t("Great!", "ভালো হয়েছে!"), null)
             .show()
@@ -1614,6 +1616,17 @@ class SettingsScreen(private val a: MainActivity) {
             .show()
     }
 
+    /** Pick the morning-reminder time. Choosing a time turns the reminder on. */
+    private fun morningTimeDialog() {
+        val cur = MorningReminder.minutes(a)
+        TimePickerDialog(a, android.R.style.Theme_DeviceDefault_Dialog, { _, h, m ->
+            MorningReminder.setMinutes(a, h * 60 + m)
+            if (!MorningReminder.isOn(a)) MorningReminder.setOn(a, true)
+            a.toast(L.t("Morning reminder set for ", "সকালের রিমাইন্ডার ঠিক হয়েছে ") + fmtMin(h * 60 + m))
+            a.go(3)
+        }, cur / 60, cur % 60, false).show()
+    }
+
     /** Pick the focus sound. Choosing one while a lock runs starts it right away. */
     private fun focusSoundDialog() {
         val choices = listOf(FocusSound.OFF, FocusSound.WHITE, FocusSound.BROWN, FocusSound.RAIN)
@@ -1685,6 +1698,58 @@ class SettingsScreen(private val a: MainActivity) {
         tr.addView(t0, lp(0, WRAP, r = a.dp(8), t = a.dp(10), weight = 1f))
         tr.addView(t1, lp(0, WRAP, t = a.dp(10), weight = 1f))
         theme.addView(tr)
+        // accent colour: 4 free colours + 2 unlockable by achievement
+        theme.addView(a.tv(L.t("Accent colour", "অ্যাকসেন্ট রঙ"), 13f, C.muted, 1), lp(MATCH, WRAP, t = a.dp(18)))
+        val chosenAccent = Accents.chosen(a).id
+        fun accentCell(ac: AccentTheme): View {
+            val unlocked = Accents.isUnlocked(a, ac)
+            val selected = ac.id == chosenAccent
+            val cell = LinearLayout(a)
+            cell.orientation = LinearLayout.VERTICAL
+            cell.gravity = Gravity.CENTER_HORIZONTAL
+            val ring = LinearLayout(a)
+            ring.gravity = Gravity.CENTER
+            ring.background = if (selected) rounded(Color.TRANSPARENT, a.dp(28).toFloat(), C.mint, a.dp(2))
+            else rounded(Color.TRANSPARENT, a.dp(28).toFloat())
+            ring.setPadding(a.dp(5), a.dp(5), a.dp(5), a.dp(5))
+            val dotWrap = FrameLayout(a)
+            val dot = View(a)
+            dot.background = rounded(ac.primary, a.dp(22).toFloat())
+            dotWrap.addView(dot, FrameLayout.LayoutParams(a.dp(44), a.dp(44)))
+            if (!unlocked) {
+                val lock = a.tv("🔒", 16f, C.text, 1)
+                lock.gravity = Gravity.CENTER
+                dotWrap.addView(lock, FrameLayout.LayoutParams(a.dp(44), a.dp(44)))
+            }
+            ring.addView(dotWrap, lp(a.dp(44), a.dp(44)))
+            cell.addView(ring, lp(WRAP, WRAP, t = a.dp(10)))
+            cell.addView(a.tv(L.t(ac.nameEn, ac.nameBn), 13f, if (unlocked) C.text else C.muted, 1), lp(WRAP, WRAP, t = a.dp(6)))
+            val req = Accents.requirement(ac)
+            if (req != null && !unlocked) {
+                cell.addView(a.tv(req, 11f, C.muted), lp(WRAP, WRAP))
+            }
+            if (!unlocked) cell.alpha = 0.75f
+            cell.pressFeedback()
+            cell.setOnClickListener {
+                if (!Accents.isUnlocked(a, ac)) {
+                    val r = Accents.requirement(ac) ?: ""
+                    a.toast(L.t("Locked — unlock with a $r", "লক করা — $r হলে আনলক হবে"))
+                    return@setOnClickListener
+                }
+                if (Accents.chosen(a).id == ac.id) return@setOnClickListener
+                Accents.setChosen(a, ac.id)
+                a.crossfade { C.load(a) }
+            }
+            return cell
+        }
+        for (rowIdx in 0..1) {
+            val ar = LinearLayout(a)
+            ar.orientation = LinearLayout.HORIZONTAL
+            for (i in 0..2) {
+                ar.addView(accentCell(Accents.ALL[rowIdx * 3 + i]), lp(0, WRAP, weight = 1f))
+            }
+            theme.addView(ar)
+        }
         col.addView(theme, lp(MATCH, WRAP, b = a.dp(12)))
 
         // strict protection
@@ -1719,6 +1784,9 @@ class SettingsScreen(private val a: MainActivity) {
         col.addView(a.locationCard(), lp(MATCH, WRAP, b = a.dp(12)))
         col.addView(a.historyCard(), lp(MATCH, WRAP, b = a.dp(12)))
         col.addView(a.focusCard(), lp(MATCH, WRAP, b = a.dp(12)))
+        col.addView(a.siteBlockCard(), lp(MATCH, WRAP, b = a.dp(12)))
+        col.addView(a.uninstallBlockCard(), lp(MATCH, WRAP, b = a.dp(12)))
+        col.addView(a.lockProfilesCard(), lp(MATCH, WRAP, b = a.dp(12)))
 
         // general
         val gen = a.card()
@@ -1773,6 +1841,18 @@ class SettingsScreen(private val a: MainActivity) {
                 FocusSound.label(FocusSound.choice(a)) + " · " + L.t("plays during a lock", "লক চলাকালীন বাজবে"),
                 a.tv("›", 22f, C.muted)
             ) { focusSoundDialog() }
+        )
+        // morning reminder: a daily nudge to start a focus session
+        gen.addView(
+            a.row(
+                L.t("Morning reminder", "সকালের রিমাইন্ডার"),
+                if (MorningReminder.isOn(a)) L.t("Every day at ", "প্রতিদিন ") + fmtMin(MorningReminder.minutes(a)) + L.t(" — tap to change the time", " — সময় বদলাতে চাপুন")
+                else L.t("Off — tap to pick a time", "বন্ধ — সময় বাছতে চাপুন"),
+                a.toggle(MorningReminder.isOn(a)) { v ->
+                    MorningReminder.setOn(a, v)
+                    a.go(3)
+                }
+            ) { morningTimeDialog() }
         )
         gen.addView(
             a.row(L.t("Notification settings", "নোটিফিকেশন সেটিংস"), null, a.tv("›", 22f, C.muted)) {

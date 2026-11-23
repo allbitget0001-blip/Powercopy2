@@ -47,8 +47,10 @@ object C {
     var chipFill = Color.parseColor("#12271D")
     var border = Color.parseColor("#1F4A38")
     var selFill = Color.parseColor("#17694B")
-    val primary = Color.parseColor("#1FCB85")
-    val mint = Color.parseColor("#A8F0D1")
+    // accent colour: chosen in Settings (see Accents) — every card, chip,
+    // button and ring reads these live, so a change re-themes the whole app
+    var primary = Color.parseColor("#1FCB85")
+    var mint = Color.parseColor("#A8F0D1")
     val text = Color.parseColor("#F2FBF6")
     val textSoft = Color.parseColor("#D5E8DE")
     val muted = Color.parseColor("#8FA89B")
@@ -73,6 +75,81 @@ object C {
             border = Color.parseColor("#1F4A38")
             selFill = Color.parseColor("#17694B")
         }
+        // accent colour (default Emerald keeps the exact current look)
+        val accent = Accents.chosen(ctx)
+        primary = accent.primary
+        mint = accent.mint
+        selFill = if (amoled) darken(accent.selFill, 0.68f) else accent.selFill
+    }
+
+    private fun darken(color: Int, f: Float): Int {
+        val r = (Color.red(color) * f).toInt().coerceIn(0, 255)
+        val g = (Color.green(color) * f).toInt().coerceIn(0, 255)
+        val b = (Color.blue(color) * f).toInt().coerceIn(0, 255)
+        return Color.rgb(r, g, b)
+    }
+}
+
+/**
+ * One accent colour: its main colour, its light tint (used for highlights),
+ * and its dark fill (used for selected chips and switches).
+ * [unlock] is null for always-available colours, or the achievement that
+ * unlocks it: "streak7" (7-day streak) or "locks25" (25 completed locks).
+ */
+data class AccentTheme(
+    val id: String,
+    val nameEn: String,
+    val nameBn: String,
+    val primary: Int,
+    val mint: Int,
+    val selFill: Int,
+    val unlock: String?
+)
+
+object Accents {
+    val ALL = listOf(
+        AccentTheme("emerald", "Emerald", "এমারেল্ড", Color.parseColor("#1FCB85"), Color.parseColor("#A8F0D1"), Color.parseColor("#17694B"), null),
+        AccentTheme("ocean", "Ocean", "ওশান", Color.parseColor("#38BDF8"), Color.parseColor("#BAE6FD"), Color.parseColor("#0E7490"), null),
+        AccentTheme("violet", "Violet", "ভায়োলেট", Color.parseColor("#A78BFA"), Color.parseColor("#DDD6FE"), Color.parseColor("#6D28D9"), null),
+        AccentTheme("amber", "Amber", "অ্যাম্বার", Color.parseColor("#FBBF24"), Color.parseColor("#FDE68A"), Color.parseColor("#B45309"), null),
+        AccentTheme("crimson", "Crimson", "ক্রিমসন", Color.parseColor("#FB7185"), Color.parseColor("#FECDD3"), Color.parseColor("#9F1239"), "streak7"),
+        AccentTheme("lime", "Lime", "লাইম", Color.parseColor("#A3E635"), Color.parseColor("#D9F99D"), Color.parseColor("#4D7C0F"), "locks25")
+    )
+
+    fun byId(id: String): AccentTheme = ALL.firstOrNull { it.id == id } ?: ALL[0]
+
+    /** The unlock requirement text, or null when the colour is free. */
+    fun requirement(a: AccentTheme): String? {
+        return when (a.unlock) {
+            "streak7" -> L.t("7-day streak", "৭ দিনের স্ট্রিক")
+            "locks25" -> L.t("25 completed locks", "২৫টা লক সম্পন্ন")
+            else -> null
+        }
+    }
+
+    /**
+     * True when the colour can be picked. Unlocks are sticky: once the
+     * achievement is reached it stays unlocked even if the streak later drops.
+     */
+    fun isUnlocked(ctx: Context, a: AccentTheme): Boolean {
+        if (a.unlock == null) return true
+        val st = Store.settings(ctx)
+        if (st.getBoolean("accent_unlocked_" + a.id, false)) return true
+        val fs = Store.focusStats(ctx)
+        val met = when (a.unlock) {
+            "streak7" -> fs.streak >= 7
+            "locks25" -> fs.completed >= 25
+            else -> false
+        }
+        if (met) st.edit().putBoolean("accent_unlocked_" + a.id, true).apply()
+        return met
+    }
+
+    fun chosen(ctx: Context): AccentTheme =
+        byId(Store.settings(ctx).getString("theme_color", "emerald") ?: "emerald")
+
+    fun setChosen(ctx: Context, id: String) {
+        Store.settings(ctx).edit().putString("theme_color", id).apply()
     }
 }
 

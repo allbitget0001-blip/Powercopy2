@@ -92,9 +92,26 @@ class MainActivity : Activity() {
         Scheduler.onAlarm(this)
         go(tab, false)
         Store.kickService(this) // restart the foreground service if it was swiped away
+        SiteBlockService.sync(this) // restart the site-block VPN if a lock is running
         Watchdog.enqueue(this) // safety net: restart the service every 15 min if it dies
         PlaceWatcher.checkNow(this) // already at a saved place? lock right away
         PlaceWatcher.checkUnlockNow(this) // location-unlock session? check arrival right away
+    }
+
+    /** Result of the system VPN-consent dialog (site block). */
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_VPN_CONSENT) {
+            if (resultCode == RESULT_OK) {
+                SiteBlockService.sync(this)
+                toast(L.t("Site block is ready — it starts with the next lock", "সাইট ব্লক প্রস্তুত — পরের লক থেকে চালু হবে"))
+            } else {
+                // consent denied: turn the switch back off so the UI stays honest
+                Extra.setSiteOn(this, false)
+                toast(L.t("Site block needs VPN permission", "সাইট ব্লকের জন্য VPN অনুমতি দরকার"))
+            }
+            if (tab == 3) go(3, false)
+        }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

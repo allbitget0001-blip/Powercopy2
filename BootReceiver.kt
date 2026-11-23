@@ -11,6 +11,7 @@ class BootReceiver : BroadcastReceiver() {
         try {
             L.load(context)
             Scheduler.onAlarm(context)
+            MorningReminder.reschedule(context) // reboot / time change: re-arm the morning reminder
             Watchdog.enqueue(context) // safety net: restart the service every 15 min if it dies
             // the location lock has no session, so it must restart the service too
             if (Store.isActive(context) || Store.isLocProtecting(context)) Store.kickService(context)

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Device Admin for the uninstall block: no policies are requested — the
+     admin exists only so Android refuses to uninstall the app while it is
+     active. The user removes the admin (in Settings, or in-app when no lock
+     is running) before uninstalling. -->
+<device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-policies />
+</device-admin>

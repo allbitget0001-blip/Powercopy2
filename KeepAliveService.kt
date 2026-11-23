@@ -201,6 +201,7 @@ class KeepAliveService : Service() {
     private fun refresh() {
         handler.removeCallbacks(finishTask)
         Store.finalizeIfExpired(this)
+        SiteBlockService.sync(this) // keep the site-block VPN in step with the lock
         val p = Store.lock(this)
         val end = p.getLong("end", 0)
         val now = System.currentTimeMillis()

@@ -65,6 +65,62 @@ object L {
 
 enum class PStatus { READY, ACTIVE, SCHEDULED, COMPLETED }
 
+/**
+ * Lock-end quotes: short motivational lines, one per day on rotation.
+ * Shown ONLY in the session-summary dialog when a lock ends — nowhere else.
+ */
+object Quotes {
+    private val ALL = listOf(
+        Pair(
+            "You didn't just lock your phone — you unlocked your time.",
+            "তুমি শুধু ফোন লক করোনি — নিজের সময়কে মুক্ত করেছ।"
+        ),
+        Pair(
+            "Small wins, repeated daily, become a new life.",
+            "ছোট ছোট জয়, প্রতিদিন পুনরাবৃত্তি হলে, নতুন জীবন হয়ে ওঠে।"
+        ),
+        Pair(
+            "Focus is saying no to a hundred good distractions.",
+            "ফোকাস মানে শত ভালো বিভ্রান্তিকে না বলা।"
+        ),
+        Pair(
+            "The phone waited. Your goals didn't have to.",
+            "ফোন অপেক্ষা করেছে। তোমার লক্ষ্যকে অপেক্ষা করতে হয়নি।"
+        ),
+        Pair(
+            "Discipline is choosing what you want most over what you want now.",
+            "শৃঙ্খলা মানে এখন যা চাও তার চেয়ে যা সবচেয়ে বেশি চাও সেটা বেছে নেওয়া।"
+        ),
+        Pair(
+            "Every minute of focus is a brick in the life you're building.",
+            "ফোকাসের প্রতিটি মিনিট তোমার গড়া জীবনের একটা ইট।"
+        ),
+        Pair(
+            "You proved you can. Tomorrow, prove it again.",
+            "তুমি প্রমাণ করেছ পারো। কাল আবার প্রমাণ করো।"
+        ),
+        Pair(
+            "Calm mind, steady hands, clear goals.",
+            "শান্ত মন, স্থির হাত, স্পষ্ট লক্ষ্য।"
+        ),
+        Pair(
+            "Freedom is not doing everything — it's choosing what matters.",
+            "স্বাধীনতা সবকিছু করা নয় — যা গুরুত্বপূর্ণ তা বেছে নেওয়া।"
+        ),
+        Pair(
+            "One lock at a time, one day at a time.",
+            "একবারে একটা লক, একদিনে একদিন।"
+        )
+    )
+
+    /** Today's quote, in the current language. Same all day, a new one tomorrow. */
+    fun today(): String {
+        val day = System.currentTimeMillis() / 86_400_000L
+        val q = ALL[(day % ALL.size).toInt()]
+        return L.t(q.first, q.second)
+    }
+}
+
 data class Schedule(val id: Long, val days: Int, val startMin: Int, val endMin: Int, val enabled: Boolean)
 
 data class Session(val start: Long, val end: Long, val dur: Long, val ok: Boolean, val src: String)
@@ -273,6 +329,7 @@ object Store {
         e.apply()
         Dnd.restore(ctx) // lock over: notifications come back
         FocusSound.stop() // lock over: the focus sound stops
+        SiteBlockService.stopIfRunning(ctx) // lock over: the site-block VPN stops
         LockWidget.refresh(ctx)
         PlaceWatcher.sync(ctx) // no session left: stop watching unless the location lock needs it
     }
@@ -328,6 +385,7 @@ object Store {
         e.apply()
         Dnd.restore(ctx) // lock over: notifications come back
         FocusSound.stop() // lock over: the focus sound stops
+        SiteBlockService.stopIfRunning(ctx) // lock over: the site-block VPN stops
         LockWidget.refresh(ctx)
         PlaceWatcher.sync(ctx) // no session left: stop watching unless the location lock needs it
         kickService(ctx) // refresh the notification: the lock is off now
@@ -371,6 +429,7 @@ object Store {
         e.apply()
         Dnd.apply(ctx) // lock started: silence notifications if the user wants it
         FocusSound.sync(ctx) // lock started: play the chosen focus sound, if any
+        SiteBlockService.sync(ctx) // lock started: start the site-block VPN, if enabled
         LockWidget.refresh(ctx)
         kickService(ctx)
         return true
@@ -412,6 +471,7 @@ object Store {
         e.apply()
         Dnd.restore(ctx) // lock over: notifications come back
         FocusSound.stop() // lock over: the focus sound stops
+        SiteBlockService.stopIfRunning(ctx) // lock over: the site-block VPN stops
         LockWidget.refresh(ctx)
         PlaceWatcher.sync(ctx) // no session left: stop watching unless the location lock needs it
         kickService(ctx)
