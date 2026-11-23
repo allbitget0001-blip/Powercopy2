@@ -25,6 +25,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.util.Calendar
+import java.util.Locale
 import org.json.JSONObject
 
 // =====================================================================
@@ -44,6 +45,14 @@ class HomeScreen(private val a: MainActivity) {
     private lateinit var detoxLabel: TextView
     private lateinit var detoxBtn: TextView
     private var detoxSig = ""
+    private lateinit var pomLabel: TextView
+    private lateinit var pomStartBtn: TextView
+    private lateinit var pomStopBtn: TextView
+    private var pomSig = ""
+    private var lastPom: Boolean? = null
+    private lateinit var habitBox: LinearLayout
+    private var habitSig = ""
+    private var badgeShown = false
     private lateinit var startBtn: LinearLayout
     private lateinit var stopBtn: LinearLayout
     private lateinit var extendBtn: LinearLayout
@@ -139,6 +148,37 @@ class HomeScreen(private val a: MainActivity) {
         }
         detox.addView(detoxBtn, lp(MATCH, a.dp(48), t = a.dp(12)))
         col.addView(detox, lp(MATCH, WRAP, t = a.dp(16)))
+
+        // ---- Pomodoro: 25 min focus + 5 min break, 4 rounds, then a long break ----
+        val pom = a.card(20)
+        pom.addView(a.tv(L.t("Pomodoro", "পোমোডোরো"), 18f, C.text, 1))
+        pomLabel = a.tv("", 13f, C.muted)
+        pom.addView(pomLabel, lp(MATCH, WRAP, t = a.dp(6)))
+        pomStartBtn = a.outlineBtn(L.t("Start Pomodoro", "পোমোডোরো শুরু করুন"), C.primary)
+        pomStartBtn.setOnClickListener { startPomodoro() }
+        pom.addView(pomStartBtn, lp(MATCH, a.dp(48), t = a.dp(12)))
+        pomStopBtn = a.outlineBtn(L.t("Stop Pomodoro", "পোমোডোরো বন্ধ করুন"), C.danger)
+        pomStopBtn.setOnClickListener {
+            if (Pomodoro.cancel(a)) {
+                a.toast(L.t("Pomodoro stopped", "পোমোডোরো বন্ধ হয়েছে"))
+                tick()
+            } else {
+                a.toast(L.t("Strict mode: the focus round cannot be stopped early", "স্ট্রিক্ট মোড: ফোকাস রাউন্ড আগেই বন্ধ করা যাবে না"))
+            }
+        }
+        pom.addView(pomStopBtn, lp(MATCH, a.dp(48), t = a.dp(12)))
+        col.addView(pom, lp(MATCH, WRAP, t = a.dp(16)))
+
+        // ---- habit tracker: check off today's habits, build a streak ----
+        val hab = a.card(20)
+        hab.addView(a.tv(L.t("Habit tracker", "অভ্যাস ট্র্যাকার"), 18f, C.text, 1))
+        habitBox = LinearLayout(a)
+        habitBox.orientation = LinearLayout.VERTICAL
+        hab.addView(habitBox, lp(MATCH, WRAP, t = a.dp(6)))
+        val habAdd = a.outlineBtn(L.t("+ Add a habit", "+ অভ্যাস যোগ করুন"), C.primary)
+        habAdd.setOnClickListener { addHabitDialog() }
+        hab.addView(habAdd, lp(MATCH, a.dp(48), t = a.dp(12)))
+        col.addView(hab, lp(MATCH, WRAP, t = a.dp(16)))
 
         // ---- lock templates: one tap starts a lock with that duration ----
         col.addView(a.heading(L.t("Lock templates", "লক টেমপ্লেট")), lp(MATCH, WRAP, t = a.dp(26), b = a.dp(4)))
@@ -254,18 +294,20 @@ class HomeScreen(private val a: MainActivity) {
 
     private fun refreshChips(animate: Boolean = false) {
         val active = Store.isActive(a)
+        val pom = Pomodoro.state(a).active
         // location-only mode has no duration: the chips stay visible but dimmed
         val locOnly = unlockMode() == UNLOCK_LOC
         for ((i, c) in chips.withIndex()) {
             val sel = if (i < quick.size) quick[i] == a.selectedMin else !quick.contains(a.selectedMin)
             if (animate) a.animateChip(c, sel) else a.styleChip(c, sel)
-            c.alpha = if (active || locOnly) 0.4f else 1f
+            c.alpha = if (active || locOnly || pom) 0.4f else 1f
         }
-        for (c in tplChips) c.alpha = if (active) 0.4f else 1f
+        for (c in tplChips) c.alpha = if (active || pom) 0.4f else 1f
     }
 
     private fun pick(m: Int) {
         if (Store.isActive(a)) return
+        if (Pomodoro.state(a).active) return
         if (unlockMode() == UNLOCK_LOC) return
         a.selectedMin = m
         refreshChips(true)
@@ -275,6 +317,7 @@ class HomeScreen(private val a: MainActivity) {
     /** A template is a time-only lock: set the duration + mode, then use the normal start flow. */
     private fun startTemplate(min: Int) {
         if (Store.isActive(a)) return
+        if (Pomodoro.state(a).active) return
         if (!Perm.accessibilityOn(a)) {
             a.toast(L.t("Enable Accessibility first", "আগে Accessibility চালু করুন"))
             return
@@ -490,6 +533,7 @@ class HomeScreen(private val a: MainActivity) {
         val now = System.currentTimeMillis()
         // backup arrival check (the service listener is the main path)
         if (Store.unlockTarget(a) != null) PlaceWatcher.checkUnlockLastKnown(a)
+        Pomodoro.sync(a) // advance the Pomodoro set when a phase is over
         val active = Store.isActive(a)
         val st = statusOf(a, active, now)
         applyStatus(st)
@@ -499,7 +543,32 @@ class HomeScreen(private val a: MainActivity) {
         var total = p.getLong("total", 1)
         if (total < 1) total = 1
         val strict = active && p.getBoolean("s_strict", false)
-        if (active) {
+        val pom = Pomodoro.state(a)
+        val pomBreak = pom.active && pom.phase != Pomodoro.PHASE_FOCUS
+        if (pomBreak) {
+            // Pomodoro break: no lock session, the ring counts the break down
+            val left = pom.phaseEnd - now
+            val phaseTotal = if (pom.phaseTotal > 0) pom.phaseTotal else 1L
+            val long = pom.phase == Pomodoro.PHASE_LONG
+            ring.active = true
+            ring.icon = Ic.CLOCK
+            ring.main = fmtHms(left)
+            ring.mainColor = C.mint
+            ring.sub = if (long) L.t("Long break", "লম্বা বিরতি") else L.t("Break", "বিরতি")
+            var frac = left.toFloat() / phaseTotal.toFloat()
+            if (frac < 0f) frac = 0f
+            if (frac > 1f) frac = 1f
+            ring.animateTo(frac)
+            titleText.setTextAnimated(
+                if (long) L.t("Long break", "লম্বা বিরতি চলছে") else L.t("Break time", "বিরতি চলছে")
+            )
+            subText.setTextAnimated(
+                if (long) L.t("Pomodoro · the set ends after this break", "Pomodoro · এই বিরতির পর সেট শেষ")
+                else L.t("Pomodoro · next: focus ${pom.round + 1}/4", "Pomodoro · পরের ফোকাস ${L.num((pom.round + 1).toString())}/৪")
+            )
+            previewText.text = L.t("Session in progress · ", "সেশন চলছে · ") +
+                L.t("Pomodoro break", "Pomodoro বিরতি")
+        } else if (active) {
             val mode = Store.unlockMode(a)
             val target = Store.unlockTarget(a)
             if (mode == UNLOCK_LOC && target != null) {
@@ -541,6 +610,13 @@ class HomeScreen(private val a: MainActivity) {
                     )
                     previewText.text = L.t("Session in progress · ", "সেশন চলছে · ") + fmtDur(total)
                 }
+                if (pom.active && pom.phase == Pomodoro.PHASE_FOCUS) {
+                    subText.setTextAnimated(
+                        L.t("Pomodoro · Focus ${pom.round}/4", "Pomodoro · ফোকাস ${L.num(pom.round.toString())}/৪")
+                    )
+                    previewText.text = L.t("Session in progress · ", "সেশন চলছে · ") +
+                        L.t("Pomodoro focus ${pom.round}/4", "Pomodoro ফোকাস ${L.num(pom.round.toString())}/৪")
+                }
             }
         } else {
             val sel = a.selectedMin * 60_000L
@@ -571,19 +647,23 @@ class HomeScreen(private val a: MainActivity) {
             }
         }
         ring.invalidate()
-        showView(startBtn, !active)
+        showView(startBtn, !active && !pom.active)
         showView(stopBtn, active && !strict)
-        // location-only sessions have no timer to extend
-        showView(extendBtn, active && Store.unlockMode(a) != UNLOCK_LOC)
-        if (lastActive != active) {
+        // location-only sessions have no timer to extend; a Pomodoro phase must not be extended
+        showView(extendBtn, active && Store.unlockMode(a) != UNLOCK_LOC && !pom.active)
+        if (lastActive != active || lastPom != pom.active) {
             lastActive = active
+            lastPom = pom.active
             refreshChips()
             refreshModeChips()
         }
         updateWarnings()
         updateLastSummary()
         updateDetox()
+        updatePomodoro()
+        updateHabits()
         maybeShowSummary()
+        maybeShowBadge()
     }
 
     /** One line under the duration preview: what the last completed lock achieved. */
@@ -687,6 +767,200 @@ class HomeScreen(private val a: MainActivity) {
         }
     }
 
+    /** Pomodoro card: status label + start/stop buttons. Re-renders only when the phase changes. */
+    private fun updatePomodoro() {
+        val st = Pomodoro.state(a)
+        val sig = "${st.active}:${st.phase}:${st.round}"
+        if (sig == pomSig) return
+        pomSig = sig
+        when {
+            !st.active -> {
+                pomLabel.text = L.t(
+                    "25 min focus + 5 min break, 4 rounds, then a 15 min long break.",
+                    "২৫ মিনিট ফোকাস + ৫ মিনিট বিরতি, ৪ রাউন্ড, তারপর ১৫ মিনিটের লম্বা বিরতি।"
+                )
+                pomStartBtn.visibility = View.VISIBLE
+                pomStopBtn.visibility = View.GONE
+            }
+            st.phase == Pomodoro.PHASE_FOCUS -> {
+                pomLabel.text = L.t("Focus round ${st.round}/4 is running.", "ফোকাস রাউন্ড ${L.num(st.round.toString())}/৪ চলছে।")
+                pomStartBtn.visibility = View.GONE
+                pomStopBtn.visibility = View.GONE // use the main Stop button (with the code)
+            }
+            st.phase == Pomodoro.PHASE_LONG -> {
+                pomLabel.text = L.t("Long break — the set ends after this.", "লম্বা বিরতি চলছে — এর পর সেট শেষ।")
+                pomStartBtn.visibility = View.GONE
+                pomStopBtn.visibility = View.VISIBLE
+            }
+            else -> {
+                pomLabel.text = L.t(
+                    "Break — next: focus round ${st.round + 1}/4.",
+                    "বিরতি চলছে — পরের ফোকাস রাউন্ড ${L.num((st.round + 1).toString())}/৪।"
+                )
+                pomStartBtn.visibility = View.GONE
+                pomStopBtn.visibility = View.VISIBLE
+            }
+        }
+    }
+
+    private fun startPomodoro() {
+        if (Store.isActive(a) || Pomodoro.state(a).active) return
+        if (!Perm.accessibilityOn(a)) {
+            a.toast(L.t("Enable Accessibility first", "আগে Accessibility চালু করুন"))
+            return
+        }
+        a.dlg()
+            .setTitle(L.t("Start Pomodoro?", "পোমোডোরো শুরু করবেন?"))
+            .setMessage(
+                L.t(
+                    "4 focus rounds of 25 minutes with 5-minute breaks, then a 15-minute long break. Protection is on during focus rounds.",
+                    "২৫ মিনিটের ৪টা ফোকাস রাউন্ড, মাঝে ৫ মিনিটের বিরতি, শেষে ১৫ মিনিটের লম্বা বিরতি। ফোকাসের সময় প্রটেকশন চালু থাকবে।"
+                )
+            )
+            .setPositiveButton(L.t("Start", "শুরু করুন")) { _, _ ->
+                if (Pomodoro.start(a)) {
+                    a.toast(L.t("Pomodoro started — focus round 1", "পোমোডোরো শুরু — ফোকাস রাউন্ড ১"))
+                    tick()
+                }
+            }
+            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+            .show()
+    }
+
+    /** Habit checklist. Rebuilds only when the habits or today's checks change. */
+    private fun updateHabits() {
+        val habits = Store.habits(a)
+        val checks = Store.habitChecks(a)
+        val today = Store.dayKey(0)
+        val sig = habits.joinToString("|") { "${it.id}:${it.name}" } + "#" +
+            habits.joinToString("|") { if (today in (checks[it.id] ?: emptySet())) "1" else "0" }
+        if (sig == habitSig) return
+        habitSig = sig
+        habitBox.removeAllViews()
+        if (habits.isEmpty()) {
+            habitBox.addView(
+                a.tv(L.t("No habits yet. Add one below — e.g. drinking water, reading, exercise.", "এখনো কোনো অভ্যাস নেই। নিচে যোগ করুন — যেমন পানি খাওয়া, পড়া, ব্যায়াম।"), 13f, C.muted),
+                lp(MATCH, WRAP, t = a.dp(4))
+            )
+            return
+        }
+        for (h in habits) {
+            val done = today in (checks[h.id] ?: emptySet())
+            val streak = Store.habitStreak(a, h.id)
+            val r = LinearLayout(a)
+            r.gravity = Gravity.CENTER_VERTICAL
+            r.setPadding(0, a.dp(8), 0, a.dp(8))
+            val box = a.tv(if (done) "☑" else "☐", 22f, if (done) C.mint else C.muted, 1)
+            r.addView(box, lp(WRAP, WRAP, r = a.dp(12)))
+            val name = a.tv(h.name, 15f, if (done) C.mint else C.text, 1)
+            r.addView(name, lp(0, WRAP, weight = 1f))
+            if (streak > 0) {
+                r.addView(a.tv(L.num(streak.toString()) + " " + L.t("day streak", "দিনের স্ট্রিক"), 12f, C.muted))
+            }
+            r.pressFeedback()
+            r.setOnClickListener {
+                Store.toggleHabit(a, h.id)
+                updateHabits()
+            }
+            r.setOnLongClickListener {
+                habitOptionsDialog(h)
+                true
+            }
+            habitBox.addView(r)
+        }
+    }
+
+    private fun addHabitDialog() {
+        val et = a.edit(L.t("Habit name (e.g. Drink water)", "অভ্যাসের নাম (যেমন পানি খাওয়া)"), false)
+        val box = LinearLayout(a)
+        box.orientation = LinearLayout.VERTICAL
+        box.setPadding(a.dp(24), a.dp(8), a.dp(24), 0)
+        box.addView(et)
+        val d = a.dlg()
+            .setTitle(L.t("Add a habit", "অভ্যাস যোগ করুন"))
+            .setView(box)
+            .setPositiveButton(L.t("Add", "যোগ করুন"), null)
+            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+            .create()
+        d.show()
+        d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val name = et.text.toString().trim()
+            if (name.isEmpty()) {
+                et.error = L.t("Write a name", "নাম লিখুন")
+            } else {
+                Store.addHabit(a, name.take(40))
+                d.dismiss()
+                updateHabits()
+            }
+        }
+    }
+
+    private fun habitOptionsDialog(h: Habit) {
+        a.dlg()
+            .setTitle(h.name)
+            .setItems(
+                arrayOf(
+                    L.t("Rename", "নাম বদলান"),
+                    L.t("Delete", "মুছে ফেলুন")
+                )
+            ) { _, which ->
+                if (which == 0) renameHabitDialog(h) else deleteHabit(h)
+            }
+            .show()
+    }
+
+    private fun renameHabitDialog(h: Habit) {
+        val et = a.edit(L.t("Habit name", "অভ্যাসের নাম"), false)
+        et.setText(h.name)
+        val box = LinearLayout(a)
+        box.orientation = LinearLayout.VERTICAL
+        box.setPadding(a.dp(24), a.dp(8), a.dp(24), 0)
+        box.addView(et)
+        val d = a.dlg()
+            .setTitle(L.t("Rename habit", "অভ্যাসের নাম বদলান"))
+            .setView(box)
+            .setPositiveButton(L.t("Save", "সেভ করুন"), null)
+            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+            .create()
+        d.show()
+        d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val name = et.text.toString().trim()
+            if (name.isEmpty()) {
+                et.error = L.t("Write a name", "নাম লিখুন")
+            } else {
+                val list = Store.habits(a).map { if (it.id == h.id) it.copy(name = name.take(40)) else it }
+                Store.saveHabits(a, list)
+                d.dismiss()
+                updateHabits()
+            }
+        }
+    }
+
+    private fun deleteHabit(h: Habit) {
+        a.dlg()
+            .setTitle(L.t("Delete this habit?", "এই অভ্যাস মুছে ফেলবেন?"))
+            .setMessage(h.name)
+            .setPositiveButton(L.t("Delete", "মুছে ফেলুন")) { _, _ ->
+                Store.saveHabits(a, Store.habits(a).filter { it.id != h.id })
+                updateHabits()
+            }
+            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+            .show()
+    }
+
+    /** Shows the "new badge" dialog once, the first time Home ticks after one is earned. */
+    private fun maybeShowBadge() {
+        if (badgeShown) return
+        val b = Badges.pending(a) ?: return
+        badgeShown = true
+        Badges.clearPending(a)
+        a.dlg()
+            .setTitle(L.t("New badge!", "নতুন ব্যাজ!"))
+            .setMessage(L.t(b.titleEn, b.titleBn) + "\n" + L.t(b.descEn, b.descBn))
+            .setPositiveButton(L.t("Great!", "ভালো হয়েছে!"), null)
+            .show()
+    }
+
     private fun warnCard(icon: String, title: String, sub: String, onClick: () -> Unit): View {
         val c = a.card(12)
         c.background = rounded(Color.parseColor("#2A2415"), a.dp(18).toFloat(), C.warn, a.dp(1))
@@ -742,6 +1016,7 @@ class HomeScreen(private val a: MainActivity) {
 
     private fun onStart() {
         if (Store.isActive(a)) return
+        if (Pomodoro.state(a).active) return
         if (!Perm.accessibilityOn(a)) {
             a.toast(L.t("Enable Accessibility first", "আগে Accessibility চালু করুন"))
             return
@@ -899,6 +1174,7 @@ class HomeScreen(private val a: MainActivity) {
 
     private fun customDialog() {
         if (Store.isActive(a)) return
+        if (Pomodoro.state(a).active) return
         if (unlockMode() == UNLOCK_LOC) return
         val box = LinearLayout(a)
         box.orientation = LinearLayout.VERTICAL
@@ -1112,6 +1388,11 @@ class ScheduleScreen(private val a: MainActivity) {
 // STATISTICS
 // =====================================================================
 class StatsScreen(private val a: MainActivity) {
+    private var calOffset = 0 // months back from the current month (0..-3)
+    private lateinit var calGrid: LinearLayout
+    private lateinit var calLabel: TextView
+    private lateinit var calDetail: TextView
+
     fun build(): View {
         Store.finalizeIfExpired(a)
         val (sv, col) = a.page()
@@ -1203,6 +1484,89 @@ class StatsScreen(private val a: MainActivity) {
         }
         col.addView(focus7, lp(MATCH, WRAP, b = a.dp(14)))
 
+        // milestone badges: earned in colour with the date, unearned greyed out
+        val badgeCard = a.card()
+        badgeCard.addView(a.section(L.t("Badges", "ব্যাজ")))
+        val earned = Badges.earned(a)
+        val badgeDefs = Badges.ALL
+        for (rowIdx in badgeDefs.indices step 2) {
+            val row = LinearLayout(a)
+            row.orientation = LinearLayout.HORIZONTAL
+            for (j in 0 until 2) {
+                val def = badgeDefs.getOrNull(rowIdx + j)
+                val cell = LinearLayout(a)
+                cell.orientation = LinearLayout.VERTICAL
+                cell.gravity = Gravity.CENTER_HORIZONTAL
+                cell.background = rounded(C.card2, a.dp(14).toFloat())
+                cell.setPadding(a.dp(10), a.dp(12), a.dp(10), a.dp(12))
+                if (def != null) {
+                    val whenMs = earned[def.id]
+                    val got = whenMs != null
+                    cell.alpha = if (got) 1f else 0.45f
+                    cell.addView(IconView(a, def.icon, if (got) C.mint else C.muted), lp(a.dp(30), a.dp(30)))
+                    val t = a.tv(L.t(def.titleEn, def.titleBn), 13f, if (got) C.text else C.muted, 1)
+                    t.gravity = Gravity.CENTER
+                    cell.addView(t, lp(MATCH, WRAP, t = a.dp(6)))
+                    val d = a.tv(L.t(def.descEn, def.descBn), 11f, C.muted)
+                    d.gravity = Gravity.CENTER
+                    cell.addView(d, lp(MATCH, WRAP, t = a.dp(2)))
+                    val s = a.tv(
+                        if (got) fmtDate(whenMs ?: 0L) else L.t("Not earned yet", "এখনো পাননি"),
+                        11f, if (got) C.primary else C.muted, 1
+                    )
+                    s.gravity = Gravity.CENTER
+                    cell.addView(s, lp(MATCH, WRAP, t = a.dp(4)))
+                }
+                row.addView(cell, lp(0, MATCH, r = if (j == 0) a.dp(10) else 0, t = a.dp(10), weight = 1f))
+            }
+            badgeCard.addView(row)
+        }
+        col.addView(badgeCard, lp(MATCH, WRAP, b = a.dp(14)))
+
+        // lock calendar: a dot on every day a lock was completed
+        val calCard = a.card()
+        calCard.addView(a.section(L.t("Lock calendar", "লক ক্যালেন্ডার")))
+        val navRow = LinearLayout(a)
+        navRow.gravity = Gravity.CENTER_VERTICAL
+        val prevBtn = a.tv("‹", 28f, C.primary, 1)
+        prevBtn.setPadding(a.dp(12), 0, a.dp(12), 0)
+        prevBtn.setOnClickListener {
+            if (calOffset > -3) {
+                calOffset--
+                buildCalendar()
+            }
+        }
+        val nextBtn = a.tv("›", 28f, C.primary, 1)
+        nextBtn.setPadding(a.dp(12), 0, a.dp(12), 0)
+        nextBtn.setOnClickListener {
+            if (calOffset < 0) {
+                calOffset++
+                buildCalendar()
+            }
+        }
+        calLabel = a.tv("", 16f, C.text, 1)
+        calLabel.gravity = Gravity.CENTER
+        navRow.addView(prevBtn)
+        navRow.addView(calLabel, lp(0, WRAP, weight = 1f))
+        navRow.addView(nextBtn)
+        calCard.addView(navRow, lp(MATCH, WRAP, t = a.dp(8)))
+        // weekday header, Monday first
+        val headRow = LinearLayout(a)
+        for (i in 0 until 7) {
+            val h = a.tv(L.dayShort(i), 12f, C.muted, 1)
+            h.gravity = Gravity.CENTER
+            headRow.addView(h, lp(0, WRAP, weight = 1f))
+        }
+        calCard.addView(headRow, lp(MATCH, WRAP, t = a.dp(10)))
+        calGrid = LinearLayout(a)
+        calGrid.orientation = LinearLayout.VERTICAL
+        calCard.addView(calGrid, lp(MATCH, WRAP, t = a.dp(4)))
+        calDetail = a.tv("", 13f, C.muted)
+        calDetail.gravity = Gravity.CENTER
+        calCard.addView(calDetail, lp(MATCH, WRAP, t = a.dp(10)))
+        col.addView(calCard, lp(MATCH, WRAP, b = a.dp(14)))
+        buildCalendar()
+
         // today's app usage (from the daily-limits tracker): most-used first.
         // Tapping a row opens its daily-limit setting.
         val usageCard = a.card()
@@ -1287,7 +1651,11 @@ class StatsScreen(private val a: MainActivity) {
                 val left = LinearLayout(a)
                 left.orientation = LinearLayout.VERTICAL
                 left.addView(a.tv(fmtDate(s.start) + " · " + fmtClock(s.start), 14f, C.text, 1))
-                val src = if (s.src == "schedule") L.t("Scheduled", "সময়সূচি") else L.t("Manual", "ম্যানুয়াল")
+                val src = when (s.src) {
+                    "schedule" -> L.t("Scheduled", "সময়সূচি")
+                    "pomodoro" -> "Pomodoro"
+                    else -> L.t("Manual", "ম্যানুয়াল")
+                }
                 val state = if (s.ok) L.t("Completed", "সম্পন্ন") else L.t("Stopped early", "আগেই বন্ধ")
                 left.addView(a.tv("$src · $state", 12f, C.muted))
                 r.addView(left, lp(0, WRAP, weight = 1f))
@@ -1297,6 +1665,61 @@ class StatsScreen(private val a: MainActivity) {
         }
         col.addView(hist)
         return sv
+    }
+
+    /** Rebuilds the month grid for the current [calOffset]. */
+    private fun buildCalendar() {
+        val focus = Store.focusDayMap(a)
+        val c = Calendar.getInstance()
+        c.add(Calendar.MONTH, calOffset)
+        val year = c.get(Calendar.YEAR)
+        val month = c.get(Calendar.MONTH)
+        calLabel.text = L.month(month) + " " + L.num(year.toString())
+        calGrid.removeAllViews()
+        val first = Calendar.getInstance()
+        first.set(year, month, 1)
+        val daysInMonth = first.getActualMaximum(Calendar.DAY_OF_MONTH)
+        val lead = (first.get(Calendar.DAY_OF_WEEK) + 5) % 7 // blank cells before the 1st (Monday first)
+        val todayKey = Store.dayKey(0)
+        var day = 1
+        while (day <= daysInMonth) {
+            val row = LinearLayout(a)
+            row.orientation = LinearLayout.HORIZONTAL
+            for (col in 0 until 7) {
+                val cell = LinearLayout(a)
+                cell.orientation = LinearLayout.VERTICAL
+                cell.gravity = Gravity.CENTER_HORIZONTAL
+                cell.setPadding(0, a.dp(5), 0, a.dp(5))
+                if ((day == 1 && col < lead) || day > daysInMonth) {
+                    // blank cell
+                } else {
+                    val key = String.format(Locale.US, "%04d%02d%02d", year, month + 1, day)
+                    val min = focus[key] ?: 0
+                    val isToday = key == todayKey
+                    if (isToday) cell.background = rounded(C.card2, a.dp(10).toFloat())
+                    val num = a.tv(L.num(day.toString()), 14f, if (min > 0) C.mint else C.text, if (min > 0 || isToday) 1 else 0)
+                    num.gravity = Gravity.CENTER
+                    cell.addView(num, lp(MATCH, WRAP))
+                    val dot = a.tv(if (min > 0) "●" else "", 8f, C.primary, 1)
+                    dot.gravity = Gravity.CENTER
+                    cell.addView(dot, lp(MATCH, WRAP))
+                    val d = day
+                    val m = min
+                    cell.pressFeedback()
+                    cell.setOnClickListener {
+                        calDetail.text = if (m > 0) {
+                            L.num(d.toString()) + " " + L.month(month) + ": " + fmtDur(m * 60000L) + " " + L.t("focus", "ফোকাস")
+                        } else {
+                            L.num(d.toString()) + " " + L.month(month) + ": " + L.t("no completed lock", "কোনো লক সম্পন্ন হয়নি")
+                        }
+                    }
+                    day++
+                }
+                row.addView(cell, lp(0, WRAP, weight = 1f))
+            }
+            calGrid.addView(row)
+        }
+        calDetail.text = L.t("Tap a day to see its focus time", "ফোকাস সময় দেখতে দিনে চাপুন")
     }
 }
 

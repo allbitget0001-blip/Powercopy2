@@ -1,7 +1,10 @@
 package com.powerlock.app
 
 import android.app.AlarmManager
+import android.app.Notification
+import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -84,6 +87,15 @@ const val UNLOCK_EITHER = "either"
 
 /** Destination that ends a location-unlock session when the device arrives within [radius] metres. */
 data class UnlockTarget(val lat: Double, val lng: Double, val radius: Int, val name: String)
+
+/** Pomodoro state: which phase of the set is running and when it ends. */
+data class PomState(val active: Boolean, val round: Int, val phase: String, val phaseEnd: Long, val phaseTotal: Long)
+
+/** One milestone badge: earned once, shown with the date it was earned. */
+data class BadgeDef(val id: String, val icon: Ic, val titleEn: String, val titleBn: String, val descEn: String, val descBn: String)
+
+/** A daily habit: checked off once a day, with a consecutive-day streak. */
+data class Habit(val id: Long, val name: String, val created: Long)
 
 // ---------- formatting helpers ----------
 
@@ -382,6 +394,7 @@ object Store {
     fun stopSession(ctx: Context, force: Boolean = false) {
         if (!isActive(ctx)) return
         if (!force && lock(ctx).getBoolean("s_strict", false)) return
+        Pomodoro.clearState(ctx) // an early stop ends any running Pomodoro set too
         val p = lock(ctx)
         val now = System.currentTimeMillis()
         val start = p.getLong("start", now)
@@ -610,6 +623,7 @@ object Store {
         lock(ctx).edit().putString("sessions", arr.toString()).apply()
         if (s.ok) recordFocus(ctx, s)
         if (s.ok) saveSessionSummary(ctx, s)
+        if (s.ok) Badges.check(ctx)
     }
 
     /** The last completed lock's summary (duration + blocks fired in its window),
@@ -777,6 +791,102 @@ object Store {
         if (start.isNotEmpty()) lock(ctx).edit().putString("detox_celebrated", start).apply()
     }
 
+    // ----- habit tracker -----
+
+    /** All habits, in creation order. */
+    fun habits(ctx: Context): List<Habit> {
+        val out = ArrayList<Habit>()
+        try {
+            val arr = JSONArray(settings(ctx).getString("habits", "[]"))
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                out.add(Habit(o.getLong("id"), o.getString("n"), o.optLong("c", 0)))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "habits read failed", e)
+        }
+        return out
+    }
+
+    fun saveHabits(ctx: Context, list: List<Habit>) {
+        val arr = JSONArray()
+        for (h in list) {
+            val o = JSONObject()
+            o.put("id", h.id)
+            o.put("n", h.name)
+            o.put("c", h.created)
+            arr.put(o)
+        }
+        settings(ctx).edit().putString("habits", arr.toString()).apply()
+    }
+
+    fun addHabit(ctx: Context, name: String) {
+        val list = habits(ctx).toMutableList()
+        list.add(Habit(System.currentTimeMillis(), name, System.currentTimeMillis()))
+        saveHabits(ctx, list)
+    }
+
+    /** Day keys ("yyyyMMdd") each habit was checked, keyed by habit id. */
+    fun habitChecks(ctx: Context): Map<Long, Set<String>> {
+        val out = HashMap<Long, Set<String>>()
+        try {
+            val obj = JSONObject(settings(ctx).getString("habit_checks", "{}"))
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                val set = HashSet<String>()
+                val arr = obj.getJSONArray(k)
+                for (i in 0 until arr.length()) set.add(arr.getString(i))
+                out[k.toLong()] = set
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "habit checks read failed", e)
+        }
+        return out
+    }
+
+    private fun saveHabitChecks(ctx: Context, map: Map<Long, Set<String>>) {
+        val obj = JSONObject()
+        for ((id, days) in map) {
+            val arr = JSONArray()
+            for (d in days.sorted().takeLast(365)) arr.put(d)
+            obj.put(id.toString(), arr)
+        }
+        settings(ctx).edit().putString("habit_checks", obj.toString()).apply()
+    }
+
+    /** Toggles today's check for one habit. */
+    fun toggleHabit(ctx: Context, id: Long) {
+        val map = habitChecks(ctx).mapValues { it.value.toMutableSet() }.toMutableMap()
+        val set = map.getOrPut(id) { HashSet() }
+        val today = dayKey(0)
+        if (today in set) set.remove(today) else set.add(today)
+        saveHabitChecks(ctx, map)
+    }
+
+    /** Consecutive days checked, ending today or yesterday. */
+    fun habitStreak(ctx: Context, id: Long): Int {
+        val set = habitChecks(ctx)[id] ?: return 0
+        fun has(daysAgo: Int) = dayKey(daysAgo) in set
+        if (!has(0) && !has(1)) return 0
+        var streak = 0
+        var i = if (has(0)) 0 else 1
+        while (has(i)) {
+            streak++
+            i++
+        }
+        return streak
+    }
+
+    /** Lifetime block count (the attempts list is capped at 1000): seeded once from the list. */
+    fun totalBlocks(ctx: Context): Long {
+        val p = lock(ctx)
+        if (!p.contains("blocks_total")) {
+            p.edit().putLong("blocks_total", Extra.attempts(ctx).size.toLong()).apply()
+        }
+        return p.getLong("blocks_total", 0)
+    }
+
     fun dayStart(ms: Long, offsetDays: Int): Long {
         val c = Calendar.getInstance()
         c.timeInMillis = ms
@@ -835,5 +945,235 @@ object Store {
             arr.put(o)
         }
         settings(ctx).edit().putString("schedules", arr.toString()).apply()
+    }
+}
+
+// ---------- Pomodoro ----------
+
+/**
+ * Pomodoro sets: 25 min focus (normal lock on) + 5 min break (lock off),
+ * 4 focus rounds, then a 15 min long break and the set ends. The phase is
+ * stored in prefs (phase + round + phase-end), so a restart or a dead
+ * service never loses the set — sync() recomputes from the stored end time.
+ * Focus intervals reuse the normal lock (Store.startSession/finalize), so
+ * they count toward streaks and focus totals like any completed lock.
+ */
+object Pomodoro {
+    const val PHASE_FOCUS = "focus"
+    const val PHASE_BREAK = "break"
+    const val PHASE_LONG = "longbreak"
+    const val FOCUS_MS = 25 * 60_000L
+    const val BREAK_MS = 5 * 60_000L
+    const val LONG_MS = 15 * 60_000L
+    const val ROUNDS = 4
+
+    fun state(ctx: Context): PomState {
+        val p = Store.lock(ctx)
+        if (!p.getBoolean("pom_active", false)) return PomState(false, 0, PHASE_FOCUS, 0, 0)
+        return PomState(
+            true,
+            p.getInt("pom_round", 1),
+            p.getString("pom_phase", PHASE_FOCUS) ?: PHASE_FOCUS,
+            p.getLong("pom_phase_end", 0),
+            p.getLong("pom_phase_total", FOCUS_MS)
+        )
+    }
+
+    private fun saveState(ctx: Context, round: Int, phase: String, end: Long, total: Long) {
+        Store.lock(ctx).edit()
+            .putBoolean("pom_active", true)
+            .putInt("pom_round", round)
+            .putString("pom_phase", phase)
+            .putLong("pom_phase_end", end)
+            .putLong("pom_phase_total", total)
+            .apply()
+    }
+
+    /** Clears the set without touching any running session (used on early stops). */
+    fun clearState(ctx: Context) {
+        Store.lock(ctx).edit()
+            .remove("pom_active").remove("pom_round").remove("pom_phase")
+            .remove("pom_phase_end").remove("pom_phase_total")
+            .apply()
+    }
+
+    /** Starts a set with focus round 1. False when a lock is already running. */
+    fun start(ctx: Context): Boolean {
+        if (Store.isActive(ctx)) return false
+        if (state(ctx).active) return false
+        val now = System.currentTimeMillis()
+        if (!Store.startSession(ctx, FOCUS_MS, "pomodoro")) return false
+        saveState(ctx, 1, PHASE_FOCUS, now + FOCUS_MS, FOCUS_MS)
+        return true
+    }
+
+    /**
+     * Ends the set. During a focus round this also stops the session (the
+     * normal early-stop path); strict mode blocks it, like a manual stop.
+     * Returns false when strict mode refused.
+     */
+    fun cancel(ctx: Context): Boolean {
+        if (Store.isStrict(ctx)) return false
+        val st = state(ctx)
+        clearState(ctx)
+        if (st.active && st.phase == PHASE_FOCUS) Store.stopSession(ctx)
+        return true
+    }
+
+    /**
+     * Advances the set when the current phase is over. Called from the Home
+     * tick (1 s), the service heartbeat (60 s) and the Watchdog (15 min), so
+     * phases turn over even with the app closed. One transition per call —
+     * the next call advances again if several phases were missed.
+     */
+    @Synchronized
+    fun sync(ctx: Context) {
+        try {
+            val st = state(ctx)
+            if (!st.active) return
+            val now = System.currentTimeMillis()
+            if (now < st.phaseEnd) return
+            when (st.phase) {
+                PHASE_FOCUS -> {
+                    // the focus session ends now: record it as a completed lock
+                    Store.finalizeIfExpired(ctx)
+                    if (st.round >= ROUNDS) {
+                        saveState(ctx, st.round, PHASE_LONG, now + LONG_MS, LONG_MS)
+                        notifyPhase(
+                            ctx,
+                            L.t("Long break", "লম্বা বিরতি"),
+                            L.t("All 4 focus rounds are done. Take a 15-minute break!", "৪ রাউন্ড ফোকাস শেষ! ১৫ মিনিটের লম্বা বিরতি নিন।")
+                        )
+                    } else {
+                        saveState(ctx, st.round, PHASE_BREAK, now + BREAK_MS, BREAK_MS)
+                        notifyPhase(
+                            ctx,
+                            L.t("Break time", "বিরতি"),
+                            L.t("Focus round ${st.round} done. 5-minute break!", "ফোকাস রাউন্ড ${st.round} শেষ। ৫ মিনিটের বিরতি!")
+                        )
+                    }
+                }
+                PHASE_BREAK -> {
+                    val next = st.round + 1
+                    if (!Store.startSession(ctx, FOCUS_MS, "pomodoro")) {
+                        // the user started something else during the break: the set ends
+                        clearState(ctx)
+                        return
+                    }
+                    saveState(ctx, next, PHASE_FOCUS, now + FOCUS_MS, FOCUS_MS)
+                    notifyPhase(
+                        ctx,
+                        L.t("Focus round $next", "ফোকাস রাউন্ড $next"),
+                        L.t("Break over — protection is on again.", "বিরতি শেষ — প্রটেকশন আবার চালু।")
+                    )
+                }
+                else -> { // long break over: the set is complete
+                    clearState(ctx)
+                    notifyPhase(
+                        ctx,
+                        L.t("Pomodoro complete!", "Pomodoro সম্পন্ন!"),
+                        L.t("Great work — the full set is done.", "দারুণ হয়েছে — পুরো সেট শেষ!")
+                    )
+                }
+            }
+            LockWidget.refresh(ctx)
+            Store.kickService(ctx)
+        } catch (e: Exception) {
+            Log.e(TAG, "pomodoro sync failed", e)
+        }
+    }
+
+    private fun notifyPhase(ctx: Context, title: String, text: String) {
+        try {
+            val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.createNotificationChannel(NotificationChannel("powerlock_done", "Session finished", NotificationManager.IMPORTANCE_HIGH))
+            nm.createNotificationChannel(NotificationChannel("powerlock_done_quiet", "Session finished (quiet)", NotificationManager.IMPORTANCE_LOW))
+            val channel = if (Store.soundVib(ctx)) "powerlock_done" else "powerlock_done_quiet"
+            val pi = PendingIntent.getActivity(ctx, 0, Intent(ctx, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+            val nb = Notification.Builder(ctx, channel)
+                .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setAutoCancel(true)
+                .setContentIntent(pi)
+            nm.notify(5, nb.build())
+        } catch (e: Exception) {
+            Log.e(TAG, "pomodoro notify failed", e)
+        }
+    }
+}
+
+// ---------- milestone badges ----------
+
+object Badges {
+    val ALL = listOf(
+        BadgeDef("first_lock", Ic.CHECK, "First lock", "প্রথম লক", "Complete your first lock", "প্রথম লক সম্পন্ন করুন"),
+        BadgeDef("streak_7", Ic.CAL, "7-day streak", "৭ দিনের স্ট্রিক", "Lock every day for 7 days", "টানা ৭ দিন প্রতিদিন লক করুন"),
+        BadgeDef("streak_30", Ic.CAL, "30-day streak", "৩০ দিনের স্ট্রিক", "Lock every day for 30 days", "টানা ৩০ দিন প্রতিদিন লক করুন"),
+        BadgeDef("locks_10", Ic.LOCK, "10 locks", "১০টা লক", "Complete 10 locks", "১০টা লক সম্পন্ন করুন"),
+        BadgeDef("locks_50", Ic.LOCK, "50 locks", "৫০টা লক", "Complete 50 locks", "৫০টা লক সম্পন্ন করুন"),
+        BadgeDef("focus_100h", Ic.CLOCK, "100 hours", "১০০ ঘণ্টা", "100 hours of total focus", "মোট ১০০ ঘণ্টা ফোকাস"),
+        BadgeDef("detox_done", Ic.SHIELD, "Detox champion", "ডিটক্স চ্যাম্পিয়ন", "Complete a 7-day detox challenge", "৭ দিনের ডিটক্স চ্যালেঞ্জ সম্পন্ন করুন"),
+        BadgeDef("blocks_1000", Ic.BARS, "1000 blocks", "১০০০ বার ব্লক", "1000 blocked attempts", "১০০০ বার ব্লক হয়েছে")
+    )
+
+    fun byId(id: String): BadgeDef? = ALL.firstOrNull { it.id == id }
+
+    /** Earned badges: id → timestamp earned. */
+    fun earned(ctx: Context): Map<String, Long> {
+        val out = HashMap<String, Long>()
+        try {
+            val obj = JSONObject(Store.lock(ctx).getString("badges", "{}"))
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                out[k] = obj.getLong(k)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "badges read failed", e)
+        }
+        return out
+    }
+
+    /** Awards a badge the first time it is earned; sets the one-time dialog flag. */
+    fun award(ctx: Context, id: String): Boolean {
+        val got = earned(ctx)
+        if (got.containsKey(id)) return false
+        try {
+            val obj = JSONObject(Store.lock(ctx).getString("badges", "{}"))
+            obj.put(id, System.currentTimeMillis())
+            Store.lock(ctx).edit().putString("badges", obj.toString()).putString("badge_pending", id).apply()
+            return true
+        } catch (e: Exception) {
+            Log.e(TAG, "badge award failed", e)
+            return false
+        }
+    }
+
+    /** Checks every lock-completion milestone. Called whenever a lock completes. */
+    fun check(ctx: Context) {
+        try {
+            val fs = Store.focusStats(ctx)
+            if (fs.completed >= 1) award(ctx, "first_lock")
+            if (fs.streak >= 7) award(ctx, "streak_7")
+            if (fs.streak >= 30) award(ctx, "streak_30")
+            if (fs.completed >= 10) award(ctx, "locks_10")
+            if (fs.completed >= 50) award(ctx, "locks_50")
+            if (fs.totalMin >= 6000) award(ctx, "focus_100h")
+            if (Store.detoxState(ctx).mode == "done") award(ctx, "detox_done")
+            if (Store.totalBlocks(ctx) >= 1000) award(ctx, "blocks_1000")
+        } catch (e: Exception) {
+            Log.e(TAG, "badge check failed", e)
+        }
+    }
+
+    /** A freshly earned badge waiting for its one-time dialog, or null. */
+    fun pending(ctx: Context): BadgeDef? {
+        val id = Store.lock(ctx).getString("badge_pending", null) ?: return null
+        return byId(id)
+    }
+
+    fun clearPending(ctx: Context) {
+        Store.lock(ctx).edit().remove("badge_pending").apply()
     }
 }

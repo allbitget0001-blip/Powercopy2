@@ -13,7 +13,8 @@ class BootReceiver : BroadcastReceiver() {
             Scheduler.onAlarm(context)
             Watchdog.enqueue(context) // safety net: restart the service every 15 min if it dies
             // the location lock has no session, so it must restart the service too
-            if (Store.isActive(context) || Store.isLocProtecting(context)) Store.kickService(context)
+            // (a Pomodoro break has no session either — the service advances its phases)
+            if (Store.isActive(context) || Store.isLocProtecting(context) || Pomodoro.state(context).active) Store.kickService(context)
         } catch (e: Exception) {
             Log.e(TAG, "BootReceiver failed", e)
         }

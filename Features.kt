@@ -74,7 +74,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "49"
+    const val BUILD_ID = "50"
 
     // ---------- presets ----------
 
@@ -156,7 +156,10 @@ object Extra {
             o.put("t", now)
             o.put("k", kind)
             out.put(o)
-            p.edit().putString("attempts", out.toString()).apply()
+            // lifetime block counter (the attempts list is capped at 1000): seeds once from the list
+            val total = if (p.contains("blocks_total")) p.getLong("blocks_total", 0) else old.length().toLong()
+            p.edit().putString("attempts", out.toString()).putLong("blocks_total", total + 1).apply()
+            if (total + 1 == 1000L) Badges.award(ctx, "blocks_1000")
         } catch (e: Exception) {
             Log.e(TAG, "logAttempt failed", e)
         }
