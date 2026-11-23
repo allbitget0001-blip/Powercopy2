@@ -9,8 +9,8 @@ import android.view.View
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** One finished tree in the garden: when it ended, how long the lock ran, its final stage, alive or withered. */
-data class GardenTree(val endMs: Long, val durMin: Int, val stage: Int, val alive: Boolean)
+/** One finished tree in the garden: when it ended, how long the lock ran, its final stage, alive or withered, and its species. */
+data class GardenTree(val endMs: Long, val durMin: Int, val stage: Int, val alive: Boolean, val species: String = "classic")
 
 /**
  * Focus tree: a seed is planted when a normal lock starts; it grows as the
@@ -74,7 +74,7 @@ object FocusTree {
         val start = p.getLong("start", endMs)
         val durMin = ((endMs - start) / 60000L).toInt().coerceAtLeast(0)
         val list = garden(ctx).toMutableList()
-        list.add(0, GardenTree(endMs, durMin, stage, alive))
+        list.add(0, GardenTree(endMs, durMin, stage, alive, TreeSpecies.selected(ctx)))
         val trimmed = if (list.size > MAX_GARDEN) list.subList(0, MAX_GARDEN) else list
         val arr = JSONArray()
         for (t in trimmed) {
@@ -83,6 +83,7 @@ object FocusTree {
             o.put("d", t.durMin)
             o.put("s", t.stage)
             o.put("a", t.alive)
+            o.put("sp", t.species)
             arr.put(o)
         }
         p.edit()
@@ -99,7 +100,7 @@ object FocusTree {
             val arr = JSONArray(Store.lock(ctx).getString("garden", "[]"))
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
-                out.add(GardenTree(o.getLong("e"), o.getInt("d"), o.getInt("s"), o.getBoolean("a")))
+                out.add(GardenTree(o.getLong("e"), o.getInt("d"), o.getInt("s"), o.getBoolean("a"), o.optString("sp", "classic")))
             }
         } catch (e: Exception) {
             Log.e(TAG, "garden read failed", e)
@@ -119,6 +120,7 @@ object FocusTree {
 /**
  * Draws a tree on a Canvas: seed → sprout → sapling → young tree → full tree.
  * [frac] 0..1 grows it continuously; [alive] false draws it withered and grey.
+ * [species] recolours the leaves (classic follows the theme accent).
  * No image assets needed; colours follow the theme accent.
  */
 class TreeView(ctx: Context) : View(ctx) {
@@ -127,6 +129,7 @@ class TreeView(ctx: Context) : View(ctx) {
             field = v.coerceIn(0f, 1f)
         }
     var alive: Boolean = true
+    var species: String = "classic"
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
@@ -137,6 +140,11 @@ class TreeView(ctx: Context) : View(ctx) {
         val cx = w / 2f
         val groundY = h * 0.88f
         val f = frac
+        // species leaf colours (classic = the theme accent)
+        val sp = TreeSpecies.byId(species)
+        val leafDark = sp?.dark?.let { Color.parseColor(it) } ?: Color.parseColor("#0E7A4F")
+        val leafMid = sp?.mid?.let { Color.parseColor(it) } ?: C.primary
+        val leafLight = sp?.light?.let { Color.parseColor(it) } ?: C.mint
 
         // ground mound
         paint.style = Paint.Style.FILL
@@ -190,21 +198,21 @@ class TreeView(ctx: Context) : View(ctx) {
         paint.style = Paint.Style.FILL
         if (f < 0.4f) {
             val r = w * (0.05f + 0.05f * f)
-            paint.color = C.primary
+            paint.color = leafMid
             canvas.drawCircle(cx - r * 0.8f, trunkTop - r * 0.4f, r, paint)
-            paint.color = C.mint
+            paint.color = leafLight
             canvas.drawCircle(cx + r * 0.8f, trunkTop - r * 0.4f, r, paint)
             return
         }
         // canopy: overlapping circles, growing with f
         val cr = w * (0.10f + 0.17f * f)
         val cy = trunkTop - cr * 0.35f
-        paint.color = Color.parseColor("#0E7A4F")
+        paint.color = leafDark
         canvas.drawCircle(cx, cy - cr * 0.35f, cr * 0.95f, paint)
-        paint.color = C.primary
+        paint.color = leafMid
         canvas.drawCircle(cx - cr * 0.75f, cy + cr * 0.25f, cr * 0.8f, paint)
         canvas.drawCircle(cx + cr * 0.75f, cy + cr * 0.25f, cr * 0.8f, paint)
-        paint.color = C.mint
+        paint.color = leafLight
         canvas.drawCircle(cx - cr * 0.3f, cy - cr * 0.5f, cr * 0.45f, paint)
     }
 }

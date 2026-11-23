@@ -179,6 +179,8 @@ object Routine {
                 val penExists = tasksToday(ctx).any { it.id == penId }
                 if (id == penId || !penExists) Store.finalizePenalty(ctx)
             }
+            // the whole day's routine is done → a bonus wheel spin (once a day)
+            LuckyWheel.onRoutineComplete(ctx)
         }
         rescheduleAlarms(ctx)
     }
@@ -265,7 +267,7 @@ object Routine {
                 continue
             }
             val done = doneIds(ctx, Store.dayKey(i))
-            if (tasks.all { it.id in done }) {
+            if (tasks.all { it.id in done } || StreakProtection.isRoutineProtected(ctx, Store.dayKey(i))) {
                 streak++
                 i++
             } else break

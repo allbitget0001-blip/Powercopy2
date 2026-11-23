@@ -24,6 +24,7 @@ object FocusSound {
     const val WHITE = "white"
     const val BROWN = "brown"
     const val RAIN = "rain"
+    const val OCEAN = "ocean" // wheel-only: unlocked from the lucky wheel
 
     fun choice(ctx: Context): String = Store.settings(ctx).getString("focus_sound", OFF) ?: OFF
 
@@ -35,6 +36,7 @@ object FocusSound {
         WHITE -> L.t("White noise", "হোয়াইট নয়েজ")
         BROWN -> L.t("Brown noise", "ব্রাউন নয়েজ")
         RAIN -> L.t("Rain", "বৃষ্টি")
+        OCEAN -> L.t("Ocean waves", "সমুদ্রের ঢেউ")
         else -> L.t("Off", "বন্ধ")
     }
 
@@ -194,6 +196,13 @@ object FocusSound {
                             phase += 2.0 * PI * 0.09 / RATE
                             val lfo = 0.75f + 0.25f * sin(phase).toFloat()
                             (lp * 2.2f * lfo).coerceIn(-1f, 1f)
+                        }
+                        OCEAN -> {
+                            // deep low-passed noise + a slow swell (waves rolling in)
+                            lp += 0.06f * (w - lp)
+                            phase += 2.0 * PI * 0.08 / RATE
+                            val swell = 0.55f + 0.45f * sin(phase).toFloat()
+                            (lp * 3.0f * swell).coerceIn(-1f, 1f)
                         }
                         else -> w * 0.5f // white, gentler
                     }

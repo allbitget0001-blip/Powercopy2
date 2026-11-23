@@ -57,6 +57,18 @@ class HomeScreen(private val a: MainActivity) {
     private lateinit var treeView: TreeView
     private lateinit var treeLabel: TextView
     private var treeSig = ""
+    private lateinit var animalsRow: LinearLayout
+    private var animalsSig = ""
+    private lateinit var petView: PetView
+    private lateinit var petNameText: TextView
+    private lateinit var petMoodText: TextView
+    private lateinit var petBar: BarView
+    private var petSig = ""
+    private lateinit var storySubText: TextView
+    private var storySig = ""
+    private lateinit var wheelSpinsText: TextView
+    private lateinit var wheelBtn: TextView
+    private var wheelSig = ""
     private lateinit var xpTitleText: TextView
     private lateinit var xpSubText: TextView
     private lateinit var xpBar: BarView
@@ -176,7 +188,49 @@ class HomeScreen(private val a: MainActivity) {
         treeLabel = a.tv("", 13f, C.muted)
         treeLabel.gravity = Gravity.CENTER
         treeCard.addView(treeLabel, lp(MATCH, WRAP, t = a.dp(6)))
+        // garden animals living by the tree (small, newest first)
+        animalsRow = LinearLayout(a)
+        animalsRow.gravity = Gravity.CENTER
+        treeCard.addView(animalsRow, lp(MATCH, WRAP, t = a.dp(4)))
+        // tap the tree card to pick a species (won from the lucky wheel)
+        treeCard.setOnClickListener { speciesDialog() }
+        treeCard.pressFeedback()
         col.addView(treeCard, lp(MATCH, WRAP, t = a.dp(16)))
+
+        // ---- focus pet: happier with every completed lock, sadder when one breaks ----
+        val petCard = a.card(20)
+        petNameText = a.tv("", 18f, C.text, 1)
+        petCard.addView(petNameText)
+        petView = PetView(a)
+        petCard.addView(petView, lp(MATCH, a.dp(140), t = a.dp(4)))
+        petMoodText = a.tv("", 13f, C.muted)
+        petMoodText.gravity = Gravity.CENTER
+        petCard.addView(petMoodText, lp(MATCH, WRAP, t = a.dp(4)))
+        petBar = BarView(a)
+        petCard.addView(petBar, lp(MATCH, a.dp(10), t = a.dp(8)))
+        // tap the pet to rename it
+        petCard.setOnClickListener { renamePetDialog() }
+        petCard.pressFeedback()
+        col.addView(petCard, lp(MATCH, WRAP, t = a.dp(16)))
+
+        // ---- story: one chapter unlocks per completed lock ----
+        val storyCard = a.card(20)
+        storyCard.addView(a.tv(L.t("Story — The Lantern of the Quiet Forest", "গল্প — নীরব বনের লণ্ঠন"), 18f, C.text, 1))
+        storySubText = a.tv("", 13f, C.muted)
+        storyCard.addView(storySubText, lp(MATCH, WRAP, t = a.dp(6)))
+        storyCard.setOnClickListener { Story.showReader(a) }
+        storyCard.pressFeedback()
+        col.addView(storyCard, lp(MATCH, WRAP, t = a.dp(16)))
+
+        // ---- lucky wheel: one spin per completed lock, fun rewards only ----
+        val wheelCard = a.card(20)
+        wheelCard.addView(a.tv(L.t("Lucky wheel", "লাকি হুইল"), 18f, C.text, 1))
+        wheelSpinsText = a.tv("", 13f, C.muted)
+        wheelCard.addView(wheelSpinsText, lp(MATCH, WRAP, t = a.dp(6)))
+        wheelBtn = a.primaryBtn(L.t("Spin the wheel", "চাকা ঘোরাও"))
+        wheelBtn.setOnClickListener { LuckyWheel.showWheel(a) { tick() } }
+        wheelCard.addView(wheelBtn, lp(MATCH, a.dp(48), t = a.dp(12)))
+        col.addView(wheelCard, lp(MATCH, WRAP, t = a.dp(16)))
 
         // ---- XP & levels: every focus minute earns XP (tap for Statistics) ----
         val xpCard = a.card(20)
@@ -852,6 +906,11 @@ class HomeScreen(private val a: MainActivity) {
         updateScreenTime()
         updateFocusScore()
         updateTree()
+        updateGardenAnimals()
+        updatePet()
+        updateStory()
+        updateWheel()
+        StreakProtection.check(a) // once a day: spend a token to save a breaking streak
         updateDetox()
         updatePomodoro()
         updateHabits()
@@ -866,6 +925,7 @@ class HomeScreen(private val a: MainActivity) {
         }
         maybeShowTreeOutcome()
         maybeShowSummary()
+        maybeShowPetReaction()
         maybeShowBadge()
         maybeShowLevelUp()
         maybeShowChallenge()
@@ -991,11 +1051,13 @@ class HomeScreen(private val a: MainActivity) {
         if (active && FocusTree.isPlanted(a)) {
             val frac = FocusTree.currentFraction(a)
             val stage = FocusTree.stageFor(frac)
+            val sp = TreeSpecies.selected(a)
             treeView.frac = frac
             treeView.alive = true
+            if (treeView.species != sp) treeView.species = sp
             treeView.invalidate()
             // label every tick: the % keeps counting inside a stage
-            treeSig = "live:$stage"
+            treeSig = "live:$stage:$sp"
             treeLabel.text = FocusTree.stageName(stage) + " · " +
                 L.num((frac * 100).toInt().toString()) + "%"
             return
@@ -1007,6 +1069,7 @@ class HomeScreen(private val a: MainActivity) {
                 treeSig = sig
                 treeView.frac = 0f
                 treeView.alive = true
+                treeView.species = TreeSpecies.selected(a)
                 treeView.invalidate()
                 treeLabel.text = L.t("Start a lock and a seed will be planted", "লক শুরু করলে বীজ রোপণ হবে")
             }
@@ -1017,9 +1080,128 @@ class HomeScreen(private val a: MainActivity) {
             treeSig = sig
             treeView.frac = last.stage * 0.25f
             treeView.alive = last.alive
+            treeView.species = last.species
             treeView.invalidate()
             treeLabel.text = FocusTree.stageName(last.stage) + " · " + fmtDate(last.endMs) +
                 if (last.alive) "" else " · " + L.t("withered", "শুকিয়ে গেছে")
+        }
+    }
+
+    /** The garden animals living by the tree (small icons, newest first). */
+    private fun updateGardenAnimals() {
+        val animals = GardenAnimals.unlocked(a)
+        val sig = animals.joinToString(",") { it.id }
+        if (sig == animalsSig) return
+        animalsSig = sig
+        animalsRow.removeAllViews()
+        for (an in animals) {
+            val v = AnimalView(a, an.id)
+            v.setOnClickListener { a.toast(L.t(an.nameEn, an.nameBn)) }
+            animalsRow.addView(v, lp(a.dp(44), a.dp(44), r = a.dp(6)))
+        }
+        animalsRow.visibility = if (animals.isEmpty()) View.GONE else View.VISIBLE
+    }
+
+    /** The focus pet: face follows the mood, bar follows happiness. */
+    private fun updatePet() {
+        val happy = FocusPet.happiness(a)
+        val mood = FocusPet.mood(a)
+        val name = FocusPet.name(a)
+        val sig = "$name:$happy:$mood"
+        if (sig == petSig) return
+        petSig = sig
+        petNameText.text = name
+        petView.mood = mood
+        petView.invalidate()
+        petBar.frac = happy / 100f
+        petMoodText.text = FocusPet.moodLabel(a) + " · " +
+            L.num(happy.toString()) + "/100 · " +
+            L.t("tap to rename", "নাম বদলাতে চাপুন")
+    }
+
+    /** Rename the pet (a short name, up to 20 characters). */
+    private fun renamePetDialog() {
+        val et = a.edit(L.t("Pet name", "পোষা প্রাণীর নাম"), false)
+        et.setText(FocusPet.name(a))
+        et.setSelection(et.text.length)
+        a.dlg()
+            .setTitle(L.t("Name your pet", "পোষা প্রাণীর নাম দিন"))
+            .setView(et)
+            .setPositiveButton(L.t("Save", "সংরক্ষণ")) { _, _ ->
+                val n = et.text.toString().trim()
+                if (n.isNotEmpty()) {
+                    FocusPet.setName(a, n)
+                    petSig = ""
+                    updatePet()
+                }
+            }
+            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+            .show()
+    }
+
+    /** Pick a tree species (won from the lucky wheel; classic is always open). */
+    private fun speciesDialog() {
+        val all = TreeSpecies.ALL
+        val unlocked = TreeSpecies.unlocked(a).map { it.id }.toSet()
+        val items = all.map { sp ->
+            L.t(sp.nameEn, sp.nameBn) +
+                if (sp.id in unlocked) "" else " (" + L.t("locked", "তালাবদ্ধ") + ")"
+        }.toTypedArray()
+        a.dlg()
+            .setTitle(L.t("Tree species", "গাছের প্রজাতি"))
+            .setItems(items) { _, which ->
+                val sp = all[which]
+                if (sp.id !in unlocked) {
+                    a.toast(L.t("Win this species from the lucky wheel", "এই প্রজাতি লাকি হুইল থেকে জিতুন"))
+                    return@setItems
+                }
+                TreeSpecies.select(a, sp.id)
+                treeSig = ""
+                tick()
+            }
+            .setNegativeButton(L.t("Close", "বন্ধ"), null)
+            .show()
+    }
+
+    /** Story progress: chapters unlocked out of 10. */
+    private fun updateStory() {
+        val unlocked = Story.unlockedCount(a)
+        val sig = "$unlocked"
+        if (sig == storySig) return
+        storySig = sig
+        storySubText.text = L.num(unlocked.toString()) + "/" + L.num(Story.TOTAL.toString()) + " " +
+            L.t("chapters unlocked · tap to read", "টি অধ্যায় খুলেছে · পড়তে চাপুন")
+    }
+
+    /** Lucky wheel spins available (the button dims when there are none). */
+    private fun updateWheel() {
+        val spins = LuckyWheel.spins(a)
+        val sig = "$spins"
+        if (sig == wheelSig) return
+        wheelSig = sig
+        wheelSpinsText.text = if (spins > 0) {
+            L.num(spins.toString()) + " " + L.t("spin(s) available", "টি স্পিন আছে")
+        } else {
+            L.t("No spins — complete a lock to earn one!", "স্পিন নেই — একটা লক সম্পন্ন করে স্পিন পান!")
+        }
+        wheelBtn.alpha = if (spins > 0) 1f else 0.5f
+    }
+
+    /** One-time pet reaction after a lock ends: sad = toast, happy rides in the summary dialog. */
+    private fun maybeShowPetReaction() {
+        when (FocusPet.reactPending(a)) {
+            "sad" -> {
+                FocusPet.clearReact(a)
+                a.toast(
+                    FocusPet.name(a) + " " +
+                        L.t("is sad — the lock was stopped early", "দুঃখী — লক আগেই বন্ধ করা হয়েছে")
+                )
+            }
+            "happy" -> {
+                // the summary dialog carries the happy line; if no summary is
+                // pending (edge case), just drop the flag
+                if (!Store.summaryPending(a)) FocusPet.clearReact(a)
+            }
         }
     }
 
@@ -1052,17 +1234,43 @@ class HomeScreen(private val a: MainActivity) {
             FocusTree.clearOutcome(a)
             "\n\n" + L.t("Your tree survived!", "তোমার গাছ বেঁচে গেল!")
         } else ""
+        val petLine = if (FocusPet.reactPending(a) == "happy") {
+            FocusPet.clearReact(a)
+            "\n\n" + FocusPet.name(a) + " " + L.t("is happy!", "খুশি!") + " · " +
+                L.num(FocusPet.happiness(a).toString()) + "/100"
+        } else ""
+        val newChapters = Story.newUnlocks(a)
+        val storyLine = if (newChapters > 0) {
+            val unlocked = Story.unlockedCount(a)
+            Story.markSeen(a, unlocked)
+            if (newChapters == 1) {
+                val ch = Story.CHAPTERS[(unlocked - 1).coerceAtLeast(0)]
+                "\n\n" + L.t("New story chapter unlocked: ", "নতুন গল্পের অধ্যায় খুলেছে: ") +
+                    L.t(ch.titleEn, ch.titleBn)
+            } else {
+                "\n\n" + L.t(
+                    "$newChapters new story chapters unlocked!",
+                    "${L.num(newChapters.toString())}টি নতুন গল্পের অধ্যায় খুলেছে!"
+                )
+            }
+        } else ""
         val blocksTxt = if (s.blocks > 0) {
             L.num(s.blocks.toString()) + " " + L.t("times an app was blocked", "বার অ্যাপ ব্লক হয়েছে")
         } else {
             L.t("No app needed blocking", "কোনো অ্যাপ ব্লক করতে হয়নি")
         }
-        a.dlg()
+        val builder = a.dlg()
             .setTitle(L.t("Session completed!", "সেশন সম্পন্ন!"))
             .setMessage(
                 L.t("Focus time: ", "ফোকাস সময়: ") + fmtDur(s.durMs) + "\n" + blocksTxt +
-                    treeLine + "\n\n" + Quotes.random()
+                    treeLine + petLine + storyLine + "\n\n" + Quotes.random()
             )
+        if (LuckyWheel.spins(a) > 0) {
+            builder.setNeutralButton(L.t("Spin the wheel", "চাকা ঘোরাও")) { _, _ ->
+                LuckyWheel.showWheel(a) { tick() }
+            }
+        }
+        builder
             .setPositiveButton(L.t("Great!", "ভালো হয়েছে!"), null)
             .show()
     }
@@ -2431,6 +2639,18 @@ class StatsScreen(private val a: MainActivity) {
         rBig.addView(a.tv(L.num(rStreak.toString()), 34f, C.mint, 1))
         rBig.addView(a.tv(L.t(" day streak", " দিনের স্ট্রিক"), 16f, C.muted), lp(WRAP, WRAP, l = a.dp(4)))
         routineCard.addView(rBig, lp(MATCH, WRAP, t = a.dp(8)))
+        // streak protection tokens (won from the lucky wheel)
+        val tokens = StreakProtection.tokens(a)
+        val tokenTxt = if (tokens == 1) L.t("1 token", "১টি টোকেন")
+        else L.num(tokens.toString()) + " " + L.t("tokens", "টি টোকেন")
+        routineCard.addView(
+            a.tv(
+                L.t("Streak protection: ", "স্ট্রিক সুরক্ষা: ") + tokenTxt + " · " +
+                    L.t("a token saves your streak when a day is missed", "একদিন মিস হলে টোকেন স্ট্রিক বাঁচায়"),
+                13f, if (tokens > 0) C.mint else C.muted
+            ),
+            lp(MATCH, WRAP, t = a.dp(6))
+        )
         routineCard.addView(
             a.tv(
                 if (rTotal > 0) L.t("Today: $rDone of $rTotal tasks done", "আজ: ${L.num(rTotal.toString())}টি কাজের মধ্যে ${L.num(rDone.toString())}টি শেষ")
@@ -2581,6 +2801,37 @@ class StatsScreen(private val a: MainActivity) {
         // garden: every finished tree, newest first (dead ones withered and grey)
         val gardenCard = a.card()
         gardenCard.addView(a.section(L.t("Garden", "বাগান")))
+        // garden animals: earned by growing trees, or won from the lucky wheel
+        val animals = GardenAnimals.unlocked(a)
+        if (animals.isEmpty()) {
+            val next = GardenAnimals.nextByTrees(a)
+            if (next != null) {
+                gardenCard.addView(
+                    a.tv(
+                        L.t(
+                            "Grow ${next.trees} trees to meet your first animal: ${next.nameEn}.",
+                            "${L.num(next.trees.toString())}টি গাছ বড় করলে প্রথম প্রাণী আসবে: ${next.nameBn}।"
+                        ),
+                        13f, C.muted
+                    ),
+                    lp(MATCH, WRAP, t = a.dp(6))
+                )
+            }
+        } else {
+            val aRow = LinearLayout(a)
+            aRow.gravity = Gravity.CENTER_VERTICAL
+            for (an in animals) {
+                val cell = LinearLayout(a)
+                cell.orientation = LinearLayout.VERTICAL
+                cell.gravity = Gravity.CENTER_HORIZONTAL
+                cell.addView(AnimalView(a, an.id), lp(a.dp(56), a.dp(56)))
+                val nl = a.tv(L.t(an.nameEn, an.nameBn), 11f, C.muted, 1)
+                nl.gravity = Gravity.CENTER
+                cell.addView(nl, lp(MATCH, WRAP, t = a.dp(2)))
+                aRow.addView(cell, lp(0, WRAP, weight = 1f))
+            }
+            gardenCard.addView(aRow, lp(MATCH, WRAP, t = a.dp(8)))
+        }
         val trees = FocusTree.garden(a)
         if (trees.isEmpty()) {
             gardenCard.addView(
@@ -2600,6 +2851,7 @@ class StatsScreen(private val a: MainActivity) {
                         val tv = TreeView(a)
                         tv.frac = t.stage * 0.25f
                         tv.alive = t.alive
+                        tv.species = t.species
                         cell.addView(tv, lp(a.dp(96), a.dp(96)))
                         val dl = a.tv(fmtDate(t.endMs), 11f, C.muted, 1)
                         dl.gravity = Gravity.CENTER
@@ -2950,7 +3202,13 @@ class SettingsScreen(private val a: MainActivity) {
 
     /** Pick the focus sound. Choosing one while a lock runs starts it right away. */
     private fun focusSoundDialog() {
-        val choices = listOf(FocusSound.OFF, FocusSound.WHITE, FocusSound.BROWN, FocusSound.RAIN)
+        val choices = ArrayList<String>().apply {
+            add(FocusSound.OFF)
+            add(FocusSound.WHITE)
+            add(FocusSound.BROWN)
+            add(FocusSound.RAIN)
+            if (LuckyWheel.isOceanUnlocked(a)) add(FocusSound.OCEAN) // wheel-only
+        }
         val labels = choices.map { FocusSound.label(it) }.toTypedArray()
         val current = choices.indexOf(FocusSound.choice(a)).coerceAtLeast(0)
         a.dlg()
@@ -3040,35 +3298,46 @@ class SettingsScreen(private val a: MainActivity) {
         tr.addView(t0, lp(0, WRAP, r = a.dp(8), t = a.dp(10), weight = 1f))
         tr.addView(t1, lp(0, WRAP, t = a.dp(10), weight = 1f))
         theme.addView(tr)
-        // accent colour: 5 swatches — the chosen one colours the ring, chips and buttons
+        // accent colour: 5 base swatches + 3 wheel-only ones (locked until won)
         val acLabel = a.tv(L.t("Accent colour", "অ্যাকসেন্ট রঙ"), 13f, C.muted, 1)
         theme.addView(acLabel, lp(MATCH, WRAP, t = a.dp(16)))
-        val acRow = LinearLayout(a)
-        acRow.gravity = Gravity.CENTER_VERTICAL
+        val allAccents = C.allAccents()
+        val acRow1 = LinearLayout(a)
+        acRow1.gravity = Gravity.CENTER_VERTICAL
+        val acRow2 = LinearLayout(a)
+        acRow2.gravity = Gravity.CENTER_VERTICAL
         val swatches = ArrayList<View>()
         fun styleSwatches() {
             val sel = Store.settings(a).getInt("accent", 0)
             for ((i, sw) in swatches.withIndex()) {
-                val col = Color.parseColor(C.ACCENTS[i][0])
+                val col = Color.parseColor(allAccents[i][0])
                 sw.background = if (i == sel) rounded(col, a.dp(20).toFloat(), C.text, a.dp(2))
                 else rounded(col, a.dp(20).toFloat())
+                sw.alpha = if (LuckyWheel.isThemeUnlocked(a, i)) 1f else 0.35f
             }
         }
         fun pickAccent(i: Int) {
+            if (!LuckyWheel.isThemeUnlocked(a, i)) {
+                a.toast(L.t("Win this colour from the lucky wheel", "এই রঙ লাকি হুইল থেকে জিতুন"))
+                return
+            }
             if (Store.settings(a).getInt("accent", 0) == i) return
             Store.settings(a).edit().putInt("accent", i).apply()
             styleSwatches()
-            acRow.postDelayed({ a.crossfade { C.load(a) } }, 240)
+            acRow1.postDelayed({ a.crossfade { C.load(a) } }, 240)
         }
-        for (i in C.ACCENTS.indices) {
+        for (i in allAccents.indices) {
             val sw = View(a)
             sw.setOnClickListener { pickAccent(i) }
             sw.pressFeedback()
             swatches.add(sw)
-            acRow.addView(sw, lp(a.dp(40), a.dp(40), r = if (i < C.ACCENTS.size - 1) a.dp(12) else 0, t = a.dp(10)))
+            val row = if (i < C.ACCENTS.size) acRow1 else acRow2
+            val last = if (i < C.ACCENTS.size) i == C.ACCENTS.size - 1 else i == allAccents.size - 1
+            row.addView(sw, lp(a.dp(40), a.dp(40), r = if (last) 0 else a.dp(12), t = a.dp(10)))
         }
         styleSwatches()
-        theme.addView(acRow)
+        theme.addView(acRow1)
+        theme.addView(acRow2)
         col.addView(theme, lp(MATCH, WRAP, b = a.dp(12)))
 
         // morning reminder: a daily notification to start the first lock

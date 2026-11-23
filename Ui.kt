@@ -71,6 +71,21 @@ object C {
         arrayOf("#FF5C8A", "#FFD0DD", "#3B0A1E", "#7D2447", "#6B2A40") // rose
     )
 
+    /** Wheel-only accents: same shape as ACCENTS, won from the lucky wheel. */
+    val WHEEL_ACCENTS = listOf(
+        arrayOf("#14B8A6", "#99F6E4", "#042F2E", "#0F766E", "#134E4A"), // teal
+        arrayOf("#EAB308", "#FEF08A", "#422006", "#854D0E", "#713F12"), // gold
+        arrayOf("#67E8F9", "#CFFAFE", "#083344", "#155E75", "#164E63") // ice
+    )
+    val WHEEL_ACCENT_NAMES = listOf(
+        Pair("Teal", "টিল"),
+        Pair("Gold", "সোনালি"),
+        Pair("Ice", "বরফ")
+    )
+
+    /** All accents, base first then wheel-only (indices 5+ need a wheel unlock). */
+    fun allAccents(): List<Array<String>> = ACCENTS + WHEEL_ACCENTS
+
     fun load(ctx: Context) {
         val amoled = Store.settings(ctx).getInt("theme", 0) == 1
         if (amoled) {
@@ -85,7 +100,8 @@ object C {
             chipFill = Color.parseColor("#12271D")
         }
         // the chosen accent overrides primary / mint and the derived tints
-        val ac = ACCENTS[Store.settings(ctx).getInt("accent", 0).coerceIn(0, ACCENTS.size - 1)]
+        val all = allAccents()
+        val ac = all[Store.settings(ctx).getInt("accent", 0).coerceIn(0, all.size - 1)]
         primary = Color.parseColor(ac[0])
         mint = Color.parseColor(ac[1])
         onPrimary = Color.parseColor(ac[2])

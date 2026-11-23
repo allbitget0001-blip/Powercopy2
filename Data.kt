@@ -307,9 +307,11 @@ object FocusScore {
         return ScoreBreakdown(total, focusPts, locksPts, streakPts, calmPts, focusMin, locks, streak, attempts)
     }
 
-    /** Streak ending on the day N days ago (today: ending today or yesterday). */
-    private fun streakFor(focusMap: Map<String, Int>, daysAgo: Int): Int {
-        fun hasDay(ago: Int) = (focusMap[Store.dayKey(ago)] ?: 0) > 0
+    /** Streak ending on the day N days ago (today: ending today or yesterday).
+     * A day saved by a streak-protection token counts as complete. */
+    private fun streakFor(ctx: Context, focusMap: Map<String, Int>, daysAgo: Int): Int {
+        fun hasDay(ago: Int) = (focusMap[Store.dayKey(ago)] ?: 0) > 0 ||
+            StreakProtection.isFocusProtected(ctx, Store.dayKey(ago))
         val startAgo = if (daysAgo == 0) {
             if (hasDay(0)) 0 else if (hasDay(1)) 1 else -1
         } else if (hasDay(daysAgo)) daysAgo else -1
@@ -341,7 +343,7 @@ object FocusScore {
         val from = Store.dayStart(now, -daysAgo)
         val to = Store.dayStart(now, -daysAgo + 1)
         val attempts = Extra.attempts(ctx).count { it.first >= from && it.first < to }
-        return build(focusMin, locks, streakFor(focusMap, daysAgo), attempts)
+        return build(focusMin, locks, streakFor(ctx, focusMap, daysAgo), attempts)
     }
 
     fun today(ctx: Context): ScoreBreakdown = forDay(ctx, 0)
@@ -366,7 +368,7 @@ object FocusScore {
             val key = Store.dayKey(ago)
             var focusMin = focusMap[key] ?: 0
             if (ago == 0) focusMin += live
-            out.add(build(focusMin, locksByDay[key] ?: 0, streakFor(focusMap, ago), attemptsByDay[key] ?: 0))
+            out.add(build(focusMin, locksByDay[key] ?: 0, streakFor(ctx, focusMap, ago), attemptsByDay[key] ?: 0))
         }
         return out
     }
@@ -845,6 +847,9 @@ object Store {
         if (s.ok) saveSessionSummary(ctx, s)
         if (s.ok) Badges.check(ctx)
         if (s.ok) FocusScore.recordToday(ctx)
+        if (s.ok) FocusPet.onLockCompleted(ctx) // the pet is happier
+        if (s.ok) LuckyWheel.onLockCompleted(ctx) // +1 wheel spin
+        if (!s.ok) FocusPet.onLockBroken(ctx) // the pet is sadder
     }
 
     /** The last completed lock's summary (duration + blocks fired in its window),
@@ -932,7 +937,9 @@ object Store {
         } catch (e: Exception) {
             JSONObject()
         }
-        fun hasDay(daysAgo: Int) = obj.optInt(dayKey(daysAgo), 0) > 0
+        // a day saved by a streak-protection token counts as complete
+        fun hasDay(daysAgo: Int) = obj.optInt(dayKey(daysAgo), 0) > 0 ||
+            StreakProtection.isFocusProtected(ctx, dayKey(daysAgo))
         var streak = 0
         if (hasDay(0) || hasDay(1)) {
             var i = if (hasDay(0)) 0 else 1
@@ -1379,7 +1386,10 @@ object Badges {
         BadgeDef("locks_50", Ic.LOCK, "50 locks", "৫০টা লক", "Complete 50 locks", "৫০টা লক সম্পন্ন করুন"),
         BadgeDef("focus_100h", Ic.CLOCK, "100 hours", "১০০ ঘণ্টা", "100 hours of total focus", "মোট ১০০ ঘণ্টা ফোকাস"),
         BadgeDef("detox_done", Ic.SHIELD, "Detox champion", "ডিটক্স চ্যাম্পিয়ন", "Complete a 7-day detox challenge", "৭ দিনের ডিটক্স চ্যালেঞ্জ সম্পন্ন করুন"),
-        BadgeDef("blocks_1000", Ic.BARS, "1000 blocks", "১০০০ বার ব্লক", "1000 blocked attempts", "১০০০ বার ব্লক হয়েছে")
+        BadgeDef("blocks_1000", Ic.BARS, "1000 blocks", "১০০০ বার ব্লক", "1000 blocked attempts", "১০০০ বার ব্লক হয়েছে"),
+        BadgeDef("wheel_first", Ic.CHECK, "First spin", "প্রথম স্পিন", "Win your first lucky wheel reward", "লাকি হুইল থেকে প্রথম পুরস্কার জিতুন"),
+        BadgeDef("wheel_lucky", Ic.SHIELD, "Lucky!", "ভাগ্যবান!", "Win a badge from the lucky wheel", "লাকি হুইল থেকে ব্যাজ জিতুন"),
+        BadgeDef("wheel_collector", Ic.BARS, "Collector", "সংগ্রাহক", "Win a tree species and an animal from the wheel", "হুইল থেকে গাছের প্রজাতি ও প্রাণী দুটোই জিতুন")
     )
 
     fun byId(id: String): BadgeDef? = ALL.firstOrNull { it.id == id }
