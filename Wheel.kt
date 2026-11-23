@@ -4,6 +4,7 @@ import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.content.Context
+import android.content.DialogInterface
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -33,6 +34,7 @@ import kotlin.random.Random
 object StreakProtection {
     fun tokens(ctx: Context): Int = Store.lock(ctx).getInt("streak_tokens", 0)
 
+    @Synchronized
     fun addToken(ctx: Context) {
         val p = Store.lock(ctx)
         p.edit().putInt("streak_tokens", tokens(ctx) + 1).apply()
@@ -163,6 +165,7 @@ object LuckyWheel {
 
     fun spins(ctx: Context): Int = Store.lock(ctx).getInt("wheel_spins", 0)
 
+    @Synchronized
     private fun addSpins(ctx: Context, n: Int) {
         val p = Store.lock(ctx)
         p.edit().putInt("wheel_spins", spins(ctx) + n).apply()
@@ -359,6 +362,11 @@ object LuckyWheel {
             }
             spinBtn.isEnabled = false
             spinBtn.alpha = 0.5f
+            // the spin is paid for now: lock the dialog until it lands, so a
+            // mid-spin dismiss can't eat the spin (the reward is applied in
+            // the completion callback, which also dismisses the dialog)
+            dlg.setCancelable(false)
+            dlg.getButton(DialogInterface.BUTTON_NEGATIVE)?.isEnabled = false
             Store.lock(a).edit().putInt("wheel_spins", spins(a) - 1).apply()
             countText.text = L.t("Spins left: ", "স্পিন বাকি: ") + L.num(spins(a).toString())
             val won = roll(a)
@@ -369,6 +377,10 @@ object LuckyWheel {
                 } catch (_: Exception) {
                 }
                 val text = applyReward(a, won.id)
+                // the spin may have ended via cancel after the view detached
+                // (activity going away): the reward is already applied, so
+                // just skip the dialog instead of crashing on a dead window
+                if (a.isFinishing || a.isDestroyed) return@spinTo
                 a.dlg()
                     .setTitle(L.t("You won!", "তুমি জিতেছো!"))
                     .setMessage(text)
@@ -409,9 +421,23 @@ class WheelView(ctx: Context) : View(ctx) {
             invalidate()
         }
         va.addListener(object : AnimatorListenerAdapter() {
-            override fun onAnimationEnd(animation: Animator) {
+            // end and cancel are mutually exclusive for one animation, and
+            // the flag guards anyway: the reward must apply exactly once,
+            // even if the view is detached (animator cancelled) mid-spin
+            private var done = false
+            private fun finish() {
+                if (done) return
+                done = true
                 rotationDeg %= 360f
                 onEnd()
+            }
+
+            override fun onAnimationEnd(animation: Animator) {
+                finish()
+            }
+
+            override fun onAnimationCancel(animation: Animator) {
+                finish()
             }
         })
         anim = va

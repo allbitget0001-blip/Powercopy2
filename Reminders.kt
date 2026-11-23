@@ -102,7 +102,7 @@ object Reminders {
             L.load(ctx)
             val t = Plan.tasks(ctx, dayKey).find { it.id == taskId } ?: return
             if (t.done) return
-            show(ctx, 20 + (taskId % 100).toInt(), L.t("Reminder", "রিমাইন্ডার"), t.title)
+            show(ctx, 20 + (taskId % 1000).toInt(), L.t("Reminder", "রিমাইন্ডার"), t.title)
         } catch (e: Exception) {
             Log.e(TAG, "plan reminder failed", e)
         }
@@ -233,6 +233,9 @@ object Plan {
             list.add(PlanTask(now + i, t.title, t.timeMin, false))
         }
         saveTasks(ctx, Store.dayKey(0), list)
+        // clear yesterday's copied tasks so a repeat tap has nothing to copy
+        // again (and the carry-over button disappears)
+        saveTasks(ctx, Store.dayKey(1), tasks(ctx, Store.dayKey(1)).filter { it.done })
         rescheduleAlarms(ctx)
     }
 

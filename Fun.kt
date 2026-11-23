@@ -92,6 +92,7 @@ object Xp {
         else -> L.t("Master", "মাস্টার")
     }
 
+    @Synchronized
     private fun add(ctx: Context, amount: Long) {
         val p = Store.lock(ctx)
         val before = levelFor(total(ctx))

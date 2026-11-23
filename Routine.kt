@@ -352,8 +352,10 @@ object Routine {
     private fun remindPending(ctx: Context, t: RoutineTask, dayKey: String): PendingIntent {
         val i = Intent(ctx, ReminderReceiver::class.java).setAction(ACTION_ROUTINE_REMIND)
             .putExtra("task_id", t.id).putExtra("day", dayKey)
+        // full-range code (like Plan): the distinct intent actions keep
+        // remind and overdue PendingIntents apart for the same task
         return PendingIntent.getBroadcast(
-            ctx, 200000 + (t.id % 100000).toInt(), i,
+            ctx, (t.id % Int.MAX_VALUE).toInt(), i,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
     }
@@ -362,7 +364,7 @@ object Routine {
         val i = Intent(ctx, ReminderReceiver::class.java).setAction(ACTION_ROUTINE_OVERDUE)
             .putExtra("task_id", t.id).putExtra("day", dayKey)
         return PendingIntent.getBroadcast(
-            ctx, 300000 + (t.id % 100000).toInt(), i,
+            ctx, (t.id % Int.MAX_VALUE).toInt(), i,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
     }
@@ -434,7 +436,7 @@ object Routine {
             val t = tasksForDayKey(ctx, dayKey).find { it.id == taskId } ?: return
             if (taskId in doneIds(ctx, dayKey)) return
             Reminders.show(
-                ctx, 200 + (taskId % 100).toInt(),
+                ctx, 200 + (taskId % 1000).toInt(),
                 L.t("Routine time", "রুটিনের সময়"),
                 t.title
             )

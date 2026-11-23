@@ -431,8 +431,33 @@ class PowerBlockService : AccessibilityService() {
             usageToday.clear()
             usageToday.putAll(Extra.usageTodayAll(this))
             flushRestartHistorySession()
+            resumeLiveSlice()
         } catch (e: Exception) {
             Log.e(TAG, "loadUsage failed", e)
+        }
+    }
+
+    /**
+     * A previous service instance may have died mid-app: resume its persisted
+     * live slice so the in-flight seconds aren't lost from the per-day totals
+     * (the next app switch flushes the whole slice via trackUsage). Only
+     * today's slice with a sane elapsed time counts — uptime resets on
+     * reboot, so a negative or over-12 h elapsed means a stale slice, which
+     * is cleared instead.
+     */
+    private fun resumeLiveSlice() {
+        try {
+            val (livePkg, liveSince, liveDay) = Extra.liveSlice(this)
+            if (livePkg == null) return
+            val elapsed = SystemClock.uptimeMillis() - liveSince
+            if (liveDay == usageDay && elapsed in 0..(12L * 60 * 60 * 1000)) {
+                usagePkg = livePkg
+                usageSince = liveSince
+            } else {
+                Extra.setLiveSlice(this, null, 0L, "")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "live slice resume failed", e)
         }
     }
 
@@ -552,8 +577,8 @@ class PowerBlockService : AccessibilityService() {
         }
     }
 
-    /** Screen went off: close the running slice (screen-off time is not usage). */
-    private fun flushUsageOnScreenOff() {
+    /** Flush the in-flight usage slice to the per-day totals (no-op when none). */
+    private fun flushUsageSlice() {
         try {
             val prev = usagePkg ?: return
             val secs = (SystemClock.uptimeMillis() - usageSince) / 1000
@@ -563,10 +588,15 @@ class PowerBlockService : AccessibilityService() {
             }
             usagePkg = null
             Extra.setLiveSlice(this, null, 0L, "")
-            closeHistorySession(SystemClock.uptimeMillis())
         } catch (e: Exception) {
-            Log.e(TAG, "screen-off usage flush failed", e)
+            Log.e(TAG, "usage slice flush failed", e)
         }
+    }
+
+    /** Screen went off: close the running slice (screen-off time is not usage). */
+    private fun flushUsageOnScreenOff() {
+        flushUsageSlice()
+        closeHistorySession(SystemClock.uptimeMillis())
     }
 
     /** True when the app has a daily limit and today's time (including the live slice) is up. */
@@ -1403,6 +1433,7 @@ class PowerBlockService : AccessibilityService() {
     }
 
     private fun cleanup() {
+        flushUsageSlice()
         closeHistorySession(SystemClock.uptimeMillis())
         handler.removeCallbacksAndMessages(null)
         hideOverlay()
