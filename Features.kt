@@ -1,4 +1,4 @@
-package com.example.powerlocks
+package com.powerlock.app
 
 import android.Manifest
 import android.animation.ObjectAnimator
@@ -71,7 +71,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "45"
+    const val BUILD_ID = "46"
 
     // ---------- presets ----------
 
@@ -392,9 +392,11 @@ object PlaceWatcher {
     fun sync(ctx: Context) {
         val app = ctx.applicationContext
         appCtx = app
-        val want = Store.settings(app).getBoolean("loc_on", false) &&
-                Extra.places(app).any { it.enabled } &&
-                Perm.locationOn(app)
+        val placeWatch = Store.settings(app).getBoolean("loc_on", false) &&
+                Extra.places(app).any { it.enabled }
+        // a location-unlock session also needs watching, even when the location lock is off
+        val unlockWatch = Store.unlockTarget(app) != null && Store.isActive(app)
+        val want = (placeWatch || unlockWatch) && Perm.locationOn(app)
         if (want && !on) start(app) else if (!want && on) stop()
         // not watching means not protected: master off, no enabled place, or no permission
         if (!want && Store.isLocProtecting(app)) Store.setLocProtecting(app, false)
@@ -407,6 +409,63 @@ object PlaceWatcher {
         if (!Perm.locationOn(app)) return
         Extra.currentLocation(app) { loc ->
             if (loc != null) handle(app, loc)
+        }
+    }
+
+    private var lastUnlockCheck = 0L
+
+    /**
+     * One-shot arrival check for a location-unlock session. Works even when the
+     * location lock is off. Throttled to once per 30 s (a fresh fix can take up to 20 s).
+     */
+    fun checkUnlockNow(ctx: Context) {
+        val app = ctx.applicationContext
+        if (Store.unlockTarget(app) == null || !Store.isActive(app)) return
+        if (!Perm.locationOn(app)) return
+        val now = System.currentTimeMillis()
+        if (now - lastUnlockCheck < 30_000L) return
+        lastUnlockCheck = now
+        Extra.currentLocation(app) { loc ->
+            if (loc == null) return@currentLocation
+            if (loc.hasAccuracy() && loc.accuracy > 200f) return@currentLocation
+            checkUnlockArrival(app, loc)
+        }
+    }
+
+    /**
+     * Cheap arrival check using only the last known fix (no fresh request): safe to call
+     * every second from the Home tick. A fix older than 2 minutes is never trusted to unlock.
+     */
+    @SuppressLint("MissingPermission")
+    fun checkUnlockLastKnown(ctx: Context) {
+        val app = ctx.applicationContext
+        if (Store.unlockTarget(app) == null || !Store.isActive(app)) return
+        if (!Perm.locationOn(app)) return
+        try {
+            val m = app.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            var best: Location? = null
+            for (p in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)) {
+                val l = m.getLastKnownLocation(p)
+                val b = best
+                if (l != null && (b == null || l.time > b.time)) best = l
+            }
+            val loc = best ?: return
+            if (System.currentTimeMillis() - loc.time > 120_000L) return
+            if (loc.hasAccuracy() && loc.accuracy > 200f) return
+            checkUnlockArrival(app, loc)
+        } catch (e: Exception) {
+            Log.e(TAG, "unlock last-known check failed", e)
+        }
+    }
+
+    /** Ends the session when the device is inside the unlock destination's radius. */
+    private fun checkUnlockArrival(ctx: Context, loc: Location) {
+        val target = Store.unlockTarget(ctx) ?: return
+        if (!Store.isActive(ctx)) return
+        val res = FloatArray(1)
+        Location.distanceBetween(loc.latitude, loc.longitude, target.lat, target.lng, res)
+        if (res[0] <= target.radius) {
+            if (Store.finalizeByLocation(ctx)) notifyUnlocked(ctx, target)
         }
     }
 
@@ -519,10 +578,32 @@ object PlaceWatcher {
                 }
             }
             if (Store.isLocProtecting(ctx) != protect) Store.setLocProtecting(ctx, protect)
+            // location-unlock session: arrived at the destination? end the session
+            checkUnlockArrival(ctx, loc)
             // today's route: record where you went while the location lock watches
             Store.addRoutePoint(ctx, loc.latitude, loc.longitude)
         } catch (e: Exception) {
             Log.e(TAG, "place check failed", e)
+        }
+    }
+
+    /** "লক খুলেছে — বাড়ি পৌঁছেছো" when a location session ends by arrival. */
+    private fun notifyUnlocked(ctx: Context, target: UnlockTarget) {
+        try {
+            val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val openApp = PendingIntent.getActivity(
+                ctx, 0, Intent(ctx, MainActivity::class.java),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            val nb = Notification.Builder(ctx, "powerlock_alert")
+                .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+                .setContentTitle(L.t("Lock opened", "লক খুলেছে"))
+                .setContentText(L.num(L.t("You arrived at ${target.name}", "${target.name} পৌঁছেছো")))
+                .setAutoCancel(true)
+                .setContentIntent(openApp)
+            nm.notify(2100, nb.build())
+        } catch (e: Exception) {
+            Log.e(TAG, "unlock notify failed", e)
         }
     }
 
@@ -1395,7 +1476,7 @@ fun MainActivity.lockedAppsCard(mode: String): View {
 // UI: location lock (Settings)
 // =====================================================================
 
-private fun MainActivity.requestLocationPerm() {
+fun MainActivity.requestLocationPerm() {
     if (!Perm.locationOn(this)) {
         requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), 11)
     } else if (Build.VERSION.SDK_INT >= 29 && !Perm.backgroundLocationOn(this)) {

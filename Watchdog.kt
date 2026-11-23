@@ -1,4 +1,4 @@
-package com.example.powerlocks
+package com.powerlock.app
 
 import android.content.Context
 import android.util.Log
@@ -27,6 +27,7 @@ class WatchdogWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, param
                 // the system lets the alarm start the foreground service when it fires
                 KeepAliveService.restartSoon(c, 1000)
                 PlaceWatcher.checkNow(c)
+                PlaceWatcher.checkUnlockNow(c) // location-unlock session? check arrival
             }
             Result.success()
         } catch (e: Exception) {

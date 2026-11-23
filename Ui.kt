@@ -1,4 +1,4 @@
-package com.example.powerlocks
+package com.powerlock.app
 
 import android.graphics.PixelFormat
 import android.graphics.ColorFilter
@@ -12,7 +12,9 @@ import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.RadialGradient
 import android.graphics.RectF
+import android.graphics.Shader
 import android.graphics.SweepGradient
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
@@ -228,7 +230,7 @@ fun Context.page(): Pair<ScrollView, LinearLayout> {
     return Pair(sv, col)
 }
 
-enum class Ic { HOME, CAL, BARS, GEAR, SHIELD, LOCK, CLOCK, CHECK }
+enum class Ic { HOME, CAL, BARS, GEAR, SHIELD, LOCK, CLOCK, CHECK, PIN }
 
 /** Line icons drawn with Canvas (no image files needed). */
 object Icons {
@@ -319,6 +321,17 @@ object Icons {
                 path.lineTo(x(0.68f), y(0.38f))
                 cv.drawPath(path, p)
             }
+            Ic.PIN -> {
+                // map pin: teardrop outline + centre dot
+                path.moveTo(x(0.50f), y(0.90f))
+                path.cubicTo(x(0.36f), y(0.74f), x(0.20f), y(0.62f), x(0.20f), y(0.40f))
+                path.cubicTo(x(0.20f), y(0.22f), x(0.34f), y(0.10f), x(0.50f), y(0.10f))
+                path.cubicTo(x(0.66f), y(0.10f), x(0.80f), y(0.22f), x(0.80f), y(0.40f))
+                path.cubicTo(x(0.80f), y(0.62f), x(0.64f), y(0.74f), x(0.50f), y(0.90f))
+                path.close()
+                cv.drawPath(path, p)
+                cv.drawCircle(cx, y(0.40f), s * 0.09f, p)
+            }
         }
     }
 }
@@ -351,6 +364,7 @@ class RingView(ctx: Context) : View(ctx) {
     private val track = Paint(Paint.ANTI_ALIAS_FLAG)
     private val arc = Paint(Paint.ANTI_ALIAS_FLAG)
     private val glow = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val halo = Paint(Paint.ANTI_ALIAS_FLAG)
     private val inner = Paint(Paint.ANTI_ALIAS_FLAG)
     private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val tMain = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -375,12 +389,13 @@ class RingView(ctx: Context) : View(ctx) {
     private fun startBreath() {
         if (breathAnim != null) return
         val an = ValueAnimator.ofFloat(0f, 1f)
-        an.duration = 2600
+        // 2 s out + 2 s back = one slow ~4 s breath; drives the halo glow too
+        an.duration = 2000
         an.repeatCount = ValueAnimator.INFINITE
         an.repeatMode = ValueAnimator.REVERSE
         an.addUpdateListener {
             breath = it.animatedValue as Float
-            if (!active) invalidate()
+            invalidate()
         }
         an.start()
         breathAnim = an
@@ -414,6 +429,13 @@ class RingView(ctx: Context) : View(ctx) {
         shader.setLocalMatrix(m)
         arc.shader = shader
         glow.shader = shader
+        // relaxing glow: soft radial halo behind the ring, accent colour fading out
+        halo.shader = RadialGradient(
+            w / 2f, h / 2f, w / 2f,
+            intArrayOf(C.primary, Color.TRANSPARENT),
+            floatArrayOf(0f, 1f),
+            Shader.TileMode.CLAMP
+        )
     }
 
     fun animateTo(p: Float) {
@@ -437,6 +459,12 @@ class RingView(ctx: Context) : View(ctx) {
         val cy = h / 2f
         val pad = w * 0.07f
         rect.set(pad, pad, w - pad, h - pad)
+
+        // relaxing glow: the halo breathes gently behind the ring (stronger while locked)
+        val haloMin = if (active) 70 else 30
+        val haloMax = if (active) 150 else 70
+        halo.alpha = (haloMin + (haloMax - haloMin) * breath).toInt()
+        canvas.drawCircle(cx, cy, w / 2f, halo)
 
         if (active) {
             val stroke = w * 0.055f

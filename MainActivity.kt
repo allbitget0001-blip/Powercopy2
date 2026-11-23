@@ -1,4 +1,4 @@
-package com.example.powerlocks
+package com.powerlock.app
 
 import android.app.Activity
 import android.content.Intent
@@ -84,6 +84,7 @@ class MainActivity : Activity() {
         Store.kickService(this) // restart the foreground service if it was swiped away
         Watchdog.enqueue(this) // safety net: restart the service every 15 min if it dies
         PlaceWatcher.checkNow(this) // already at a saved place? lock right away
+        PlaceWatcher.checkUnlockNow(this) // location-unlock session? check arrival right away
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

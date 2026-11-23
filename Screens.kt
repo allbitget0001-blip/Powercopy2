@@ -1,4 +1,4 @@
-package com.example.powerlocks
+package com.powerlock.app
 
 import android.animation.ArgbEvaluator
 import android.animation.ObjectAnimator
@@ -12,6 +12,7 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.location.Location
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -22,6 +23,7 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.util.Calendar
+import org.json.JSONObject
 
 // =====================================================================
 // HOME
@@ -39,6 +41,11 @@ class HomeScreen(private val a: MainActivity) {
     private lateinit var warnBox: LinearLayout
     private val chips = ArrayList<TextView>()
     private val quick = listOf(5, 10, 15, 30, 60)
+    private val modeChips = ArrayList<TextView>()
+    private val modes = listOf(UNLOCK_TIME, UNLOCK_LOC, UNLOCK_EITHER)
+    private lateinit var destRow: LinearLayout
+    private lateinit var destNameText: TextView
+    private lateinit var destRadiusText: TextView
     private var warnSig = ""
     private var lastStatus: PStatus? = null
     private var lastActive: Boolean? = null
@@ -59,7 +66,7 @@ class HomeScreen(private val a: MainActivity) {
         header.addView(tile, lp(a.dp(52), a.dp(52)))
         val names = LinearLayout(a)
         names.orientation = LinearLayout.VERTICAL
-        names.addView(a.tv("PowerLock", 24f, C.text, 1))
+        names.addView(a.tv("PowerLock 2", 24f, C.text, 1))
         val sub = a.tv(L.t("PREMIUM EDITION", "প্রিমিয়াম এডিশন"), 12f, C.muted, 1)
         sub.letterSpacing = 0.1f
         names.addView(sub)
@@ -122,6 +129,41 @@ class HomeScreen(private val a: MainActivity) {
         previewText = a.tv("", 13f, C.muted)
         col.addView(previewText, lp(MATCH, WRAP, t = a.dp(12)))
 
+        // ---- unlock condition: time only, location only, or either one ----
+        col.addView(a.heading(L.t("When does the lock open?", "লক খুলবে কখন?")), lp(MATCH, WRAP, t = a.dp(26), b = a.dp(4)))
+        val modeRow = LinearLayout(a)
+        val modeLabels = listOf(
+            L.t("Time only", "শুধু সময়"),
+            L.t("Location only", "শুধু লোকেশন"),
+            L.t("Either one", "যেকোনো একটা")
+        )
+        for ((i, m) in modes.withIndex()) {
+            val ch = a.chip(modeLabels[i], false)
+            ch.setOnClickListener { pickMode(m) }
+            modeChips.add(ch)
+            modeRow.addView(ch, lp(0, a.dp(56), r = if (i < 2) a.dp(10) else 0, t = a.dp(10), weight = 1f))
+        }
+        col.addView(modeRow)
+        // destination row (only for the location modes): name opens the picker, radius is tappable
+        destRow = LinearLayout(a)
+        destRow.orientation = LinearLayout.HORIZONTAL
+        destRow.gravity = Gravity.CENTER_VERTICAL
+        destRow.background = rounded(C.card2, a.dp(18).toFloat())
+        destRow.setPadding(a.dp(16), a.dp(14), a.dp(16), a.dp(14))
+        destRow.addView(IconView(a, Ic.PIN, C.primary), lp(a.dp(26), a.dp(26), r = a.dp(12)))
+        val destCol = LinearLayout(a)
+        destCol.orientation = LinearLayout.VERTICAL
+        destNameText = a.tv("", 16f, C.text, 1)
+        destCol.addView(destNameText)
+        destRadiusText = a.tv("", 12f, C.primary)
+        destRadiusText.setOnClickListener { pickRadius() }
+        destCol.addView(destRadiusText)
+        destRow.addView(destCol, lp(0, WRAP, weight = 1f))
+        destRow.addView(a.tv("›", 22f, C.muted, 1))
+        destRow.setOnClickListener { pickDestination() }
+        destRow.pressFeedback()
+        col.addView(destRow, lp(MATCH, WRAP, t = a.dp(10)))
+
         // ---- presets ----
         col.addView(a.presetsCard { refreshChips(true); tick() })
 
@@ -151,24 +193,151 @@ class HomeScreen(private val a: MainActivity) {
         col.addView(scd, lp(MATCH, WRAP, t = a.dp(22)))
 
         refreshChips()
+        refreshModeChips()
         tick()
         return sv
     }
 
     private fun refreshChips(animate: Boolean = false) {
         val active = Store.isActive(a)
+        // location-only mode has no duration: the chips stay visible but dimmed
+        val locOnly = unlockMode() == UNLOCK_LOC
         for ((i, c) in chips.withIndex()) {
             val sel = if (i < quick.size) quick[i] == a.selectedMin else !quick.contains(a.selectedMin)
             if (animate) a.animateChip(c, sel) else a.styleChip(c, sel)
-            c.alpha = if (active) 0.4f else 1f
+            c.alpha = if (active || locOnly) 0.4f else 1f
         }
     }
 
     private fun pick(m: Int) {
         if (Store.isActive(a)) return
+        if (unlockMode() == UNLOCK_LOC) return
         a.selectedMin = m
         refreshChips(true)
         tick()
+    }
+
+    // ---------- unlock condition (time / location / either) ----------
+
+    private fun unlockMode(): String = Store.settings(a).getString("unlock_mode", UNLOCK_TIME) ?: UNLOCK_TIME
+
+    private fun setUnlockMode(m: String) {
+        Store.settings(a).edit().putString("unlock_mode", m).apply()
+    }
+
+    /** The chosen unlock destination (settings), or null when none was picked yet. */
+    private fun unlockDest(): UnlockTarget? {
+        val raw = Store.settings(a).getString("unlock_dest", null) ?: return null
+        return try {
+            val o = JSONObject(raw)
+            UnlockTarget(o.getDouble("la"), o.getDouble("lo"), o.getInt("r"), o.getString("n"))
+        } catch (e: Exception) {
+            Log.e(TAG, "unlock dest read failed", e)
+            null
+        }
+    }
+
+    private fun saveUnlockDest(t: UnlockTarget?) {
+        val e = Store.settings(a).edit()
+        if (t == null) {
+            e.remove("unlock_dest").apply()
+            return
+        }
+        val o = JSONObject()
+        o.put("la", t.lat)
+        o.put("lo", t.lng)
+        o.put("r", t.radius)
+        o.put("n", t.name)
+        e.putString("unlock_dest", o.toString()).apply()
+    }
+
+    private fun refreshModeChips(animate: Boolean = false) {
+        val active = Store.isActive(a)
+        val mode = unlockMode()
+        for ((i, c) in modeChips.withIndex()) {
+            val sel = modes[i] == mode
+            if (animate) a.animateChip(c, sel) else a.styleChip(c, sel)
+            c.alpha = if (active) 0.4f else 1f
+        }
+        refreshDestRow()
+    }
+
+    private fun refreshDestRow() {
+        val show = unlockMode() != UNLOCK_TIME
+        destRow.visibility = if (show) View.VISIBLE else View.GONE
+        if (!show) return
+        val d = unlockDest()
+        destNameText.text = d?.name ?: L.t("Choose a destination", "গন্তব্য বাছুন")
+        destRadiusText.text = if (d != null) {
+            L.num("${d.radius} " + L.t("m radius · tap to change", "মি. ব্যাসার্ধ · বদলাতে চাপুন"))
+        } else {
+            L.t("Tap to choose", "বাছতে চাপুন")
+        }
+        destRow.alpha = if (Store.isActive(a)) 0.4f else 1f
+    }
+
+    private fun pickMode(m: String) {
+        if (Store.isActive(a)) return
+        setUnlockMode(m)
+        refreshModeChips(true)
+        refreshChips()
+        tick()
+    }
+
+    private fun pickDestination() {
+        if (Store.isActive(a)) return
+        val places = Extra.places(a)
+        val items = ArrayList<String>()
+        for (pl in places) items.add(pl.name + "  ·  " + L.num("${pl.radius} " + L.t("m", "মি.")))
+        items.add(L.t("My current location", "আমার বর্তমান অবস্থান"))
+        items.add(L.t("Open map to add a place", "ম্যাপ খুলে জায়গা যোগ করুন"))
+        a.dlg()
+            .setTitle(L.t("Unlock destination", "গন্তব্য বাছুন"))
+            .setItems(items.toTypedArray()) { _, which ->
+                when {
+                    which < places.size -> {
+                        val pl = places[which]
+                        saveUnlockDest(UnlockTarget(pl.lat, pl.lng, pl.radius, pl.name))
+                        refreshDestRow()
+                        tick()
+                    }
+                    which == places.size -> pickCurrentLocation()
+                    else -> a.startActivity(Intent(a, MapActivity::class.java))
+                }
+            }
+            .show()
+    }
+
+    private fun pickCurrentLocation() {
+        if (!Perm.locationOn(a)) {
+            a.requestLocationPerm()
+            return
+        }
+        a.toast(L.t("Finding your location…", "আপনার অবস্থান খোঁজা হচ্ছে…"))
+        Extra.currentLocation(a) { loc ->
+            if (loc == null) {
+                a.toast(L.t("Could not get the location. Turn on GPS and try again outside.", "অবস্থান পাওয়া যায়নি। GPS চালু করে বাইরে আবার চেষ্টা করুন।"))
+            } else {
+                saveUnlockDest(UnlockTarget(loc.latitude, loc.longitude, 200, L.t("Current location", "বর্তমান অবস্থান")))
+                refreshDestRow()
+                tick()
+            }
+        }
+    }
+
+    private fun pickRadius() {
+        if (Store.isActive(a)) return
+        val d = unlockDest() ?: return
+        val radii = intArrayOf(100, 200, 500, 1000)
+        val labels = Array(radii.size) { L.num("${radii[it]} " + L.t("m", "মি.")) }
+        a.dlg()
+            .setTitle(L.t("Radius", "ব্যাসার্ধ"))
+            .setItems(labels) { _, which ->
+                saveUnlockDest(d.copy(radius = radii[which]))
+                refreshDestRow()
+                tick()
+            }
+            .show()
     }
 
     private fun nextText(now: Long): String {
@@ -250,6 +419,8 @@ class HomeScreen(private val a: MainActivity) {
 
     fun tick() {
         val now = System.currentTimeMillis()
+        // backup arrival check (the service listener is the main path)
+        if (Store.unlockTarget(a) != null) PlaceWatcher.checkUnlockLastKnown(a)
         val active = Store.isActive(a)
         val st = statusOf(a, active, now)
         applyStatus(st)
@@ -260,23 +431,48 @@ class HomeScreen(private val a: MainActivity) {
         if (total < 1) total = 1
         val strict = active && p.getBoolean("s_strict", false)
         if (active) {
-            val left = end - now
-            ring.active = true
-            ring.icon = Ic.LOCK
-            ring.main = fmtHms(left)
-            ring.mainColor = C.text
-            ring.sub = L.t("remaining", "বাকি")
-            var frac = left.toFloat() / total.toFloat()
-            if (frac < 0f) frac = 0f
-            if (frac > 1f) frac = 1f
-            ring.animateTo(frac)
-            titleText.setTextAnimated(L.t("Protection is Active", "প্রটেকশন সক্রিয়"))
-            val endAt = fmtClock(end)
-            subText.setTextAnimated(
-                if (strict) L.t("Strict mode · locked until $endAt", "স্ট্রিক্ট মোড · $endAt পর্যন্ত লক")
-                else L.t("Ends at $endAt", "শেষ হবে $endAt")
-            )
-            previewText.text = L.t("Session in progress · ", "সেশন চলছে · ") + fmtDur(total)
+            val mode = Store.unlockMode(a)
+            val target = Store.unlockTarget(a)
+            if (mode == UNLOCK_LOC && target != null) {
+                // no countdown: the lock ends when the user arrives
+                ring.active = true
+                ring.icon = Ic.PIN
+                ring.main = L.t("On the way", "যাত্রায়")
+                ring.mainColor = C.text
+                ring.sub = if (target.name.length > 14) target.name.take(13) + "…" else target.name
+                ring.animateTo(0f)
+                titleText.setTextAnimated(L.t("Protection is Active", "প্রটেকশন সক্রিয়"))
+                subText.setTextAnimated(L.t("Opens when you arrive at ${target.name}", "লক খুলবে: ${target.name} পৌঁছালে"))
+                previewText.text = L.t("Session in progress · ", "সেশন চলছে · ") +
+                    L.t("opens at ${target.name}", "${target.name} পৌঁছালে খুলবে")
+            } else {
+                val left = end - now
+                ring.active = true
+                ring.icon = Ic.LOCK
+                ring.main = fmtHms(left)
+                ring.mainColor = C.text
+                ring.sub = L.t("remaining", "বাকি")
+                var frac = left.toFloat() / total.toFloat()
+                if (frac < 0f) frac = 0f
+                if (frac > 1f) frac = 1f
+                ring.animateTo(frac)
+                titleText.setTextAnimated(L.t("Protection is Active", "প্রটেকশন সক্রিয়"))
+                val endAt = fmtClock(end)
+                if (mode == UNLOCK_EITHER && target != null) {
+                    subText.setTextAnimated(
+                        if (strict) L.t("Strict mode · locked until $endAt or arrival at ${target.name}", "স্ট্রিক্ট মোড · $endAt পর্যন্ত অথবা ${target.name} পৌঁছালে")
+                        else L.t("Ends at $endAt or at ${target.name}", "শেষ হবে $endAt অথবা ${target.name} পৌঁছালে")
+                    )
+                    previewText.text = L.t("Session in progress · ", "সেশন চলছে · ") + fmtDur(total) +
+                        L.t(" or at ${target.name}", " অথবা ${target.name} পৌঁছালে")
+                } else {
+                    subText.setTextAnimated(
+                        if (strict) L.t("Strict mode · locked until $endAt", "স্ট্রিক্ট মোড · $endAt পর্যন্ত লক")
+                        else L.t("Ends at $endAt", "শেষ হবে $endAt")
+                    )
+                    previewText.text = L.t("Session in progress · ", "সেশন চলছে · ") + fmtDur(total)
+                }
+            }
         } else {
             val sel = a.selectedMin * 60_000L
             ring.active = false
@@ -295,15 +491,25 @@ class HomeScreen(private val a: MainActivity) {
                 else -> L.t("Start protection to activate PowerLock", "পাওয়ার লক চালু করতে প্রটেকশন শুরু করুন")
             })
             val ends = fmtClock(now + sel)
-            previewText.text = L.t("Duration ${fmtDur(sel)} · ends at $ends", "সময় ${fmtDur(sel)} · শেষ হবে $ends")
+            val mode = unlockMode()
+            val dest = unlockDest()
+            previewText.text = when {
+                mode == UNLOCK_LOC && dest != null -> L.t("Opens when you arrive at ${dest.name}", "লক খুলবে: ${dest.name} পৌঁছালে")
+                mode == UNLOCK_LOC -> L.t("Choose a destination below", "নিচে গন্তব্য বাছুন")
+                mode == UNLOCK_EITHER && dest != null -> L.t("Duration ${fmtDur(sel)} · ends at $ends or at ${dest.name}", "সময় ${fmtDur(sel)} · শেষ হবে $ends অথবা ${dest.name} পৌঁছালে")
+                mode == UNLOCK_EITHER -> L.t("Duration ${fmtDur(sel)} · ends at $ends · choose a destination", "সময় ${fmtDur(sel)} · শেষ হবে $ends · গন্তব্য বাছুন")
+                else -> L.t("Duration ${fmtDur(sel)} · ends at $ends", "সময় ${fmtDur(sel)} · শেষ হবে $ends")
+            }
         }
         ring.invalidate()
         showView(startBtn, !active)
         showView(stopBtn, active && !strict)
-        showView(extendBtn, active)
+        // location-only sessions have no timer to extend
+        showView(extendBtn, active && Store.unlockMode(a) != UNLOCK_LOC)
         if (lastActive != active) {
             lastActive = active
             refreshChips()
+            refreshModeChips()
         }
         updateWarnings()
     }
@@ -348,7 +554,7 @@ class HomeScreen(private val a: MainActivity) {
                 warnCard(
                     "!",
                     L.t("Battery optimization is on", "ব্যাটারি অপটিমাইজেশন চালু"),
-                    L.t("The system may stop PowerLock. Tap to allow.", "সিস্টেম PowerLock বন্ধ করে দিতে পারে। অনুমতি দিতে চাপুন।")
+                    L.t("The system may stop PowerLock 2. Tap to allow.", "সিস্টেম PowerLock 2 বন্ধ করে দিতে পারে। অনুমতি দিতে চাপুন।")
                 ) {
                     try {
                         a.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
@@ -367,6 +573,40 @@ class HomeScreen(private val a: MainActivity) {
             a.toast(L.t("Enable Accessibility first", "আগে Accessibility চালু করুন"))
             return
         }
+        val mode = unlockMode()
+        if (mode == UNLOCK_TIME) {
+            startTimeSession()
+            return
+        }
+        // location modes need a destination + location permission
+        val dest = unlockDest()
+        if (dest == null) {
+            a.toast(L.t("Choose a destination first", "আগে গন্তব্য বাছুন"))
+            pickDestination()
+            return
+        }
+        if (!Perm.locationOn(a)) {
+            a.dlg()
+                .setTitle(L.t("Location permission needed", "লোকেশন পারমিশন দরকার"))
+                .setMessage(L.t("Location unlock needs location permission, otherwise the lock cannot open on arrival.", "লোকেশনে লক খুলতে লোকেশন পারমিশন লাগবে, না হলে পৌঁছালে লক খুলবে না।"))
+                .setPositiveButton(L.t("Allow", "অনুমতি দিন")) { _, _ -> a.requestLocationPerm() }
+                .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+                .show()
+            return
+        }
+        // already at the destination? warn in the confirm dialog (the lock would open at once)
+        Extra.currentLocation(a) { loc ->
+            var alreadyThere = false
+            if (loc != null) {
+                val res = FloatArray(1)
+                Location.distanceBetween(loc.latitude, loc.longitude, dest.lat, dest.lng, res)
+                alreadyThere = res[0] <= dest.radius
+            }
+            startLocationSession(mode, dest, alreadyThere)
+        }
+    }
+
+    private fun startTimeSession() {
         val ms = a.selectedMin * 60_000L
         val ends = fmtClock(System.currentTimeMillis() + ms)
         val d = fmtDur(ms)
@@ -399,10 +639,59 @@ class HomeScreen(private val a: MainActivity) {
             .show()
     }
 
+    private fun startLocationSession(mode: String, dest: UnlockTarget, alreadyThere: Boolean) {
+        val ms = a.selectedMin * 60_000L
+        val ends = fmtClock(System.currentTimeMillis() + ms)
+        val d = fmtDur(ms)
+        val strictOn = Store.settings(a).getBoolean("strict", false)
+        val body = when (mode) {
+            UNLOCK_LOC -> L.t(
+                "The power menu will stay blocked until you arrive at ${dest.name} (within ${dest.radius} m).",
+                "${dest.name} পৌঁছানো পর্যন্ত (ব্যাসার্ধ ${dest.radius} মি.) পাওয়ার মেনু ব্লক থাকবে।"
+            )
+            else -> L.t(
+                "The power menu will be blocked for $d, until $ends — or it opens early when you arrive at ${dest.name}.",
+                "$d ধরে পাওয়ার মেনু ব্লক থাকবে, $ends পর্যন্ত — অথবা ${dest.name} পৌঁছালে আগেই খুলবে।"
+            )
+        }
+        val extra = if (strictOn) {
+            when (mode) {
+                UNLOCK_LOC -> L.t("\n\nStrict mode is ON: only arriving at ${dest.name} can open it.", "\n\nস্ট্রিক্ট মোড চালু: ${dest.name} পৌঁছানো ছাড়া বন্ধ করা যাবে না।")
+                else -> L.t("\n\nStrict mode is ON: only the timer or arriving at ${dest.name} can open it.", "\n\nস্ট্রিক্ট মোড চালু: সময় শেষ হওয়া বা ${dest.name} পৌঁছানো ছাড়া বন্ধ করা যাবে না।")
+            }
+        } else {
+            L.t("\n\nStopping early needs a confirmation code.", "\n\nআগে বন্ধ করতে কনফার্মেশন কোড লাগবে।")
+        }
+        val there = if (alreadyThere) L.t("\n\nYou are already at ${dest.name} — the lock will open right away.", "\n\nতুমি ইতিমধ্যে ${dest.name}-এ আছো — লক শুরু করলেই খুলে যাবে।") else ""
+        val bgWarn = if (!Perm.backgroundLocationOn(a)) L.t("\n\n\"Allow all the time\" is off: arrival may not be detected with the screen off.", "\n\n\"সবসময় অনুমতি\" বন্ধ: স্ক্রিন বন্ধ থাকলে পৌঁছানো ধরা নাও পড়তে পারে।") else ""
+        a.dlg()
+            .setTitle(L.t("Start protection?", "প্রটেকশন শুরু করবেন?"))
+            .setMessage(L.num(body + extra + there + bgWarn))
+            .setPositiveButton(L.t("Start", "শুরু করুন")) { _, _ ->
+                // location-only: the 15-day cap is only a safety valve, arrival ends it
+                val dur = if (mode == UNLOCK_LOC) MAX_MIN * 60_000L else ms
+                Store.startSession(a, dur, "manual", dest, mode)
+                PlaceWatcher.sync(a) // start watching for the arrival right away
+                PlaceWatcher.checkUnlockNow(a)
+                a.toast(L.t("Protection started", "প্রটেকশন শুরু হয়েছে"))
+                tick()
+            }
+            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+            .show()
+    }
+
     private fun onStop() {
         if (!Store.isActive(a)) return
         if (Store.isStrict(a)) {
-            a.toast(L.t("Strict mode: cannot stop before the timer ends", "স্ট্রিক্ট মোড: সময় শেষ না হওয়া পর্যন্ত বন্ধ করা যাবে না"))
+            val mode = Store.unlockMode(a)
+            val target = Store.unlockTarget(a)
+            a.toast(
+                when {
+                    mode == UNLOCK_LOC && target != null -> L.t("Strict mode: only arriving at ${target.name} can open it", "স্ট্রিক্ট মোড: ${target.name} পৌঁছানো ছাড়া বন্ধ করা যাবে না")
+                    mode == UNLOCK_EITHER && target != null -> L.t("Strict mode: only the timer or arriving at ${target.name} can open it", "স্ট্রিক্ট মোড: সময় শেষ হওয়া বা ${target.name} পৌঁছানো ছাড়া বন্ধ করা যাবে না")
+                    else -> L.t("Strict mode: cannot stop before the timer ends", "স্ট্রিক্ট মোড: সময় শেষ না হওয়া পর্যন্ত বন্ধ করা যাবে না")
+                }
+            )
             return
         }
         val code = (100000..999999).random().toString()
@@ -437,6 +726,7 @@ class HomeScreen(private val a: MainActivity) {
 
     private fun customDialog() {
         if (Store.isActive(a)) return
+        if (unlockMode() == UNLOCK_LOC) return
         val box = LinearLayout(a)
         box.orientation = LinearLayout.VERTICAL
         box.setPadding(a.dp(24), a.dp(8), a.dp(24), 0)
@@ -937,8 +1227,8 @@ class SettingsScreen(private val a: MainActivity) {
 
         // about
         val about = a.card()
-        about.addView(a.section(L.t("About PowerLock", "PowerLock সম্পর্কে")))
-        about.addView(a.tv("PowerLock", 18f, C.text, 1), lp(MATCH, WRAP, t = a.dp(10)))
+        about.addView(a.section(L.t("About PowerLock 2", "PowerLock 2 সম্পর্কে")))
+        about.addView(a.tv("PowerLock 2", 18f, C.text, 1), lp(MATCH, WRAP, t = a.dp(10)))
         about.addView(a.tv(L.t("Version ", "সংস্করণ ") + L.num(APP_VERSION), 13f, C.muted))
         about.addView(a.tv(L.t("Build ", "বিল্ড ") + L.num(Extra.BUILD_ID), 13f, C.muted))
         about.addView(a.tv(a.packageName, 12f, C.muted))

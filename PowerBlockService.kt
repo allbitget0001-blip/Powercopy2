@@ -1,4 +1,4 @@
-package com.example.powerlocks
+package com.powerlock.app
 
 import android.view.accessibility.AccessibilityWindowInfo
 import android.os.Build
@@ -1107,7 +1107,7 @@ class PowerBlockService : AccessibilityService() {
         root.setBackgroundColor(Color.argb(245, 8, 16, 12))
         root.isClickable = true
         root.addView(IconView(this, Ic.SHIELD, C.primary), lp(dp(84), dp(84)))
-        val title = tv(L.t("PowerLock is active", "PowerLock সক্রিয়"), 24f, C.text, 1)
+        val title = tv(L.t("PowerLock 2 is active", "PowerLock 2 সক্রিয়"), 24f, C.text, 1)
         title.gravity = Gravity.CENTER
         root.addView(title, lp(WRAP, WRAP, t = dp(16)))
         val sub = tv("", 15f, C.muted)

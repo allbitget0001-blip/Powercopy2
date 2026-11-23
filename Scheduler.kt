@@ -1,4 +1,4 @@
-package com.example.powerlocks
+package com.powerlock.app
 
 import android.app.AlarmManager
 import android.app.PendingIntent
@@ -9,7 +9,7 @@ import android.os.Build
 import android.util.Log
 import java.util.Calendar
 
-const val ACTION_SCHEDULE = "com.example.powerlocks.SCHEDULE_TICK"
+const val ACTION_SCHEDULE = "com.powerlock.app.SCHEDULE_TICK"
 
 object Scheduler {
 

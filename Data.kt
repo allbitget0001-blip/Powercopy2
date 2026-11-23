@@ -1,4 +1,4 @@
-package com.example.powerlocks
+package com.powerlock.app
 
 import android.app.AlarmManager
 import android.content.Context
@@ -64,6 +64,14 @@ enum class PStatus { READY, ACTIVE, SCHEDULED, COMPLETED }
 data class Schedule(val id: Long, val days: Int, val startMin: Int, val endMin: Int, val enabled: Boolean)
 
 data class Session(val start: Long, val end: Long, val dur: Long, val ok: Boolean, val src: String)
+
+/** Unlock condition for a running session: time only, location only, or either one. */
+const val UNLOCK_TIME = "time"
+const val UNLOCK_LOC = "loc"
+const val UNLOCK_EITHER = "either"
+
+/** Destination that ends a location-unlock session when the device arrives within [radius] metres. */
+data class UnlockTarget(val lat: Double, val lng: Double, val radius: Int, val name: String)
 
 // ---------- formatting helpers ----------
 
@@ -191,14 +199,67 @@ object Store {
         if (System.currentTimeMillis() < end) return
         val src = p.getString("src", "manual") ?: "manual"
         addSession(ctx, Session(p.getLong("start", end), end, p.getLong("total", 0), true, src))
-        p.edit().putBoolean("active", false).putLong("lastDone", end).apply()
+        val e = p.edit().putBoolean("active", false).putLong("lastDone", end)
+        clearUnlock(e)
+        e.apply()
+        PlaceWatcher.sync(ctx) // no session left: stop watching unless the location lock needs it
     }
 
-    fun startSession(ctx: Context, durationMs: Long, src: String): Boolean {
+    /** The running session's unlock destination, or null for a time-only session. */
+    fun unlockTarget(ctx: Context): UnlockTarget? {
+        val p = lock(ctx)
+        if (p.getString("u_mode", UNLOCK_TIME) == UNLOCK_TIME) return null
+        if (!p.contains("u_lat")) return null
+        return UnlockTarget(
+            Double.fromBits(p.getLong("u_lat", 0)),
+            Double.fromBits(p.getLong("u_lng", 0)),
+            p.getInt("u_radius", 200),
+            p.getString("u_name", "") ?: ""
+        )
+    }
+
+    /** The running session's unlock mode: "time", "loc" or "either". */
+    fun unlockMode(ctx: Context): String = lock(ctx).getString("u_mode", UNLOCK_TIME) ?: UNLOCK_TIME
+
+    /**
+     * Ends the running session because the device arrived at its unlock destination.
+     * Works like a time expiry (a completed session) and bypasses strict mode, because
+     * arriving was the agreed unlock condition. Returns true when a session was ended.
+     */
+    @Synchronized
+    fun finalizeByLocation(ctx: Context): Boolean {
+        val p = lock(ctx)
+        if (!p.getBoolean("active", false)) return false
+        if (unlockTarget(ctx) == null) return false
+        val now = System.currentTimeMillis()
+        val start = p.getLong("start", now)
+        val src = p.getString("src", "manual") ?: "manual"
+        addSession(ctx, Session(start, now, now - start, true, src))
+        val e = p.edit().putBoolean("active", false).putLong("lastDone", now).putLong("end", now)
+        clearUnlock(e)
+        e.apply()
+        PlaceWatcher.sync(ctx) // no session left: stop watching unless the location lock needs it
+        kickService(ctx) // refresh the notification: the lock is off now
+        return true
+    }
+
+    private fun clearUnlock(e: SharedPreferences.Editor) {
+        e.remove("u_mode").remove("u_lat").remove("u_lng").remove("u_radius").remove("u_name")
+    }
+
+    fun startSession(ctx: Context, durationMs: Long, src: String): Boolean =
+        startSession(ctx, durationMs, src, null, UNLOCK_TIME)
+
+    /**
+     * Starts a session. [unlock] + [mode] make it a location session: "loc" ends only on
+     * arrival (durationMs is then just the 15-day safety cap), "either" ends on arrival
+     * or when the time runs out, whichever comes first.
+     */
+    fun startSession(ctx: Context, durationMs: Long, src: String, unlock: UnlockTarget?, mode: String): Boolean {
         if (isActive(ctx)) return false
         val now = System.currentTimeMillis()
         val st = settings(ctx)
-        lock(ctx).edit()
+        val e = lock(ctx).edit()
             .putBoolean("s_strict", st.getBoolean("strict", false))
             .putBoolean("s_guard", st.getBoolean("guard", true))
             .putBoolean("active", true)
@@ -207,7 +268,16 @@ object Store {
             .putLong("total", durationMs)
             .putString("src", src)
             .putLong("lastDone", 0)
-            .apply()
+        if (unlock != null && mode != UNLOCK_TIME) {
+            e.putString("u_mode", mode)
+                .putLong("u_lat", unlock.lat.toRawBits())
+                .putLong("u_lng", unlock.lng.toRawBits())
+                .putInt("u_radius", unlock.radius)
+                .putString("u_name", unlock.name)
+        } else {
+            clearUnlock(e)
+        }
+        e.apply()
         kickService(ctx)
         return true
     }
@@ -244,7 +314,9 @@ object Store {
         val w = Scheduler.activeWindowEnd(ctx, now)
         val e = p.edit().putBoolean("active", false).putLong("end", now)
         if (w != null) e.putLong("suppress", w)
+        clearUnlock(e)
         e.apply()
+        PlaceWatcher.sync(ctx) // no session left: stop watching unless the location lock needs it
         kickService(ctx)
     }
 

@@ -1,7 +1,9 @@
-package com.example.powerlocks
+package com.powerlock.app
 
 import android.graphics.drawable.Icon
+import android.graphics.RadialGradient
 import android.graphics.RectF
+import android.graphics.Shader
 import android.graphics.Path
 import android.graphics.Paint
 import android.graphics.Canvas
@@ -34,6 +36,8 @@ class KeepAliveService : Service() {
     private fun onHeartbeat() {
         try {
             Store.lock(this).edit().putLong("kas_heartbeat", System.currentTimeMillis()).apply()
+            // backup arrival check for a location-unlock session (cheap, last known fix only)
+            PlaceWatcher.checkUnlockLastKnown(this)
         } catch (e: Exception) {
             Log.e(TAG, "heartbeat failed", e)
         }
@@ -78,7 +82,7 @@ class KeepAliveService : Service() {
     }
 
     /**
-     * Large icon: the app logo (milk white tile, green shield, white padlock), drawn here directly.
+     * Large icon: the app logo (dark tile, glowing green shield, white padlock), drawn here directly.
      * It does not depend on the launcher icon or on any icon cache of the phone.
      */
     private fun buildLogo(): Bitmap? {
@@ -86,12 +90,22 @@ class KeepAliveService : Service() {
             val size = dp(64)
             val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
             val c = Canvas(bmp)
+            val dark = Color.parseColor("#0B1F16")
+            val green = Color.parseColor("#1FCB85")
             val milk = Color.parseColor("#F6F3EA")
-            val green = Color.parseColor("#1E9E68")
 
             val tile = Paint(Paint.ANTI_ALIAS_FLAG)
-            tile.color = milk
+            tile.color = dark
             c.drawRoundRect(RectF(0f, 0f, size.toFloat(), size.toFloat()), size * 0.24f, size * 0.24f, tile)
+
+            // soft glow behind the shield (radial gradient, same as the launcher icon)
+            val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+            glowPaint.shader = RadialGradient(
+                size / 2f, size / 2f, size * 0.48f,
+                intArrayOf(Color.argb(140, 0x1F, 0xCB, 0x85), Color.TRANSPARENT),
+                null, Shader.TileMode.CLAMP
+            )
+            c.drawCircle(size / 2f, size / 2f, size * 0.48f, glowPaint)
 
             // same shapes as the launcher icon (108 x 108 viewport), zoomed on the shield
             c.save()
@@ -153,7 +167,7 @@ class KeepAliveService : Service() {
             L.load(this)
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             nm.createNotificationChannel(
-                NotificationChannel("powerlock", "PowerLock", NotificationManager.IMPORTANCE_LOW)
+                NotificationChannel("powerlock", "PowerLock 2", NotificationManager.IMPORTANCE_LOW)
             )
             val done = NotificationChannel("powerlock_done", "Session finished", NotificationManager.IMPORTANCE_HIGH)
             done.enableVibration(true)
@@ -171,6 +185,7 @@ class KeepAliveService : Service() {
             if (Store.isLocationSession(this)) Store.stopSession(this, force = true)
             PlaceWatcher.sync(this) // resume location watching after a restart/reboot
             PlaceWatcher.checkNow(this) // already at a saved place? lock right away
+            PlaceWatcher.checkUnlockNow(this) // location-unlock session? check arrival right away
             Watchdog.enqueue(this) // safety net: restart the service every 15 min if it dies
         } catch (e: Exception) {
             Log.e(TAG, "KeepAliveService start failed", e)
@@ -198,15 +213,32 @@ class KeepAliveService : Service() {
         addLogoExtras(b)
 
         if (active) {
+            val mode = Store.unlockMode(this)
+            val target = Store.unlockTarget(this)
             b.setContentTitle(L.t("Protection active", "প্রটেকশন সক্রিয়"))
-                .setContentText(L.t("Ends at ", "শেষ হবে ") + fmtClock(end))
-                .setUsesChronometer(true)
-                .setChronometerCountDown(true)
-                .setShowWhen(true)
-                .setWhen(end)
+            when {
+                mode == UNLOCK_LOC && target != null -> {
+                    // no countdown: arrival ends it (the 15-day end is only a safety cap)
+                    b.setContentText(L.t("Opens at ${target.name}", "${target.name} পৌঁছালে খুলবে"))
+                }
+                mode == UNLOCK_EITHER && target != null -> {
+                    b.setContentText(L.t("Ends at ", "শেষ হবে ") + fmtClock(end) + L.t(" or at ${target.name}", " অথবা ${target.name} পৌঁছালে"))
+                        .setUsesChronometer(true)
+                        .setChronometerCountDown(true)
+                        .setShowWhen(true)
+                        .setWhen(end)
+                }
+                else -> {
+                    b.setContentText(L.t("Ends at ", "শেষ হবে ") + fmtClock(end))
+                        .setUsesChronometer(true)
+                        .setChronometerCountDown(true)
+                        .setShowWhen(true)
+                        .setWhen(end)
+                }
+            }
             handler.postDelayed(finishTask, end - now)
         } else {
-            b.setContentTitle(L.t("PowerLock is ready", "PowerLock প্রস্তুত"))
+            b.setContentTitle(L.t("PowerLock 2 is ready", "PowerLock 2 প্রস্তুত"))
                 .setContentText(L.t("Protection is off", "প্রটেকশন বন্ধ আছে"))
         }
         startForeground(1, b.build())

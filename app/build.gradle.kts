@@ -24,11 +24,11 @@ run {
 }
 
 android {
-    namespace = "com.example.powerlocks"
+    namespace = "com.powerlock.app"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.example.powerlocks"
+        applicationId = "com.powerlock.app"
         minSdk = 26
         targetSdk = 34
         versionCode = 1

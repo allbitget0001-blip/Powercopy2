@@ -1,4 +1,4 @@
-package com.example.powerlocks
+package com.powerlock.app
 
 import android.content.BroadcastReceiver
 import android.content.Context
