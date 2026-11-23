@@ -50,9 +50,6 @@ class MainActivity : Activity() {
         override fun run() {
             try {
                 Store.finalizeIfExpired(this@MainActivity)
-                // a DND restore that failed earlier (permission revoked
-                // mid-lock) is retried while no lock runs
-                if (!Store.isActive(this@MainActivity)) Dnd.restore(this@MainActivity)
                 home?.tick()
                 // widget countdown: every 30 s is enough (the service heartbeat
                 // updates it every 60 s while the app is closed)
@@ -75,14 +72,9 @@ class MainActivity : Activity() {
         C.load(this)
         tab = savedInstanceState?.getInt("tab") ?: 0
 
-        // Notifications: ask once per install. Re-asking on every cold start
-        // is noise, and after two denials the system auto-denies silently —
-        // the Settings permission card explains the rest.
         if (Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED &&
-            !Store.settings(this).getBoolean("notif_asked", false)
+            checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED
         ) {
-            Store.settings(this).edit().putBoolean("notif_asked", true).apply()
             requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 1)
         }
 
@@ -118,45 +110,16 @@ class MainActivity : Activity() {
         super.onResume()
         handler.post(ticker)
         if (tab == 3) go(3, false) // refresh permission status after returning from system settings
-        if (tab == 4) PowerBlockService.diagOpen = true // back on Protection: the Diagnostic card is visible
     }
 
     override fun onPause() {
         handler.removeCallbacks(ticker)
-        PowerBlockService.diagOpen = false // the app is in the background: no card is visible
         super.onPause()
     }
 
     override fun onDestroy() {
         VoiceQuotes.shutdown()
-        Store.flushRoutePoints(this) // persist any batched route points
         super.onDestroy()
-    }
-
-    override fun onRequestPermissionsResult(code: Int, perms: Array<String>, res: IntArray) {
-        super.onRequestPermissionsResult(code, perms, res)
-        val granted = res.any { it == PackageManager.PERMISSION_GRANTED }
-        when (code) {
-            1 -> {
-                // notifications: refresh the Settings permission card (no re-prompt here)
-                if (tab == 3) go(3, false)
-            }
-            11 -> {
-                // foreground location: restart watching, refresh the screen,
-                // then chain the background-location prompt
-                if (granted) {
-                    PlaceWatcher.sync(this)
-                    go(tab, false)
-                    requestLocationPerm()
-                }
-            }
-            12 -> {
-                if (granted) {
-                    PlaceWatcher.sync(this)
-                    go(tab, false)
-                }
-            }
-        }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -248,7 +211,6 @@ class MainActivity : Activity() {
 
     fun go(i: Int, animate: Boolean = true) {
         tab = i
-        PowerBlockService.diagOpen = false // a new screen is coming: the Diagnostic card re-enables it if shown
         content.removeAllViews()
         home = null
         val v: View = when (i) {

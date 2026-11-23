@@ -12,7 +12,6 @@ import android.util.Log
 import kotlin.math.PI
 import kotlin.math.sin
 import kotlin.random.Random
-import kotlin.concurrent.thread
 
 /**
  * Focus sounds: calming noise generated in code (no downloads, no audio assets).
@@ -54,58 +53,44 @@ object FocusSound {
     private var currentChoice = OFF
 
     /** Called on lock start/end and on service restart: play iff a lock runs and a sound is chosen. */
+    @Synchronized
     fun sync(ctx: Context) {
-        val toJoin = ArrayList<Thread>()
-        synchronized(this) {
-            if (Store.isActive(ctx) && choice(ctx) != OFF) startInternal(ctx, explicit = false, toJoin = toJoin)
-            else {
-                wantsPlay = false
-                toJoin.addAll(halt())
-            }
-        }
-        joinAsync(toJoin)
+        if (Store.isActive(ctx) && choice(ctx) != OFF) startInternal(ctx, explicit = false)
+        else stop()
     }
 
     /** The user picked a sound in Settings: start right away even on silent/vibrate. */
+    @Synchronized
     fun startExplicit(ctx: Context) {
-        val toJoin = ArrayList<Thread>()
-        synchronized(this) {
-            if (choice(ctx) != OFF) startInternal(ctx, explicit = true, toJoin = toJoin)
-        }
-        joinAsync(toJoin)
+        if (choice(ctx) != OFF) startInternal(ctx, explicit = true)
     }
 
     /** Mixer preview: plays the given (unsaved) volumes right away, even without a lock. */
+    @Synchronized
     fun previewMix(ctx: Context, vols: Map<String, Int>) {
-        val toJoin = ArrayList<Thread>()
-        synchronized(this) {
-            if (SoundMixer.activeChannels(ctx, vols).isEmpty()) {
-                wantsPlay = false
-                toJoin.addAll(halt())
-            } else {
-                startInternal(ctx, explicit = true, forceChoice = MIX, forceVols = vols, toJoin = toJoin)
+        if (SoundMixer.activeChannels(ctx, vols).isEmpty()) {
+            stop()
+            return
+        }
+        startInternal(ctx, explicit = true, forceChoice = MIX, forceVols = vols)
+    }
+
+    @Synchronized
+    fun stop() {
+        wantsPlay = false
+        halt()
+    }
+
+    /** Stops playback but keeps [wantsPlay], so an audio-focus regain can resume. */
+    private fun halt() {
+        running = false
+        for (w in workers) w.interrupt()
+        for (w in workers) {
+            try {
+                w.join(500)
+            } catch (_: Exception) {
             }
         }
-        joinAsync(toJoin)
-    }
-
-    fun stop() {
-        val toJoin: List<Thread>
-        synchronized(this) {
-            wantsPlay = false
-            toJoin = halt()
-        }
-        joinAsync(toJoin)
-    }
-
-    /** Stops playback but keeps [wantsPlay], so an audio-focus regain can resume.
-     * Returns the worker threads to join — the caller joins them AFTER
-     * releasing the monitor (see [joinAsync]), so a stop never blocks the
-     * main thread or holds the lock while workers exit. */
-    private fun halt(): List<Thread> {
-        running = false
-        val toJoin = ArrayList(workers)
-        for (w in toJoin) w.interrupt()
         workers.clear()
         for (tr in tracks) {
             try {
@@ -123,22 +108,6 @@ object FocusSound {
         } catch (_: Exception) {
         }
         focusReq = null
-        return toJoin
-    }
-
-    /** Joins worker threads on a background thread: the old workers exit
-     * promptly (running=false + the track was stopped), and nothing here
-     * needs to wait for them — the next generation writes to new tracks. */
-    private fun joinAsync(list: List<Thread>) {
-        if (list.isEmpty()) return
-        thread(name = "focus-sound-join", isDaemon = true) {
-            for (w in list) {
-                try {
-                    w.join(500)
-                } catch (_: Exception) {
-                }
-            }
-        }
     }
 
     /**
@@ -146,11 +115,10 @@ object FocusSound {
      * (unsaved volumes, even without a lock); otherwise the stored choice
      * and mix are used. A mix starts one track per active channel.
      */
-    private fun startInternal(ctx: Context, explicit: Boolean, forceChoice: String? = null, forceVols: Map<String, Int>? = null, toJoin: MutableList<Thread>) {
+    private fun startInternal(ctx: Context, explicit: Boolean, forceChoice: String? = null, forceVols: Map<String, Int>? = null) {
         val ch = forceChoice ?: choice(ctx)
         if (ch == OFF) {
-            wantsPlay = false
-            toJoin.addAll(halt())
+            stop()
             return
         }
         // the channels to play: the mix's active channels, or the single chosen sound
@@ -160,8 +128,7 @@ object FocusSound {
             listOf(ch to 0.6f)
         }
         if (channels.isEmpty()) {
-            wantsPlay = false
-            toJoin.addAll(halt())
+            stop()
             return
         }
         if (forceChoice == null && forceVols == null && running && currentChoice == ch) {
@@ -173,7 +140,7 @@ object FocusSound {
         if (!explicit && am.ringerMode != AudioManager.RINGER_MODE_NORMAL) return
         appCtx = ctx.applicationContext
         wantsPlay = true
-        toJoin.addAll(halt())
+        halt()
         // audio focus: another app's audio pauses us; we resume when it ends
         try {
             val attrs = AudioAttributes.Builder()
@@ -185,16 +152,12 @@ object FocusSound {
                 .setOnAudioFocusChangeListener({ change ->
                     when (change) {
                         AudioManager.AUDIOFOCUS_LOSS, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                            val tj: List<Thread>
-                            synchronized(this) { tj = halt() }
-                            joinAsync(tj)
+                            synchronized(this) { halt() }
                         }
                         AudioManager.AUDIOFOCUS_GAIN -> {
                             val c = appCtx
                             if (c != null && wantsPlay && Store.isActive(c)) {
-                                val tj = ArrayList<Thread>()
-                                synchronized(this) { startInternal(c, explicit = true, toJoin = tj) }
-                                joinAsync(tj)
+                                synchronized(this) { startInternal(c, explicit = true) }
                             }
                         }
                     }
@@ -245,7 +208,7 @@ object FocusSound {
         } catch (e: Exception) {
             Log.e(TAG, "focus sound: start failed", e)
             wantsPlay = false
-            toJoin.addAll(halt())
+            halt()
         }
     }
 
@@ -284,13 +247,7 @@ object FocusSound {
                     chunk[i] = (v * 12000f).toInt().coerceIn(-32768, 32767).toShort()
                 }
                 if (!running) break
-                val written = tr.write(chunk, 0, chunk.size)
-                if (written < 0) {
-                    // a dead track returns an error instead of throwing: stop
-                    // generating into it instead of busy-looping at full CPU
-                    Log.e(TAG, "focus sound: write failed ($written)")
-                    break
-                }
+                tr.write(chunk, 0, chunk.size)
             } catch (e: Exception) {
                 Log.e(TAG, "focus sound: write failed", e)
                 break

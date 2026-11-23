@@ -113,10 +113,6 @@ object Routine {
     /** Saves one weekday's tasks and re-arms the alarms. */
     fun saveTasks(ctx: Context, day: Int, list: List<RoutineTask>) {
         putTasks(ctx, day, list)
-        // today's snapshot follows the live list (past days keep theirs)
-        if (day == dayIdx(Calendar.getInstance())) {
-            saveSnapshot(ctx, Store.dayKey(0), list.map { it.id }.toSet())
-        }
         rescheduleAlarms(ctx)
     }
 
@@ -179,56 +175,6 @@ object Routine {
         }
         for (k in drop) obj.remove(k)
         Store.settings(ctx).edit().putString(key, obj.toString()).apply()
-    }
-
-    // ----- day snapshots: the task-id set a day is judged against -----
-    // A past day must be judged against the tasks that existed THEN, not
-    // against the list as it looks now — otherwise adding a task to Monday's
-    // list retroactively breaks last Monday's streak day. The snapshot is
-    // taken the first time a day is evaluated and never changes afterwards;
-    // today always uses the live list (tasks can still be added and done),
-    // and its snapshot is refreshed whenever today's list is saved.
-    // A missing key means "no snapshot yet"; an empty array means "no tasks".
-
-    private fun snapshotIds(ctx: Context, dayKey: String): Set<Long>? {
-        val obj = idMap(ctx, "routine_snapshot")
-        if (!obj.has(dayKey)) return null
-        val out = HashSet<Long>()
-        try {
-            val arr = obj.optJSONArray(dayKey) ?: return out
-            for (i in 0 until arr.length()) {
-                try {
-                    out.add(arr.getLong(i))
-                } catch (_: Exception) {
-                    // one malformed entry: skip it, keep the rest
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "routine snapshot read failed", e)
-        }
-        return out
-    }
-
-    private fun saveSnapshot(ctx: Context, dayKey: String, ids: Set<Long>) {
-        // a corrupt stored map must never be overwritten with a fresh one
-        if (JsonGuard.isCorrupt(Store.settings(ctx), "routine_snapshot")) {
-            Log.e(TAG, "routine snapshot corrupt, keeping stored value")
-            return
-        }
-        val obj = idMap(ctx, "routine_snapshot")
-        val arr = JSONArray()
-        for (id in ids) arr.put(id)
-        obj.put(dayKey, arr)
-        // prune days older than 90 days (the streak never looks further back)
-        val keep = (0 until 90).map { Store.dayKey(it) }.toSet()
-        val keys = obj.keys()
-        val drop = ArrayList<String>()
-        while (keys.hasNext()) {
-            val k = keys.next()
-            if (k !in keep) drop.add(k)
-        }
-        for (k in drop) obj.remove(k)
-        Store.settings(ctx).edit().putString("routine_snapshot", obj.toString()).apply()
     }
 
     fun doneIds(ctx: Context, dayKey: String): Set<Long> = idsFor(ctx, "routine_done", dayKey)
@@ -336,25 +282,13 @@ object Routine {
         var i = if (today.isNotEmpty() && !todayDone) 1 else 0
         var streak = 0
         while (i < 90) {
-            val dayKey = Store.dayKey(i)
-            // today is judged against the live list; a past day against its
-            // snapshot (taken the first time the day is evaluated, so later
-            // edits to that weekday's list cannot rewrite history)
-            val ids = if (i == 0) {
-                tasksAgo(ctx, 0).map { it.id }.toSet()
-            } else {
-                snapshotIds(ctx, dayKey) ?: run {
-                    val cur = tasksAgo(ctx, i).map { it.id }.toSet()
-                    saveSnapshot(ctx, dayKey, cur)
-                    cur
-                }
-            }
-            if (ids.isEmpty()) {
+            val tasks = tasksAgo(ctx, i)
+            if (tasks.isEmpty()) {
                 i++
                 continue
             }
-            val done = doneIds(ctx, dayKey)
-            if (ids.all { it in done } || StreakProtection.isRoutineProtected(ctx, dayKey)) {
+            val done = doneIds(ctx, Store.dayKey(i))
+            if (tasks.all { it.id in done } || StreakProtection.isRoutineProtected(ctx, Store.dayKey(i))) {
                 streak++
                 i++
             } else break
@@ -413,22 +347,15 @@ object Routine {
         )
     )
 
-    /** Replaces the whole routine (all weekdays) with the template's tasks.
-     * A task that already exists with the same title and time keeps its id,
-     * so today's check-offs and the streak survive applying a template. */
+    /** Replaces the whole routine (all weekdays) with the template's tasks. */
     fun applyTemplate(ctx: Context, tpl: RoutineTemplate) {
+        val now = System.currentTimeMillis()
         for (day in 0..6) {
-            val existing = tasksForDay(ctx, day)
-            val list = tpl.tasks.map { t ->
-                val title = L.t(t.first, t.second)
-                val kept = existing.find { (it.title == t.first || it.title == t.second) && it.timeMin == t.third }
-                if (kept != null) RoutineTask(kept.id, title, t.third, 30, kept.verify)
-                else RoutineTask(Store.newId(), title, t.third, 30, "manual")
+            val list = tpl.tasks.mapIndexed { i, t ->
+                RoutineTask(now + day * 100L + i, L.t(t.first, t.second), t.third, 30, "manual")
             }
             putTasks(ctx, day, list)
         }
-        // today's snapshot follows the new list (past days keep theirs)
-        saveSnapshot(ctx, Store.dayKey(0), tasksToday(ctx).map { it.id }.toSet())
         rescheduleAlarms(ctx)
     }
 
@@ -550,9 +477,6 @@ object Routine {
             if (taskId in missed) return
             missed.add(taskId)
             saveIds(ctx, "routine_missed", dayKey, missed)
-            // a stale alarm (delayed past midnight by Doze) records the miss
-            // for yesterday but must not start a penalty lock today for it
-            if (dayKey != Store.dayKey(0)) return
             if (Store.isActive(ctx)) return // a lock is running: mark missed, let it stand
             startPenalty(ctx, t)
         } catch (e: Exception) {

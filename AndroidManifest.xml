@@ -24,7 +24,7 @@
     </queries>
 
     <application
-        android:allowBackup="false"
+        android:allowBackup="true"
         android:icon="@mipmap/powerlock2_icon"
         android:roundIcon="@mipmap/powerlock2_icon"
         android:label="PowerLock 2"

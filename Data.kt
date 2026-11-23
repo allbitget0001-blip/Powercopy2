@@ -253,20 +253,16 @@ object Dnd {
         }
     }
 
-    /** Called when a lock ends: restore the previous interruption mode.
-     * The saved mode is only forgotten after a successful restore — if the
-     * permission was revoked mid-lock, the value is kept so a later retry
-     * (Home tick / heartbeat) can still restore it instead of leaving the
-     * phone in ALARMS-only mode forever. */
+    /** Called when a lock ends: restore the previous interruption mode. */
     fun restore(ctx: Context) {
         try {
             val p = Store.lock(ctx)
             if (!p.contains("dnd_prev")) return
             val prev = p.getInt("dnd_prev", NotificationManager.INTERRUPTION_FILTER_ALL)
+            p.edit().remove("dnd_prev").apply()
             val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             if (nm.isNotificationPolicyAccessGranted) {
                 nm.setInterruptionFilter(prev)
-                p.edit().remove("dnd_prev").apply()
             }
         } catch (e: Exception) {
             Log.e(TAG, "DND restore failed", e)
@@ -345,7 +341,7 @@ object FocusScore {
         val focusMap = Store.focusDayMap(ctx)
         var focusMin = focusMap[key] ?: 0
         if (daysAgo == 0) focusMin += liveMin(ctx)
-        val locks = Store.sessions(ctx).count { it.ok && Store.dayKeyFor(it.start) == key }
+        val locks = Store.sessions(ctx).count { it.ok && Store.dayKeyFor(it.end) == key }
         val now = System.currentTimeMillis()
         val from = Store.dayStart(now, -daysAgo)
         val to = Store.dayStart(now, -daysAgo + 1)
@@ -361,7 +357,7 @@ object FocusScore {
         val locksByDay = HashMap<String, Int>()
         for (s in Store.sessions(ctx)) {
             if (!s.ok) continue
-            val k = Store.dayKeyFor(s.start)
+            val k = Store.dayKeyFor(s.end)
             locksByDay[k] = (locksByDay[k] ?: 0) + 1
         }
         val attemptsByDay = HashMap<String, Int>()
@@ -528,20 +524,6 @@ object Store {
 
     fun soundVib(ctx: Context): Boolean = settings(ctx).getBoolean("sound", true)
 
-    // Unique ids for user-created items (habits, notes, plan tasks, capsules,
-    // groups, profiles, presets, places, schedules, routine template tasks):
-    // millis alone collides when two items are created in the same
-    // millisecond, so the id is millis * 1000 plus a per-process counter
-    // (strictly increasing within the process — two calls can never return
-    // the same value, even in the same millisecond).
-    private var lastId = 0L
-    @Synchronized
-    fun newId(): Long {
-        val now = System.currentTimeMillis() * 1000
-        lastId = maxOf(now, lastId + 1)
-        return lastId
-    }
-
     fun isActive(ctx: Context): Boolean {
         finalizeIfExpired(ctx)
         val p = lock(ctx)
@@ -580,7 +562,6 @@ object Store {
         SiteBlock.sync(ctx) // lock over: the site-block VPN stops
         LockWidget.refresh(ctx)
         PlaceWatcher.sync(ctx) // no session left: stop watching unless the location lock needs it
-        kickService(ctx) // refresh the notification: the lock is off now
     }
 
     /** The running session's unlock destination, or null for a time-only session. */
@@ -875,67 +856,26 @@ object Store {
         return total
     }
 
-    // Route batching: points accumulate in memory and are persisted at most
-    // once a minute (or every 20 points), so a location update no longer
-    // re-serializes up to 2000 points on every fix. The last recorded point
-    // is cached too, so the 20 m / 60 s filter never needs a disk read.
-    private var routePending = ArrayList<RoutePoint>()
-    private var routePendingDay = ""
-    private var routeLastFlush = 0L
-    private var routeLastPoint: RoutePoint? = null
-    private var routeLastPointDay = ""
-
-    /** Record a point (at most one per 20 m / 60 s, max 2000 points a day, kept 30 days).
-     * Writes are batched — see [flushRoutePoints]. */
-    @Synchronized
+    /** Record a point (at most one per 20 m / 60 s, max 2000 points a day, kept 30 days). */
     fun addRoutePoint(ctx: Context, lat: Double, lng: Double) {
         try {
-            val day = todayKey()
-            val now = System.currentTimeMillis()
-            // a new day: flush the previous day's pending points first
-            if (routePending.isNotEmpty() && routePendingDay != day) flushRoutePoints(ctx)
-            if (routePending.isEmpty()) routePendingDay = day
-            val last = if (routeLastPointDay == day) routeLastPoint else {
-                val diskLast = routeForDay(ctx, day).lastOrNull()
-                routeLastPoint = diskLast
-                routeLastPointDay = day
-                diskLast
-            }
-            if (last != null) {
-                val res = FloatArray(1)
-                android.location.Location.distanceBetween(last.lat, last.lng, lat, lng, res)
-                if (res[0] < 20f && now - last.t < 60_000L) return
-            }
-            val pt = RoutePoint(lat, lng, now)
-            routePending.add(pt)
-            routeLastPoint = pt
-            routeLastPointDay = day
-            if (routePending.size >= 20 || now - routeLastFlush >= 60_000L) flushRoutePoints(ctx)
-        } catch (e: Exception) {
-            Log.e(TAG, "route save failed", e)
-        }
-    }
-
-    /** Persists the pending route points. Called by the batching in
-     * [addRoutePoint] and on service destroy / app close so the last points
-     * are not lost. */
-    @Synchronized
-    fun flushRoutePoints(ctx: Context) {
-        if (routePending.isEmpty()) return
-        val pending = ArrayList(routePending)
-        val day = routePendingDay
-        routePending.clear()
-        routeLastFlush = System.currentTimeMillis()
-        try {
             val p = locData(ctx)
+            val day = todayKey()
             // a corrupt stored day or day index must never be overwritten
-            // with a fresh empty list — the points are dropped instead
+            // with a fresh empty list — the point is dropped instead
             if (JsonGuard.isCorrupt(p, "route_$day") || JsonGuard.isCorrupt(p, "route_days")) {
                 Log.e(TAG, "route data corrupt, keeping stored value")
                 return
             }
             val pts = routeForDay(ctx, day).toMutableList()
-            pts.addAll(pending)
+            val now = System.currentTimeMillis()
+            val last = pts.lastOrNull()
+            if (last != null) {
+                val res = FloatArray(1)
+                android.location.Location.distanceBetween(last.lat, last.lng, lat, lng, res)
+                if (res[0] < 20f && now - last.t < 60_000L) return
+            }
+            pts.add(RoutePoint(lat, lng, now))
             while (pts.size > 2000) pts.removeAt(0)
             val arr = JSONArray()
             for (pt in pts) {
@@ -957,7 +897,7 @@ object Store {
             e.putString("route_days", daysArr.toString())
             e.apply()
         } catch (e: Exception) {
-            Log.e(TAG, "route flush failed", e)
+            Log.e(TAG, "route save failed", e)
         }
     }
 
@@ -1105,13 +1045,11 @@ object Store {
         lock(ctx).edit().putBoolean("sum_pending", false).apply()
     }
 
-    /** A completed lock counts toward the streak + focus totals (date-keyed, kept 90 days).
-     * Attributed to the START day, like the Statistics totals (sumRange) — so a
-     * lock crossing midnight counts toward the day it started everywhere. */
+    /** A completed lock counts toward the streak + focus totals (date-keyed, kept 90 days). */
     private fun recordFocus(ctx: Context, s: Session) {
         try {
             val p = lock(ctx)
-            val day = dayKeyFor(s.start)
+            val day = dayKeyFor(s.end)
             val min = (s.dur / 60000L).toInt().coerceAtLeast(1)
             val obj = JSONObject(p.getString("focus_days", "{}"))
             obj.put(day, obj.optInt(day, 0) + min)
@@ -1144,7 +1082,7 @@ object Store {
                 var total = 0L
                 for (s in all) {
                     if (!s.ok) continue
-                    val day = dayKeyFor(s.start)
+                    val day = dayKeyFor(s.end)
                     val min = (s.dur / 60000L).toInt().coerceAtLeast(1)
                     obj.put(day, obj.optInt(day, 0) + min)
                     total += min
@@ -1283,7 +1221,7 @@ object Store {
 
     fun addHabit(ctx: Context, name: String) {
         val list = habits(ctx).toMutableList()
-        list.add(Habit(newId(), name, System.currentTimeMillis()))
+        list.add(Habit(System.currentTimeMillis(), name, System.currentTimeMillis()))
         saveHabits(ctx, list)
     }
 
@@ -1393,7 +1331,7 @@ object Store {
         if (clean.isEmpty()) return
         val list = focusNotes(ctx).toMutableList()
         val now = System.currentTimeMillis()
-        list.add(FocusNote(newId(), clean.take(500), now, duringLock))
+        list.add(FocusNote(now, clean.take(500), now, duringLock))
         saveFocusNotes(ctx, list)
     }
 

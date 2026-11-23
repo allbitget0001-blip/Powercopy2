@@ -78,7 +78,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "65"
+    const val BUILD_ID = "63"
 
     // ---------- presets ----------
 
@@ -332,18 +332,13 @@ object Extra {
 
     /** Add foreground seconds for one app today (prunes days older than 7). */
     fun addUsage(ctx: Context, pkg: String, seconds: Long) {
-        addUsageForDay(ctx, pkg, seconds, Store.dayKey(0))
-    }
-
-    /** Add foreground seconds for one app on a specific day: a slice that
-     * crossed midnight credits each day its own seconds. */
-    fun addUsageForDay(ctx: Context, pkg: String, seconds: Long, dayKey: String) {
         if (seconds <= 0) return
         try {
             val p = usagePrefs(ctx)
-            val obj = JSONObject(p.getString("u_$dayKey", "{}"))
+            val day = Store.dayKey(0)
+            val obj = JSONObject(p.getString("u_$day", "{}"))
             obj.put(pkg, obj.optLong(pkg, 0) + seconds)
-            val e = p.edit().putString("u_$dayKey", obj.toString())
+            val e = p.edit().putString("u_$day", obj.toString())
             val keep = (0 until 7).map { "u_" + Store.dayKey(it) }.toSet()
             for (k in p.all.keys) if (k.startsWith("u_") && k !in keep) e.remove(k)
             e.apply()
@@ -478,37 +473,6 @@ object Extra {
         }
     }
 
-    /** The stored history JSON as-is: the service compares it with the cached
-     * copy to notice when the stored value changed behind its back. */
-    fun historyRaw(ctx: Context): String = usagePrefs(ctx).getString("hist", "[]") ?: "[]"
-
-    /** Writes a history list directly (no re-parse): the service keeps the
-     * list in memory and writes through on every change. Prunes entries
-     * older than 7 days and caps at 1000 (oldest dropped). */
-    fun saveHistoryEntries(ctx: Context, list: List<UsageSession>) {
-        try {
-            val p = usagePrefs(ctx)
-            // a corrupt stored list must never be overwritten with a fresh one
-            if (JsonGuard.isCorrupt(p, "hist")) {
-                Log.e(TAG, "usage history corrupt, keeping stored value")
-                return
-            }
-            val cutoff = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000
-            val kept = list.filter { it.open >= cutoff }.takeLast(HIST_MAX)
-            val arr = JSONArray()
-            for (s in kept) {
-                val o = JSONObject()
-                o.put("p", s.pkg)
-                o.put("o", s.open)
-                o.put("c", s.close)
-                arr.put(o)
-            }
-            p.edit().putString("hist", arr.toString()).apply()
-        } catch (e: Exception) {
-            Log.e(TAG, "history save failed", e)
-        }
-    }
-
     /** All stored sessions, newest first. */
     fun historyEntries(ctx: Context): List<UsageSession> {
         val out = ArrayList<UsageSession>()
@@ -636,7 +600,7 @@ object Extra {
     }
 
     fun addAppGroup(ctx: Context, name: String, pkgs: List<String>): AppGroup {
-        val g = AppGroup(Store.newId(), name, pkgs)
+        val g = AppGroup(System.currentTimeMillis(), name, pkgs)
         val list = appGroups(ctx).toMutableList()
         list.add(g)
         saveAppGroups(ctx, list)
@@ -700,7 +664,7 @@ object Extra {
     }
 
     fun addLockProfile(ctx: Context, name: String, pkgs: List<String>): LockProfile {
-        val g = LockProfile(Store.newId(), name, pkgs)
+        val g = LockProfile(System.currentTimeMillis(), name, pkgs)
         val list = lockProfiles(ctx).toMutableList()
         list.add(g)
         saveLockProfiles(ctx, list)
@@ -1345,7 +1309,7 @@ private fun MainActivity.presetDialog(existing: Preset?, done: () -> Unit) {
         } else {
             val all = Extra.presets(this)
             val updated: List<Preset> = if (existing == null) {
-                all + Preset(Store.newId(), name, total.toInt(), strict)
+                all + Preset(System.currentTimeMillis(), name, total.toInt(), strict)
             } else {
                 all.map { if (it.id == existing.id) Preset(it.id, name, total.toInt(), strict) else it }
             }
@@ -1864,9 +1828,6 @@ private fun MainActivity.showAppBlockPicker(
  * can be traced instead of guessed. The log is viewed here and copied to the
  * clipboard to be sent for analysis. */
 fun MainActivity.diagnosticCard(): View {
-    // the card is visible: the service may run its 3 s diagnostic scan
-    // (it stays off otherwise, so the scan never runs unseen)
-    PowerBlockService.diagOpen = true
     val c = card()
     c.addView(section(L.t("Diagnostic", "ডায়াগনস্টিক")), lp(MATCH, WRAP, b = dp(6)))
     c.addView(tv(L.t("When a reels app is open during a lock, the service records a simple summary of what it sees on screen. Open the log, copy it and send it to find out why a reel was not blocked.", "লক চলাকালীন রিলস অ্যাপ খুললে সার্ভিস স্ক্রিনে কী দেখছে তার সহজ সারাংশ এখানে দেখা যাবে। লগ দেখে কপি করে পাঠালে বোঝা যাবে কেন রিলস ব্লক হয়নি।"), 13f, C.muted), lp(MATCH, WRAP, b = dp(10)))
@@ -2926,7 +2887,7 @@ private fun MainActivity.placeDialog(lat: Double, lng: Double, done: () -> Unit)
         if (name.isEmpty()) {
             nameEt.error = L.t("Enter a name", "নাম লিখুন")
         } else {
-            val id = Store.newId()
+            val id = System.currentTimeMillis()
             // no time: the lock follows presence only, so the place has no duration (min = 0)
             Extra.savePlaces(this, Extra.places(this) + Place(id, name, lat, lng, radius, 0, true, mode))
             PlaceWatcher.sync(this)

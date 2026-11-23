@@ -61,12 +61,6 @@ class PowerBlockService : AccessibilityService() {
          * in the Diagnostic card so it reads simply. Capped at 60 lines. */
         val debugSummary = mutableListOf<String>()
 
-        /** True while the Diagnostic card is on screen: the 3 s diagnostic
-         * scan only runs then, so it never walks the tree unseen. Set by the
-         * card itself and cleared when the app leaves the Protection tab. */
-        @Volatile
-        var diagOpen = false
-
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -125,12 +119,6 @@ class PowerBlockService : AccessibilityService() {
     private var lastClosedUptime = 0L
     private var lastClosedOpenWall = 0L
     private var lastClosedOpenUptime = 0L
-    // Usage history cache: the list is parsed once and kept in memory, so
-    // closing a session no longer re-parses up to 1000 entries on every app
-    // switch. The stored string's signature catches external changes.
-    private var histCache: MutableList<UsageSession>? = null
-    private var histCacheSig = ""
-    private var lastMidnightCheck = 0L // throttles the midnight split check (once per 60 s)
     private var imePkg: String? = null
     private var imeCheckedAt = 0L
     private var limitBlockActive = false // the overlay is up for a daily limit (no lock needed)
@@ -175,12 +163,7 @@ class PowerBlockService : AccessibilityService() {
     )
     private val triggersLower = triggers.map { it.lowercase() }
 
-    private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        // the keep-alive heartbeat writes kas_heartbeat every 60 s: it is not
-        // config, so it must not trigger a full state re-read (JSON parses)
-        if (key == "kas_heartbeat") return@OnSharedPreferenceChangeListener
-        readState()
-    }
+    private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> readState() }
     private val hideTask = Runnable { hideOverlay() }
     private val backAgain = Runnable { if (protecting()) performGlobalAction(GLOBAL_ACTION_BACK) }
     private val backAgain2 = Runnable { if (protecting()) performGlobalAction(GLOBAL_ACTION_BACK) }
@@ -312,13 +295,6 @@ class PowerBlockService : AccessibilityService() {
         val pkg = e.packageName?.toString() ?: return
         try {
             maybeReviveKeepAlive() // the system re-binds this service, so it revives the keep-alive service
-            // midnight split (throttled): a slice is split within ~60 s of
-            // midnight even without an app switch
-            val nowU = SystemClock.uptimeMillis()
-            if (nowU - lastMidnightCheck >= 60_000) {
-                lastMidnightCheck = nowU
-                checkMidnight(nowU)
-            }
             // daily limits work without a lock: track foreground time on every app switch
             if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) trackUsage(pkg)
             // the block screen follows the foreground app: hide it once protection ends,
@@ -408,20 +384,9 @@ class PowerBlockService : AccessibilityService() {
             lastGuardScan = now
         }
         val root = rootInActiveWindow ?: return
-        try {
-            val nodes = root.findAccessibilityNodeInfosByText("PowerLock")
-            try {
-                if (nodes.isNotEmpty() && now - lastAction >= 300) {
-                    lastAction = now
-                    performGlobalAction(GLOBAL_ACTION_HOME)
-                }
-            } finally {
-                for (n in nodes) {
-                    try { n.recycle() } catch (_: Exception) { }
-                }
-            }
-        } finally {
-            try { root.recycle() } catch (_: Exception) { }
+        if (root.findAccessibilityNodeInfosByText("PowerLock").isNotEmpty() && now - lastAction >= 300) {
+            lastAction = now
+            performGlobalAction(GLOBAL_ACTION_HOME)
         }
     }
 
@@ -458,7 +423,6 @@ class PowerBlockService : AccessibilityService() {
             usageDay = Store.dayKey(0)
             usageToday.clear()
             usageToday.putAll(Extra.usageTodayAll(this))
-            histCached() // warm the history cache (one parse at startup, not per switch)
             flushRestartHistorySession()
             resumeLiveSlice()
         } catch (e: Exception) {
@@ -516,8 +480,12 @@ class PowerBlockService : AccessibilityService() {
             if (pkg.contains("systemui") || pkg == packageName || pkg.contains("permissioncontroller")) return
             if (pkg == currentImePackage()) return
             val now = SystemClock.uptimeMillis()
-            checkMidnight(now) // a slice spanning midnight splits there first
             val day = Store.dayKey(0)
+            if (day != usageDay) {
+                usageDay = day
+                usageToday.clear()
+                usageToday.putAll(Extra.usageTodayAll(this))
+            }
             val prev = usagePkg
             if (prev != null && prev != pkg) {
                 val secs = (now - usageSince) / 1000
@@ -539,49 +507,6 @@ class PowerBlockService : AccessibilityService() {
     }
 
     /**
-     * Midnight split: when the day changed since the slice started, the
-     * in-flight slice is closed at midnight so the old day keeps its own
-     * seconds (usage is attributed to the day it happened on, like the
-     * Statistics totals). The history session splits too, so each day's log
-     * stays within its day. Called from trackUsage and, throttled, from the
-     * event stream — so a slice is split within ~60 s of midnight even
-     * without an app switch.
-     */
-    private fun checkMidnight(nowUptime: Long) {
-        try {
-            val today = Store.dayKey(0)
-            if (today == usageDay) return
-            val nowWall = System.currentTimeMillis()
-            val prev = usagePkg
-            if (prev != null) {
-                // the slice may span more than one midnight: credit each day
-                var segWall = nowWall - (nowUptime - usageSince)
-                var segUptime = usageSince
-                while (Store.dayKeyFor(segWall) != today) {
-                    val nextMidnight = Store.dayStart(segWall, 1)
-                    val segSecs = ((nextMidnight - segWall) / 1000).coerceAtLeast(0)
-                    if (segSecs > 0) Extra.addUsageForDay(this, prev, segSecs, Store.dayKeyFor(segWall))
-                    val segEndUptime = segUptime + (nextMidnight - segWall)
-                    closeHistorySession(segEndUptime)
-                    // no 30 s merge across the split: it would undo it
-                    lastClosedPkg = null
-                    openHistorySession(prev, segEndUptime, nextMidnight)
-                    segWall = nextMidnight
-                    segUptime = segEndUptime
-                }
-                // the rest of the slice belongs to today: restart it at midnight
-                usageSince = segUptime
-                Extra.setLiveSlice(this, prev, segUptime, today)
-            }
-            usageDay = today
-            usageToday.clear()
-            usageToday.putAll(Extra.usageTodayAll(this))
-        } catch (e: Exception) {
-            Log.e(TAG, "midnight check failed", e)
-        }
-    }
-
-    /**
      * Close the history session being timed (if any) and log it. The close
      * time is derived from the uptime delta so a wall-clock change mid-session
      * can't stretch or shrink the entry.
@@ -590,7 +515,7 @@ class PowerBlockService : AccessibilityService() {
         val pkg = histPkg ?: return
         try {
             val closeWall = histOpenWall + (nowUptime - histOpenUptime)
-            histAdd(pkg, histOpenWall, closeWall)
+            Extra.addHistoryEntry(this, pkg, histOpenWall, closeWall)
             lastClosedPkg = pkg
             lastClosedUptime = nowUptime
             lastClosedOpenWall = histOpenWall
@@ -602,65 +527,16 @@ class PowerBlockService : AccessibilityService() {
         Extra.setOpenHistory(this, null, 0L, 0L)
     }
 
-    // ---------- usage history cache ----------
-
-    /** The cached history list (oldest first, storage order), reloaded when
-     * the stored value changed behind the service's back. */
-    private fun histCached(): MutableList<UsageSession> {
-        val raw = Extra.historyRaw(this)
-        val sig = raw.length.toString() + ":" + raw.hashCode()
-        val cached = histCache
-        if (cached != null && sig == histCacheSig) return cached
-        val loaded = Extra.historyEntries(this).asReversed().toMutableList()
-        histCache = loaded
-        histCacheSig = sig
-        return loaded
-    }
-
-    private fun histSigSync() {
-        val raw = Extra.historyRaw(this)
-        histCacheSig = raw.length.toString() + ":" + raw.hashCode()
-    }
-
-    /** Append one closed session through the cache (write-through). */
-    private fun histAdd(pkg: String, openWall: Long, closeWall: Long) {
-        if (closeWall <= openWall) return
-        val list = histCached()
-        list.add(UsageSession(pkg, openWall, closeWall))
-        // mirror the stored prune/cap so the cache stays in sync with disk
-        val cutoff = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000
-        val kept = list.filter { it.open >= cutoff }.takeLast(1000)
-        if (kept.size != list.size) {
-            list.clear()
-            list.addAll(kept)
-        }
-        Extra.saveHistoryEntries(this, list)
-        histSigSync()
-    }
-
-    /** Remove the newest entry if it matches pkg + open time (the 30 s merge). */
-    private fun histRemoveLast(pkg: String, openWall: Long): Boolean {
-        val list = histCached()
-        val last = list.lastOrNull() ?: return false
-        if (last.pkg != pkg || last.open != openWall) return false
-        list.removeAt(list.size - 1)
-        Extra.saveHistoryEntries(this, list)
-        histSigSync()
-        return true
-    }
-
     /**
      * Start timing a history session for [pkg]. If the same app closed less
      * than 30 s ago, the closed entry is removed and the session resumes from
      * its original open time (rapid switching doesn't spam the log).
-     * [openWall] is the session's wall-clock open time (midnight for a
-     * split session, now otherwise).
      */
-    private fun openHistorySession(pkg: String, nowUptime: Long, openWall: Long = System.currentTimeMillis()) {
-        val nowWall = openWall
+    private fun openHistorySession(pkg: String, nowUptime: Long) {
+        val nowWall = System.currentTimeMillis()
         val lastPkg = lastClosedPkg
         if (lastPkg != null && lastPkg == pkg && nowUptime - lastClosedUptime < 30_000L) {
-            if (histRemoveLast(pkg, lastClosedOpenWall)) {
+            if (Extra.removeLastHistoryEntry(this, pkg, lastClosedOpenWall)) {
                 histPkg = pkg
                 histOpenWall = lastClosedOpenWall
                 histOpenUptime = lastClosedOpenUptime
@@ -686,7 +562,7 @@ class PowerBlockService : AccessibilityService() {
             if (pkg == null) return
             val nowWall = System.currentTimeMillis()
             if (nowWall > openWall && nowWall - openWall < 12L * 60 * 60 * 1000) {
-                histAdd(pkg, openWall, nowWall)
+                Extra.addHistoryEntry(this, pkg, openWall, nowWall)
             }
             Extra.setOpenHistory(this, null, 0L, 0L)
         } catch (e: Exception) {
@@ -697,7 +573,6 @@ class PowerBlockService : AccessibilityService() {
     /** Flush the in-flight usage slice to the per-day totals (no-op when none). */
     private fun flushUsageSlice() {
         try {
-            checkMidnight(SystemClock.uptimeMillis()) // split at midnight first, if crossed
             val prev = usagePkg ?: return
             val secs = (SystemClock.uptimeMillis() - usageSince) / 1000
             if (secs > 0) {
@@ -870,9 +745,8 @@ class PowerBlockService : AccessibilityService() {
         }
         val detected = looksLikeReels(e)
         // diagnostic: every 3s, record what the service actually sees on this
-        // screen, so a missed block can be traced instead of guessed — but
-        // only while the Diagnostic card is open (the scan walks the tree)
-        if (diagOpen && now - lastDebugScan >= 3000) {
+        // screen, so a missed block can be traced instead of guessed
+        if (now - lastDebugScan >= 3000) {
             lastDebugScan = now
             debugScanReels(e.packageName?.toString() ?: "?", e, detected)
         }
@@ -1198,41 +1072,32 @@ class PowerBlockService : AccessibilityService() {
 
     /** A marker tab is selected or checked (node, parent or grandparent). */
     private fun reelsTabSelected(): Boolean {
-        val root = rootInActiveWindow ?: return false
-        try {
+        return try {
+            val root = rootInActiveWindow ?: return false
             for (marker in reelsTabMarkers) {
                 val nodes = root.findAccessibilityNodeInfosByText(marker)
-                var found = false
                 for (n in nodes) {
                     // the label itself may not carry the state — its tab container does
-                    var f = n.isSelected || n.isChecked
+                    var found = n.isSelected || n.isChecked
                     var p1: AccessibilityNodeInfo? = null
                     var p2: AccessibilityNodeInfo? = null
-                    if (!f) {
+                    if (!found) {
                         p1 = n.parent
-                        f = p1?.let { it.isSelected || it.isChecked } == true
+                        found = p1?.let { it.isSelected || it.isChecked } == true
                     }
-                    if (!f && p1 != null) {
+                    if (!found && p1 != null) {
                         p2 = p1.parent
-                        f = p2?.let { it.isSelected || it.isChecked } == true
+                        found = p2?.let { it.isSelected || it.isChecked } == true
                     }
                     try { p2?.recycle() } catch (_: Exception) { }
                     try { p1?.recycle() } catch (_: Exception) { }
-                    if (f) {
-                        found = true
-                        break
-                    }
-                }
-                for (n in nodes) {
                     try { n.recycle() } catch (_: Exception) { }
+                    if (found) return true
                 }
-                if (found) return true
             }
-            return false
+            false
         } catch (ex: Exception) {
-            return false
-        } finally {
-            try { root.recycle() } catch (_: Exception) { }
+            false
         }
     }
 
@@ -1446,15 +1311,9 @@ class PowerBlockService : AccessibilityService() {
     /** The power menu always has the "power off" slider (English or Bengali). */
     private fun hasPowerMenu(n: AccessibilityNodeInfo?): Boolean {
         if (n == null) return false
-        for (t in listOf("to power off", "পাওয়ার বন্ধ", "রিস্টার্ট")) {
-            val nodes = n.findAccessibilityNodeInfosByText(t)
-            val found = nodes.isNotEmpty()
-            for (x in nodes) {
-                try { x.recycle() } catch (_: Exception) { }
-            }
-            if (found) return true
-        }
-        return false
+        return n.findAccessibilityNodeInfosByText("to power off").isNotEmpty() ||
+                n.findAccessibilityNodeInfosByText("পাওয়ার বন্ধ").isNotEmpty() ||
+                n.findAccessibilityNodeInfosByText("রিস্টার্ট").isNotEmpty()
     }
 
     /** System windows first (where the power menu lives); other windows only when [all] is true. */
@@ -1463,30 +1322,16 @@ class PowerBlockService : AccessibilityService() {
             val list = windows
             var found = false
             for (w in list) {
-                if (w.type == AccessibilityWindowInfo.TYPE_SYSTEM) {
-                    val root = w.root
-                    try {
-                        if (root != null && hasPowerMenu(root)) {
-                            found = true
-                            break
-                        }
-                    } finally {
-                        try { root?.recycle() } catch (_: Exception) { }
-                    }
+                if (w.type == AccessibilityWindowInfo.TYPE_SYSTEM && hasPowerMenu(w.root)) {
+                    found = true
+                    break
                 }
             }
             if (!found && all) {
                 for (w in list) {
-                    if (w.type != AccessibilityWindowInfo.TYPE_SYSTEM) {
-                        val root = w.root
-                        try {
-                            if (root != null && hasPowerMenu(root)) {
-                                found = true
-                                break
-                            }
-                        } finally {
-                            try { root?.recycle() } catch (_: Exception) { }
-                        }
+                    if (w.type != AccessibilityWindowInfo.TYPE_SYSTEM && hasPowerMenu(w.root)) {
+                        found = true
+                        break
                     }
                 }
             }
@@ -1583,7 +1428,6 @@ class PowerBlockService : AccessibilityService() {
     private fun cleanup() {
         flushUsageSlice()
         closeHistorySession(SystemClock.uptimeMillis())
-        Store.flushRoutePoints(this) // persist any batched route points
         handler.removeCallbacksAndMessages(null)
         hideOverlay()
         hideBlockOverlay()
