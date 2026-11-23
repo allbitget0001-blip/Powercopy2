@@ -137,7 +137,7 @@ object StreakProtection {
 
 data class WheelSeg(val label: String, val color: Int)
 
-private data class RewardDef(
+data class RewardDef(
     val id: String, val weight: Int,
     val labelEn: String, val labelBn: String, val color: String
 )
