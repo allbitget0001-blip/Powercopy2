@@ -70,11 +70,14 @@ data class PlaceEvent(val placeId: Long, val name: String, val inTime: Long, val
 /** A named set of apps (Protection tab). Blocking stays per-app; a group is a shortcut. */
 data class AppGroup(val id: Long, val name: String, val pkgs: List<String>)
 
+/** A lock profile (Protection tab): its apps are blocked for a session started with it. */
+data class LockProfile(val id: Long, val name: String, val pkgs: List<String>)
+
 object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "50"
+    const val BUILD_ID = "51"
 
     // ---------- presets ----------
 
@@ -135,14 +138,15 @@ object Extra {
 
     private val lastLog = HashMap<String, Long>()
 
-    /** kind: "power", "settings", "focus", "appblock", "reels", "msgsearch", "limit" or "image". At most one entry per kind every 3 seconds. */
+    /** kind: "power", "settings", "focus", "appblock", "reels", "msgsearch", "limit" or "image". At most one entry per kind+app every 3 seconds. [pkg] is the app the user tried to open ("" when it does not apply). */
     @Synchronized
-    fun logAttempt(ctx: Context, kind: String) {
+    fun logAttempt(ctx: Context, kind: String, pkg: String = "") {
         try {
             val now = System.currentTimeMillis()
-            val last = lastLog[kind] ?: 0L
+            val key = "$kind|$pkg"
+            val last = lastLog[key] ?: 0L
             if (now - last < 3000L) return
-            lastLog[kind] = now
+            lastLog[key] = now
             val p = Store.lock(ctx)
             val old = try {
                 JSONArray(p.getString("attempts", "[]"))
@@ -155,6 +159,7 @@ object Extra {
             val o = JSONObject()
             o.put("t", now)
             o.put("k", kind)
+            if (pkg.isNotEmpty()) o.put("p", pkg)
             out.put(o)
             // lifetime block counter (the attempts list is capped at 1000): seeds once from the list
             val total = if (p.contains("blocks_total")) p.getLong("blocks_total", 0) else old.length().toLong()
@@ -172,6 +177,22 @@ object Extra {
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
                 out.add(Pair(o.getLong("t"), o.getString("k")))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "attempts read failed", e)
+        }
+        return out
+    }
+
+    /** Attempts with the app package: (time, kind, pkg). Entries written before the
+     * package was recorded read as "" — they still count in the totals. */
+    fun attemptsDetailed(ctx: Context): List<Triple<Long, String, String>> {
+        val out = ArrayList<Triple<Long, String, String>>()
+        try {
+            val arr = JSONArray(Store.lock(ctx).getString("attempts", "[]"))
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                out.add(Triple(o.getLong("t"), o.getString("k"), o.optString("p", "")))
             }
         } catch (e: Exception) {
             Log.e(TAG, "attempts read failed", e)
@@ -346,6 +367,33 @@ object Extra {
         return (lim * 60L - usageTodaySec(ctx, pkg)).coerceAtLeast(0L)
     }
 
+    // ---------- live usage slice (for the live screen-time total on Home) ----------
+
+    /** The slice the service is currently timing: package + uptimeMillis start + day key. */
+    fun setLiveSlice(ctx: Context, pkg: String?, sinceUptime: Long, dayKey: String) {
+        try {
+            val e = usagePrefs(ctx).edit()
+            if (pkg == null) {
+                e.remove("live_pkg").remove("live_since").remove("live_day")
+            } else {
+                e.putString("live_pkg", pkg).putLong("live_since", sinceUptime).putString("live_day", dayKey)
+            }
+            e.apply()
+        } catch (e: Exception) {
+            Log.e(TAG, "live slice save failed", e)
+        }
+    }
+
+    /** (package, uptimeMillis start, day key) of the slice being timed now, or (null, 0, ""). */
+    fun liveSlice(ctx: Context): Triple<String?, Long, String> {
+        return try {
+            val p = usagePrefs(ctx)
+            Triple(p.getString("live_pkg", null), p.getLong("live_since", 0L), p.getString("live_day", "") ?: "")
+        } catch (e: Exception) {
+            Triple(null, 0L, "")
+        }
+    }
+
     // ---------- custom block-screen message ----------
 
     /** The user's own motivational message, shown on the block screen (blank = default). */
@@ -416,6 +464,61 @@ object Extra {
 
     fun deleteAppGroup(ctx: Context, id: Long) {
         saveAppGroups(ctx, appGroups(ctx).filter { it.id != id })
+    }
+
+    // ---------- lock profiles (named app sets applied at lock start) ----------
+
+    fun lockProfiles(ctx: Context): List<LockProfile> {
+        val raw = Store.settings(ctx).getString("lock_profiles", null) ?: return emptyList()
+        val out = ArrayList<LockProfile>()
+        try {
+            val arr = JSONArray(raw)
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val pkgs = ArrayList<String>()
+                val pa = o.optJSONArray("pkgs")
+                if (pa != null) for (j in 0 until pa.length()) pkgs.add(pa.getString(j))
+                out.add(LockProfile(o.getLong("id"), o.getString("name"), pkgs))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "lock profiles read failed", e)
+        }
+        return out
+    }
+
+    fun saveLockProfiles(ctx: Context, list: List<LockProfile>) {
+        try {
+            val arr = JSONArray()
+            for (g in list) {
+                val o = JSONObject()
+                o.put("id", g.id)
+                o.put("name", g.name)
+                val pa = JSONArray()
+                for (p in g.pkgs) pa.put(p)
+                o.put("pkgs", pa)
+                arr.put(o)
+            }
+            Store.settings(ctx).edit().putString("lock_profiles", arr.toString()).apply()
+        } catch (e: Exception) {
+            Log.e(TAG, "lock profiles save failed", e)
+        }
+    }
+
+    fun addLockProfile(ctx: Context, name: String, pkgs: List<String>): LockProfile {
+        val g = LockProfile(System.currentTimeMillis(), name, pkgs)
+        val list = lockProfiles(ctx).toMutableList()
+        list.add(g)
+        saveLockProfiles(ctx, list)
+        return g
+    }
+
+    fun updateLockProfile(ctx: Context, id: Long, name: String, pkgs: List<String>) {
+        val list = lockProfiles(ctx).map { if (it.id == id) it.copy(name = name, pkgs = pkgs) else it }
+        saveLockProfiles(ctx, list)
+    }
+
+    fun deleteLockProfile(ctx: Context, id: Long) {
+        saveLockProfiles(ctx, lockProfiles(ctx).filter { it.id != id })
     }
 
     /** Starter groups by well-known package names; only installed apps are kept. */
@@ -2047,6 +2150,119 @@ private fun MainActivity.showGroupAppPicker(
 }
 
 // =====================================================================
+// UI: lock profiles (Protection)
+// =====================================================================
+
+/** Named app sets applied at lock start: a session started with a profile blocks
+ * its apps IN ADDITION to the global full-block list. */
+fun MainActivity.profilesCard(): View {
+    val c = card()
+    c.addView(section(L.t("Lock profiles", "লক প্রোফাইল")))
+    c.addView(
+        tv(
+            L.t("A profile holds extra apps to block. Pick one on Home when you start a lock — its apps are blocked for that session, on top of the full-block list.", "প্রোফাইলে আলাদা অ্যাপ রাখুন। হোম থেকে লক শুরু করার সময় প্রোফাইল বাছলে সেই সেশনে এর অ্যাপগুলোও ব্লক হবে, ফুল-ব্লক লিস্টের সঙ্গে।"),
+            13f, C.muted
+        ),
+        lp(MATCH, WRAP, t = dp(6))
+    )
+    val profiles = Extra.lockProfiles(this)
+    val pm = packageManager
+    if (profiles.isEmpty()) {
+        c.addView(
+            tv(L.t("No profiles yet. Add one below.", "এখনো কোনো প্রোফাইল নেই। নিচে প্রোফাইল যোগ করুন।"), 13f, C.muted),
+            lp(MATCH, WRAP, t = dp(6))
+        )
+    }
+    for (g in profiles) {
+        val r = LinearLayout(this)
+        r.gravity = Gravity.CENTER_VERTICAL
+        r.setPadding(0, dp(10), 0, dp(10))
+        // up to 4 small app icons
+        val icons = LinearLayout(this)
+        icons.orientation = LinearLayout.HORIZONTAL
+        var shown = 0
+        for (pkg in g.pkgs) {
+            if (shown >= 4) break
+            try {
+                val iv = ImageView(this)
+                iv.setImageDrawable(pm.getApplicationIcon(pkg))
+                icons.addView(iv, lp(dp(28), dp(28), r = dp(4)))
+                shown++
+            } catch (e: Exception) {
+                // not installed: skip the icon, the package stays in the profile
+            }
+        }
+        if (shown > 0) r.addView(icons, lp(WRAP, WRAP, r = dp(12)))
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.addView(tv(g.name, 15f, C.text, 1))
+        col.addView(tv(L.num(g.pkgs.size.toString()) + " " + L.t("apps", "টি অ্যাপ"), 12f, C.muted))
+        r.addView(col, lp(0, WRAP, weight = 1f))
+        r.addView(tv("›", 22f, C.muted, 1))
+        r.pressFeedback()
+        r.setOnClickListener { profileEditorDialog(g) { go(4) } }
+        c.addView(r, lp(MATCH, WRAP, t = dp(4)))
+    }
+    val add = outlineBtn(L.t("Add a profile", "প্রোফাইল যোগ করুন"), C.primary)
+    add.setOnClickListener { profileEditorDialog(null) { go(4) } }
+    c.addView(add, lp(MATCH, dp(48), t = dp(10)))
+    return c
+}
+
+/** Create or edit a profile: name + apps. Editing a profile never changes a running
+ * session — the session keeps the app set it started with. */
+private fun MainActivity.profileEditorDialog(existing: LockProfile?, done: () -> Unit) {
+    val box = LinearLayout(this)
+    box.orientation = LinearLayout.VERTICAL
+    box.setPadding(dp(24), dp(8), dp(24), 0)
+    val nameEt = edit(L.t("Profile name (e.g. Work)", "প্রোফাইলের নাম (যেমন কাজ)"), false)
+    if (existing != null) nameEt.setText(existing.name)
+    box.addView(nameEt)
+    val chosen = HashSet<String>(existing?.pkgs ?: emptyList())
+    val countText = tv("", 14f, C.muted)
+    fun refreshCount() {
+        countText.text = L.num(chosen.size.toString()) + " " + L.t("apps in this profile", "টি অ্যাপ এই প্রোফাইলে")
+    }
+    refreshCount()
+    box.addView(countText, lp(MATCH, WRAP, t = dp(14)))
+    val pickBtn = outlineBtn(L.t("Choose apps", "অ্যাপ বাছুন"), C.primary)
+    pickBtn.setOnClickListener {
+        groupAppPicker(chosen) { newSet ->
+            chosen.clear()
+            chosen.addAll(newSet)
+            refreshCount()
+        }
+    }
+    box.addView(pickBtn, lp(MATCH, dp(48), t = dp(10)))
+    box.addView(
+        tv(L.t("A running session keeps the apps it started with — editing a profile only affects the next lock.", "চলমান সেশন তার শুরুর অ্যাপগুলোই রাখে — প্রোফাইল বদলালে পরের লক থেকে কার্যকর হবে।"), 12f, C.muted),
+        lp(MATCH, WRAP, t = dp(10))
+    )
+    val b = dlg()
+        .setTitle(if (existing == null) L.t("New profile", "নতুন প্রোফাইল") else L.t("Edit profile", "প্রোফাইল সম্পাদনা"))
+        .setView(box)
+        .setPositiveButton(L.t("Save", "সংরক্ষণ")) { _, _ ->
+            val name = nameEt.text.toString().trim()
+            if (name.isEmpty()) {
+                toast(L.t("Give the profile a name", "প্রোফাইলের একটা নাম দিন"))
+                return@setPositiveButton
+            }
+            if (existing == null) Extra.addLockProfile(this, name, chosen.toList())
+            else Extra.updateLockProfile(this, existing.id, name, chosen.toList())
+            done()
+        }
+        .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+    if (existing != null) {
+        b.setNeutralButton(L.t("Delete", "মুছুন")) { _, _ ->
+            Extra.deleteLockProfile(this, existing.id)
+            toast(L.t("Profile deleted: ", "প্রোফাইল মোছা হয়েছে: ") + existing.name)
+            done()
+        }
+    }
+    b.show()
+}
+
+// =====================================================================
 // UI: location lock (Settings)
 // =====================================================================
 
@@ -2419,7 +2635,14 @@ private fun MainActivity.placeDialog(lat: Double, lng: Double, done: () -> Unit)
 
 fun MainActivity.attemptsCard(): View {
     val c = card()
-    c.addView(section(L.t("Blocked attempts", "আটকানো চেষ্টা")))
+    c.addView(section(L.t("Temptation counter", "প্রলোভনের হিসাব")))
+    c.addView(
+        tv(
+            L.t("How many times you tried to open a blocked or limited app.", "ব্লক করা বা লিমিট শেষ হওয়া অ্যাপ কতবার খুলতে চেষ্টা করলে।"),
+            13f, C.muted
+        ),
+        lp(MATCH, WRAP, t = dp(6))
+    )
     val list = Extra.attempts(this)
     val now = System.currentTimeMillis()
     val today = Store.dayStart(now, 0)
@@ -2489,5 +2712,59 @@ fun MainActivity.attemptsCard(): View {
         ),
         lp(MATCH, WRAP, t = dp(10))
     )
+
+    // per-app temptation today: which blocked apps the user tried to open most.
+    // Entries written before the app was recorded have no package and are skipped here.
+    val counts = HashMap<String, Int>()
+    for ((t, _, pkg) in Extra.attemptsDetailed(this)) {
+        if (t >= today && pkg.isNotEmpty()) counts[pkg] = (counts[pkg] ?: 0) + 1
+    }
+    if (counts.isNotEmpty()) {
+        c.addView(tv(L.t("Most tempting today", "আজ সবচেয়ে বেশি চেষ্টা"), 13f, C.muted, 1), lp(MATCH, WRAP, t = dp(14)))
+        val pm = packageManager
+        for ((pkg, n) in counts.entries.sortedByDescending { it.value }.take(5)) {
+            val r = LinearLayout(this)
+            r.gravity = Gravity.CENTER_VERTICAL
+            r.setPadding(0, dp(8), 0, dp(2))
+            try {
+                val iv = ImageView(this)
+                iv.setImageDrawable(pm.getApplicationIcon(pkg))
+                r.addView(iv, lp(dp(36), dp(36), r = dp(12)))
+            } catch (e: Exception) {
+                r.addView(View(this), lp(dp(36), dp(36), r = dp(12)))
+            }
+            val label = try {
+                pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+            } catch (e: Exception) {
+                pkg
+            }
+            r.addView(tv(label, 15f, C.text), lp(0, WRAP, weight = 1f))
+            r.addView(tv(L.num(n.toString()) + " " + L.t("tries", "বার চেষ্টা"), 14f, C.text, 1))
+            c.addView(r, lp(MATCH, WRAP, t = dp(4)))
+        }
+    }
     return c
+}
+
+/** Short encouraging quotes shown when a lock completes. Written for this app. */
+object Quotes {
+    private val all = listOf(
+        "You just proved you can choose what matters." to "তুমি এইমাত্র প্রমাণ করলে, কী গুরুত্বপূর্ণ সেটা তুমিই বাছতে পারো।",
+        "Every focused minute is a small win." to "প্রতিটা ফোকাস করা মিনিট একটা ছোট জয়।",
+        "The phone waited. Your goals didn't have to." to "ফোনটা অপেক্ষা করলো। তোমার লক্ষ্যকে অপেক্ষা করতে হয়নি।",
+        "Discipline is picking your biggest wish over a small urge." to "শৃঙ্খলা মানে ছোট একটা ইচ্ছার বদলে সবচেয়ে বড় স্বপ্নটাকে বেছে নেওয়া।",
+        "One lock at a time, one day at a time." to "একবারে একটা লক, একদিনে একদিন।",
+        "Your future self is already grateful." to "তোমার ভবিষ্যতের তুমি এরই মধ্যে কৃতজ্ঞ।",
+        "Attention is your most valuable currency — spend it well." to "মনোযোগ তোমার সবচেয়ে দামি সম্পদ — ভালো করে খরচ করো।",
+        "You didn't miss anything. You gained your time back." to "তুমি কিছুই মিস করোনি। তুমি তোমার সময় ফিরে পেয়েছো।",
+        "Focus grows every time you practise it." to "যতবার অভ্যাস করবে, ফোকাস তত বাড়বে।",
+        "The hardest part was starting. You already did." to "সবচেয়ে কঠিন ছিল শুরু করা। তুমি সেটা করেই ফেলেছো।",
+        "Small wins, stacked daily, become a new life." to "প্রতিদিনের ছোট জয়গুলো জমে নতুন জীবন হয়।",
+        "The next hour is yours too — use it well." to "পরের ঘণ্টাটাও তোমার — ভালো করে ব্যবহার করো।"
+    )
+
+    fun random(): String {
+        val q = all.random()
+        return L.t(q.first, q.second)
+    }
 }

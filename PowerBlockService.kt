@@ -165,6 +165,7 @@ class PowerBlockService : AccessibilityService() {
     private val backAgain2 = Runnable { if (protecting()) performGlobalAction(GLOBAL_ACTION_BACK) }
     private var lastWinScan = 0L
     private var receiverOn = false
+    private var screenReceiverOn = false
 
 
     // The system announces "globalactions" the instant the power button is long-pressed,
@@ -179,6 +180,13 @@ class PowerBlockService : AccessibilityService() {
         }
     }
 
+    // Screen off: stop the usage clock — screen-off time is not screen time.
+    private val screenOffReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context?, i: Intent?) {
+            if (i?.action == Intent.ACTION_SCREEN_OFF) flushUsageOnScreenOff()
+        }
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         try {
@@ -190,6 +198,7 @@ class PowerBlockService : AccessibilityService() {
             ensureOverlay() // pre-build the shield so it can appear instantly
             ensureBlockOverlay() // pre-build the block screen too: it must appear instantly
             registerCloseDialogs()
+            registerScreenOff()
             Store.kickService(this)
             Scheduler.onAlarm(this)
         } catch (e: Exception) {
@@ -213,6 +222,21 @@ class PowerBlockService : AccessibilityService() {
         }
     }
 
+    @Suppress("DEPRECATION")
+    private fun registerScreenOff() {
+        try {
+            val f = IntentFilter(Intent.ACTION_SCREEN_OFF)
+            if (Build.VERSION.SDK_INT >= 33) {
+                registerReceiver(screenOffReceiver, f, Context.RECEIVER_EXPORTED)
+            } else {
+                registerReceiver(screenOffReceiver, f)
+            }
+            screenReceiverOn = true
+        } catch (ex: Exception) {
+            Log.e(TAG, "register screen-off failed", ex)
+        }
+    }
+
     private fun readState() {
         val p = Store.lock(this)
         active = p.getBoolean("active", false)
@@ -228,10 +252,17 @@ class PowerBlockService : AccessibilityService() {
         focusApps = (st.getString("focus_apps", "") ?: "").split(",").filter { it.isNotEmpty() }.toSet()
         abOn = st.getBoolean("ab_on", true)
         abFull = Extra.appBlockFull(this)
+        // a session started with a lock profile blocks its apps too (snapshot taken at
+        // lock start — later profile edits do not change the running session)
+        if (sessionOn) {
+            val snap = p.getString("s_profile_apps", "") ?: ""
+            if (snap.isNotEmpty()) abFull = abFull + snap.split(",").filter { it.isNotEmpty() }.toSet()
+        }
         abReels = Extra.appBlockReels(this)
         abMsg = Extra.appBlockMsg(this)
         limitMap = Extra.dailyLimits(this)
         blockMsg = Extra.blockMessage(this)
+        C.load(this) // the chosen accent colour also colours the block overlay
     }
 
     private fun protecting(): Boolean = (active && System.currentTimeMillis() < endAt) || locProtecting
@@ -360,7 +391,7 @@ class PowerBlockService : AccessibilityService() {
         val now = SystemClock.uptimeMillis()
         if (now - lastFocusAction < 300) return
         lastFocusAction = now
-        Extra.logAttempt(this, "focus")
+        Extra.logAttempt(this, "focus", e.packageName?.toString() ?: "")
         performGlobalAction(GLOBAL_ACTION_HOME)
     }
 
@@ -378,7 +409,7 @@ class PowerBlockService : AccessibilityService() {
         lastBlockAt = now
         limitBlockActive = false // a lock block, not a limit block
         showBlockOverlay(pkg) // screen first: it must cover the app before anything else runs
-        Extra.logAttempt(this, "appblock")
+        Extra.logAttempt(this, "appblock", pkg)
     }
 
     // ---------- daily limits ----------
@@ -410,9 +441,10 @@ class PowerBlockService : AccessibilityService() {
 
     /**
      * Called on every window-state change: closes the previous app's time slice
-     * (persisted only for apps that have a limit) and opens one for the new app.
-     * System UI, the permission screen, our own package and the keyboard never
-     * switch the slice. At midnight the counters reset.
+     * (persisted for every app — the usage dashboard and the live screen-time
+     * total need all of them, not just limited ones) and opens one for the new
+     * app. System UI, the permission screen, our own package and the keyboard
+     * never switch the slice. At midnight the counters reset.
      */
     private fun trackUsage(pkg: String) {
         try {
@@ -428,7 +460,7 @@ class PowerBlockService : AccessibilityService() {
             val prev = usagePkg
             if (prev != null && prev != pkg) {
                 val secs = (now - usageSince) / 1000
-                if (secs > 0 && limitMap.containsKey(prev)) {
+                if (secs > 0) {
                     Extra.addUsage(this, prev, secs)
                     usageToday[prev] = (usageToday[prev] ?: 0L) + secs
                 }
@@ -436,9 +468,26 @@ class PowerBlockService : AccessibilityService() {
             if (prev != pkg) {
                 usagePkg = pkg
                 usageSince = now
+                Extra.setLiveSlice(this, pkg, now, day)
             }
         } catch (e: Exception) {
             Log.e(TAG, "trackUsage failed", e)
+        }
+    }
+
+    /** Screen went off: close the running slice (screen-off time is not usage). */
+    private fun flushUsageOnScreenOff() {
+        try {
+            val prev = usagePkg ?: return
+            val secs = (SystemClock.uptimeMillis() - usageSince) / 1000
+            if (secs > 0) {
+                Extra.addUsage(this, prev, secs)
+                usageToday[prev] = (usageToday[prev] ?: 0L) + secs
+            }
+            usagePkg = null
+            Extra.setLiveSlice(this, null, 0L, "")
+        } catch (e: Exception) {
+            Log.e(TAG, "screen-off usage flush failed", e)
         }
     }
 
@@ -459,7 +508,7 @@ class PowerBlockService : AccessibilityService() {
         lastBlockAt = now
         limitBlockActive = true
         showBlockOverlay(pkg, L.t("Daily limit reached — opens again tomorrow", "দৈনিক লিমিট শেষ — আগামীকাল আবার খুলবে"))
-        Extra.logAttempt(this, "limit")
+        Extra.logAttempt(this, "limit", pkg)
     }
 
 
@@ -605,7 +654,7 @@ class PowerBlockService : AccessibilityService() {
         if (now - lastReelsBack < 1500) return
         lastAppBlockAction = now
         lastReelsBack = now
-        Extra.logAttempt(this, "reels")
+        Extra.logAttempt(this, "reels", e.packageName?.toString() ?: "")
         performGlobalAction(GLOBAL_ACTION_BACK)
     }
 
@@ -742,7 +791,7 @@ class PowerBlockService : AccessibilityService() {
         if (now - lastMsgAction < 500) return
         lastMsgAction = now
         clearFocusedSearchField() // erase the query so the next search starts empty
-        Extra.logAttempt(this, "msgsearch")
+        Extra.logAttempt(this, "msgsearch", e.packageName?.toString() ?: "")
         performGlobalAction(GLOBAL_ACTION_BACK)
     }
 
@@ -1285,6 +1334,14 @@ class PowerBlockService : AccessibilityService() {
                 unregisterReceiver(closeDialogsReceiver)
             } catch (ex: Exception) {
                 Log.e(TAG, "unregister close-dialogs failed", ex)
+            }
+        }
+        if (screenReceiverOn) {
+            screenReceiverOn = false
+            try {
+                unregisterReceiver(screenOffReceiver)
+            } catch (ex: Exception) {
+                Log.e(TAG, "unregister screen-off failed", ex)
             }
         }
         try {
