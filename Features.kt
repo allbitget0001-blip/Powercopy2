@@ -84,7 +84,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "66"
+    const val BUILD_ID = "67"
 
     // ---------- extend time (never reduce) ----------
 
@@ -1372,6 +1372,18 @@ fun MainActivity.siteBlockCard(): View {
             ),
             lp(MATCH, WRAP, t = dp(4))
         )
+        // keyword viewer: the built-in list, A to Z, with search — next to
+        // the blocklist viewer above, so both viewers sit in this one card
+        val viewKw = outlineBtn(L.t("View keywords", "কিওয়ার্ড দেখুন"), C.primary)
+        viewKw.setOnClickListener {
+            try {
+                startActivity(Intent(this, KeywordListActivity::class.java))
+            } catch (e: Exception) {
+                Log.e(TAG, "keyword viewer launch failed", e)
+                toast(L.t("Could not open the keywords", "কিওয়ার্ড খোলা যায়নি"))
+            }
+        }
+        c.addView(viewKw, lp(MATCH, dp(48), t = dp(10)))
     }
     val keywords = Extra.siteKeywords(this)
     for (k in keywords) {
