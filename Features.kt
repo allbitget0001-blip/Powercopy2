@@ -84,7 +84,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "61"
+    const val BUILD_ID = "62"
 
     // ---------- extend time (never reduce) ----------
 
@@ -1282,7 +1282,7 @@ fun MainActivity.siteBlockCard(): View {
     c.addView(
         row(
             L.t("Keyword block", "কিওয়ার্ড ব্লক"),
-            L.t("Blocks any site whose address contains one of your keywords — anywhere in the URL, even a single word. Works during a lock even when the DNS option above is off. Needs accessibility for URL matching.", "যে সাইটের ঠিকানায় তোমার কোনো কিওয়ার্ড আছে তা ব্লক করে — URL-এর যেকোনো জায়গায় একটা শব্দ মিললেই হবে। ওপরের DNS অপশন বন্ধ থাকলেও লক চলাকালীন কাজ করে। URL ম্যাচিং-এর জন্য অ্যাক্সেসিবিলিটি লাগবে।"),
+            L.t("Blocks any site whose address contains one of your keywords — anywhere in the URL, even a single word — and blocks searches that contain a keyword. Works during a lock even when the DNS option above is off. Needs accessibility for URL matching.", "যে সাইটের ঠিকানায় তোমার কোনো কিওয়ার্ড আছে তা ব্লক করে — URL-এর যেকোনো জায়গায় একটা শব্দ মিললেই হবে — আর কিওয়ার্ড দিয়ে সার্চ করলেও ব্লক করে। ওপরের DNS অপশন বন্ধ থাকলেও লক চলাকালীন কাজ করে। URL ম্যাচিং-এর জন্য অ্যাক্সেসিবিলিটি লাগবে."),
             kwSw
         ),
         lp(MATCH, WRAP, t = dp(6))

@@ -53,8 +53,13 @@ import java.util.Locale
  * domain it broadcasts, and this service covers the screen with the block
  * screen; and when URL detection is on, the browser address bar is watched
  * directly, so a blocked site is covered even when the DNS option is off.
- * Keyword block rides the same address-bar watching: any keyword anywhere
- * in the full URL covers the screen too.
+ * The address bar is found by view ID, with a fallback scan for URL-like
+ * text in the window tree, and the check runs on text, window and content
+ * changes plus once when a lock starts — so a page already open, or a
+ * navigation inside an open tab, is still caught. Keyword block rides the
+ * same watching: any keyword anywhere in the full URL covers the screen
+ * too, and a keyword typed in a search field (browsers + the Google app)
+ * does the same. Search fields only — never messaging or password input.
  */
 class PowerBlockService : AccessibilityService() {
 
@@ -168,32 +173,76 @@ class PowerBlockService : AccessibilityService() {
     @Volatile
     private var urlCheckRunning = false
     private var siteReceiverOn = false
+    // Lock-start detection: readState() runs on every lock-pref write, so
+    // these track the false→true transition — only a new lock start scans
+    // the foreground browser at once (a page already open before the lock
+    // must still be caught; no navigation event fires for it).
+    private var lastLockActive = false
+    private var lastLockStart = 0L
+    // Keyword block on search: the typed query is debounced (one check
+    // ~700 ms after the last keystroke) so fast typing is checked once, on
+    // the final text — never dropped by a throttle. The pending text lives
+    // in memory only and is cleared after the check; it is never logged.
+    private var pendingSearchPkg: String? = null
+    private var pendingSearchText = ""
+    private var lastCheckedSearchKw = ""
+    private val searchKwCheckTask = Runnable {
+        val pkg = pendingSearchPkg ?: return@Runnable
+        val text = pendingSearchText
+        pendingSearchPkg = null
+        pendingSearchText = ""
+        maybeCheckSearchKeywords(pkg, text)
+    }
 
-    /** Browsers whose address bar is watched for URL detection. */
+    /** Browsers whose address bar is watched for URL detection. Includes
+     * the Chrome variants — Chrome Beta/Dev/Canary are separate packages,
+     * and a missed package means no URL detection at all in that browser.
+     * Also the other major browsers: Brave, Opera (+ Mini), DuckDuckGo,
+     * Vivaldi, Kiwi, UC Browser and Via (Play + China builds). */
     private val urlDetectBrowsers = setOf(
-        "com.android.chrome", "org.mozilla.firefox",
-        "com.sec.android.app.sbrowser", "com.microsoft.emmx"
-    )
-
-    /** Browsers (for the DNS-block overlay guard): the overlay only pops up
-     * when one of these is in front, so a background prefetch cannot cover
-     * whatever the user is doing. */
-    private val browserPkgs = urlDetectBrowsers + setOf(
+        "com.android.chrome", "com.chrome.beta", "com.chrome.dev",
+        "com.chrome.canary", "org.chromium.chrome",
+        "org.mozilla.firefox",
+        "com.sec.android.app.sbrowser", "com.microsoft.emmx",
         "com.brave.browser", "com.opera.browser", "com.opera.mini.native",
-        "com.duckduckgo.mobile.android", "com.vivaldi.browser", "com.kiwibrowser.browser"
+        "com.duckduckgo.mobile.android", "com.vivaldi.browser",
+        "com.kiwibrowser.browser", "com.UCMobile.intl",
+        "mark.via.gp", "mark.via"
     )
 
-    /** Address-bar view IDs (full "package:id/name" form). Browser updates
-     * can rename these — the DNS option stays the reliable backstop, and a
-     * missed ID only means no URL detection, never a crash. */
+    /** Packages where a search field may carry a keyword: the browsers
+     * above plus the Google search app. Messaging apps are NEVER in this
+     * set — chat input is never read for keyword blocking. */
+    private val searchPkgs = urlDetectBrowsers + setOf(
+        "com.google.android.googlequicksearchbox"
+    )
+
+    /** Address-bar view IDs (full "package:id/name" form). Chromium-based
+     * browsers share the "url_bar" ID. Browser updates can rename these —
+     * the fallback tree scan below covers a missed ID, and a missed ID
+     * only means no URL detection, never a crash. */
     private val addressBarIds = setOf(
         "com.android.chrome:id/url_bar",
         "com.android.chrome:id/search_box",
+        "com.chrome.beta:id/url_bar", "com.chrome.dev:id/url_bar",
+        "com.chrome.canary:id/url_bar", "org.chromium.chrome:id/url_bar",
         "org.mozilla.firefox:id/mozac_browser_toolbar_url_view",
         "org.mozilla.firefox:id/url_bar_title",
         "com.sec.android.app.sbrowser:id/location_bar_edit_text",
         "com.sec.android.app.sbrowser:id/url_bar",
         "com.microsoft.emmx:id/url_bar",
+        "com.microsoft.emmx:id/search_box",
+        "com.brave.browser:id/url_bar",
+        "com.vivaldi.browser:id/url_bar",
+        "com.kiwibrowser.browser:id/url_bar",
+        "com.duckduckgo.mobile.android:id/omnibarTextInput"
+    )
+
+    /** Search-box view IDs (Google app + browser search fields). Used only
+     * to recognise a search field; the text itself is only keyword-checked. */
+    private val searchBoxIds = setOf(
+        "com.google.android.googlequicksearchbox:id/search_box",
+        "com.android.chrome:id/search_box",
         "com.microsoft.emmx:id/search_box"
     )
 
@@ -320,6 +369,20 @@ class PowerBlockService : AccessibilityService() {
         siteUrlOn = st.getBoolean("site_url_on", false)
         if (siteUrlOn) SiteBlockService.preloadBlocklist(this)
         siteKwOn = st.getBoolean("site_kw_on", true) // default ON: hard fallback
+        // lock just started? scan the foreground browser at once: a page
+        // already open before the lock must still be caught (no navigation
+        // event fires for it). readState runs on every lock-pref write
+        // (heartbeats included), so only the false→true transition — or a
+        // new start time — triggers a scan. Posted to the main thread: the
+        // prefs listener can fire off-thread, and the scan needs the
+        // service's window access.
+        val start = p.getLong("start", 0)
+        val lockStarted = active && (!lastLockActive || start != lastLockStart)
+        lastLockActive = active
+        lastLockStart = start
+        if (lockStarted && (siteUrlOn || siteKwOn)) {
+            handler.post { scanBrowserNow() }
+        }
     }
 
     private fun protecting(): Boolean = (active && System.currentTimeMillis() < endAt) || locProtecting
@@ -355,11 +418,28 @@ class PowerBlockService : AccessibilityService() {
                 lastForegroundPkg = pkg
             }
             // URL detection (site block, second option) and keyword block
-            // (third option): the browser address bar changed, or a browser
-            // window just opened. Either switch enables the watching.
+            // (third option): the browser address bar changed, a browser
+            // window just opened, or a page loaded in an already-open tab.
+            // In-tab navigation fires content-changed, NOT state-changed —
+            // without that trigger a page load in an open tab is never
+            // scanned, which is how a blocked site slipped through.
+            // Either switch enables the watching.
             if ((siteUrlOn || siteKwOn) && protecting() && urlDetectBrowsers.contains(pkg)) {
-                if (e.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) onBrowserTextChanged(e)
-                else if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) onBrowserWindowChanged(pkg)
+                when (e.eventType) {
+                    AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> onBrowserTextChanged(e)
+                    AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> onBrowserWindowChanged(pkg)
+                    AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> onBrowserWindowChanged(pkg)
+                }
+            }
+            // Keyword block on search: text typed in a search field
+            // (browsers + the Google app) is keyword-checked as it is
+            // typed. Only search fields are ever read — never messaging
+            // apps, password fields, or other inputs (see
+            // onSearchTextChanged).
+            if (siteKwOn && protecting() && searchPkgs.contains(pkg) &&
+                e.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED
+            ) {
+                onSearchTextChanged(e)
             }
             // the block screen follows the foreground app: hide it once protection ends,
             // or once a real window change shows another app in front. Our own package
@@ -721,19 +801,23 @@ class PowerBlockService : AccessibilityService() {
     // ---------- site block: shared "block this site" path ----------
 
     /**
-     * One shared path for both site-block triggers: a DNS query seen by the
-     * VPN, and an address-bar URL seen here. Shows the block screen with the
-     * domain as its title and logs the attempt (kind "site"). The overlay
-     * only appears while a lock is running and a browser is in front — a
-     * background prefetch must not cover whatever the user is doing.
+     * One shared path for all site-block triggers: a DNS query seen by the
+     * VPN, an address-bar URL seen here, a keyword in a URL, or a keyword
+     * in a search query. Shows the block screen with the domain/keyword as
+     * its title and logs the attempt (kind "site"). The overlay only
+     * appears while a lock is running and a browser is in front — a
+     * background prefetch must not cover whatever the user is doing. For
+     * search triggers ([allowSearch]) the Google search app counts too.
      * Throttled: the same domain at most once per 2 s; a new domain always
      * refreshes the screen at once.
      */
-    private fun onSiteBlocked(domain: String, pkg: String?) {
+    private fun onSiteBlocked(domain: String, pkg: String?, allowSearch: Boolean = false) {
         try {
             if (!protecting()) return
             val fg = pkg ?: lastForegroundPkg
-            if (fg == null || !browserPkgs.contains(fg)) return
+            if (fg == null) return
+            val allowed = if (allowSearch) searchPkgs.contains(fg) else urlDetectBrowsers.contains(fg)
+            if (!allowed) return
             val now = SystemClock.uptimeMillis()
             if (domain == lastSiteOverlayDomain && now - lastSiteOverlayAt < 2000) return
             lastSiteOverlayAt = now
@@ -770,17 +854,26 @@ class PowerBlockService : AccessibilityService() {
     }
 
     /**
-     * A browser window just opened (new tab, app switch, navigation): scan
-     * the tree once for the address bar and check its text. Throttled to
-     * once per 2 s — window changes fire often while a page loads.
+     * A browser window just opened or a page loaded (new tab, app switch,
+     * in-tab navigation): scan the tree once for the address bar and check
+     * its text. Throttled to once per 2 s — content changes fire often
+     * while a page loads. [force] bypasses the throttle for the lock-start
+     * scan, which fires at most once per lock. If no address bar is found
+     * by view ID, the fallback scan below looks for URL-like text instead
+     * — browser updates rename IDs, and a missed ID must not mean a
+     * missed block.
      */
-    private fun onBrowserWindowChanged(pkg: String) {
+    private fun onBrowserWindowChanged(pkg: String, force: Boolean = false) {
         val now = SystemClock.uptimeMillis()
-        if (now - lastBrowserScanAt < 2000) return
+        if (!force && now - lastBrowserScanAt < 2000) return
         lastBrowserScanAt = now
         try {
             val root = rootInActiveWindow ?: return
             try {
+                // only scan when a watched browser is actually in front —
+                // the event package can be stale (e.g. the lock was just
+                // started from this app while the browser was behind it)
+                if (!urlDetectBrowsers.contains(root.packageName?.toString())) return
                 for (id in addressBarIds) {
                     val nodes = try {
                         root.findAccessibilityNodeInfosByViewId(id)
@@ -801,12 +894,115 @@ class PowerBlockService : AccessibilityService() {
                         }
                     }
                 }
+                // no address bar by ID — fall back to URL-like text in the tree
+                scanForUrlLikeText(root, pkg)
             } finally {
                 try { root.recycle() } catch (_: Exception) { }
             }
         } catch (ex: Exception) {
             Log.e(TAG, "browser window scan failed", ex)
         }
+    }
+
+    /** A lock just started (or the service re-bound mid-lock): scan the
+     * foreground window at once — a page already open before the lock must
+     * still be caught. Bypasses the scan throttle: this fires at most once
+     * per lock start. */
+    private fun scanBrowserNow() {
+        try {
+            if (!protecting() || !(siteUrlOn || siteKwOn)) return
+            val pkg = lastForegroundPkg ?: return
+            if (!urlDetectBrowsers.contains(pkg)) return
+            onBrowserWindowChanged(pkg, force = true)
+        } catch (ex: Exception) {
+            Log.e(TAG, "lock-start browser scan failed", ex)
+        }
+    }
+
+    /**
+     * Fallback URL discovery: the address bar was not found by view ID
+     * (browser updates rename IDs). Bounded breadth-first walk over the
+     * window tree looking for URL-like text — any node whose text has a
+     * scheme, starts with "www.", or looks like a domain with a path.
+     * EditText nodes (address bars are edit fields) and nodes near the top
+     * or bottom edge of the screen are checked; page copy in the middle is
+     * skipped, so a link printed on a page does not trigger a block. At
+     * most 3 candidates are checked and the walk is capped at 600 nodes,
+     * so a big page tree cannot stall the service. Nodes are recycled as
+     * the walk goes, following the same pattern as the reels scan.
+     */
+    private fun scanForUrlLikeText(root: AccessibilityNodeInfo, pkg: String) {
+        val screenH = try { resources.displayMetrics.heightPixels } catch (_: Exception) { 0 }
+        val seen = HashSet<String>()
+        val stack = ArrayDeque<AccessibilityNodeInfo>()
+        stack.add(root)
+        var used = 0
+        var checked = 0
+        try {
+            while (stack.isNotEmpty() && used < 600 && checked < 3) {
+                val n = stack.removeFirst()
+                used++
+                try {
+                    val text = n.text?.toString()?.trim() ?: ""
+                    if (text.isNotEmpty() && looksLikeUrl(text) && seen.add(text)) {
+                        val cls = n.className?.toString() ?: ""
+                        val isEdit = cls.contains("EditText")
+                        val r = Rect()
+                        try { n.getBoundsInScreen(r) } catch (_: Exception) { }
+                        // address bars sit at the top (or bottom) edge of
+                        // the screen; page links sit in the middle
+                        val nearEdge = screenH <= 0 || r.top < screenH / 5 || r.top > screenH * 4 / 5
+                        if (isEdit || nearEdge) {
+                            checked++
+                            maybeCheckUrl(pkg, text)
+                        }
+                    }
+                    for (i in 0 until n.childCount) {
+                        try { n.getChild(i)?.let { stack.add(it) } } catch (_: Exception) { }
+                    }
+                } catch (_: Exception) {
+                } finally {
+                    if (n !== root) {
+                        try { n.recycle() } catch (_: Exception) { }
+                    }
+                }
+            }
+        } catch (ex: Exception) {
+            Log.e(TAG, "url-like text scan failed", ex)
+        } finally {
+            while (stack.isNotEmpty()) {
+                val x = stack.removeFirst()
+                if (x !== root) {
+                    try { x.recycle() } catch (_: Exception) { }
+                }
+            }
+        }
+    }
+
+    /** True when [text] looks like a URL rather than page copy: it has a
+     * scheme, starts with www., or is a bare domain (optionally with a
+     * path/query). Spaces or newlines disqualify it. */
+    private fun looksLikeUrl(text: String): Boolean {
+        val s = text.trim()
+        if (s.isEmpty() || s.length > 2048) return false
+        if (s.contains(' ') || s.contains('\n') || s.contains('\t')) return false
+        val lower = s.lowercase()
+        if (lower.startsWith("http://") || lower.startsWith("https://")) return true
+        if (lower.startsWith("www.")) return true
+        if (!lower.contains('.')) return false
+        val hostPart = lower.substringBefore('/').substringBefore('?').substringBefore('#')
+        val tld = hostPart.substringAfterLast('.', "")
+        if (tld.length < 2 || !tld.all { it.isLetter() }) return false
+        if (!hostPart.all { it.isLetterOrDigit() || it == '.' || it == '-' }) return false
+        return hostPart.split('.').all { it.isNotEmpty() && it.length <= 63 }
+    }
+
+    /** Lowercase, trimmed, scheme stripped — for full-URL matching. */
+    private fun normalizeUrlText(raw: String): String {
+        var s = raw.trim().lowercase()
+        if (s.startsWith("http://")) s = s.substring(7)
+        else if (s.startsWith("https://")) s = s.substring(8)
+        return s
     }
 
     /**
@@ -837,32 +1033,42 @@ class PowerBlockService : AccessibilityService() {
     }
 
     /**
-     * The URL in a browser address bar may have changed: extract the host
-     * and, if it is new, check it on a worker thread (the blocklist load may
-     * block on first use). At most one check per 2 s, and only one running
-     * at a time — the next URL change retries anything skipped.
+     * The URL in a browser address bar may have changed: match it against
+     * the user's own list (host suffix OR the domain appearing anywhere in
+     * the full URL text — so www.xnxx.tv/search/top matches a user entry
+     * of xnxx.tv even if the host parse ever fails) and then the 100k
+     * blocklist. The blocklist check runs on a worker thread (the list
+     * load may block on first use). Dedup is on the FULL normalized URL:
+     * the same host with a new path must re-check, because the substring
+     * match depends on the whole text. At most one check per 2 s, and only
+     * one running at a time — the next URL change retries anything skipped.
      */
     private fun maybeCheckUrl(pkg: String, rawText: String) {
         // keyword block first: it needs the full text, not just the host,
         // and it is independent of the URL-detection switch
         if (siteKwOn) maybeCheckKeywords(pkg, rawText)
         if (!siteUrlOn) return
+        val normalized = normalizeUrlText(rawText)
         val host = hostFromUrl(rawText) ?: return
-        val key = "$pkg|$host"
+        val key = "$pkg|$normalized"
         if (key == lastCheckedUrl) return
         val now = SystemClock.uptimeMillis()
         if (now - lastUrlCheckAt < 2000) return
+        // do not mark the URL checked until a check actually starts: if a
+        // check is already running, the next event must retry this URL
+        if (urlCheckRunning) return
         lastUrlCheckAt = now
         lastCheckedUrl = key
-        if (urlCheckRunning) return
         urlCheckRunning = true
         val appCtx = applicationContext
         val t = Thread({
             try {
-                // the user's own list first (fast), then the 100k blocklist
+                // the user's own list first (fast): host suffix match, or
+                // the domain appearing anywhere in the full URL text;
+                // then the 100k blocklist (host suffix match)
                 var blocked = false
                 for (d in Extra.siteDomains(appCtx)) {
-                    if (host == d || host.endsWith(".$d")) { blocked = true; break }
+                    if (host == d || host.endsWith(".$d") || normalized.contains(d)) { blocked = true; break }
                 }
                 if (!blocked) blocked = SiteBlockService.isBlockedByBuiltInList(appCtx, host)
                 if (blocked) {
@@ -882,6 +1088,59 @@ class PowerBlockService : AccessibilityService() {
         }, "siteblock-url-check")
         t.isDaemon = true
         t.start()
+    }
+
+    /**
+     * Keyword block on search: text typed in a SEARCH field (browsers +
+     * the Google app) is keyword-checked as it is typed, debounced ~700 ms
+     * after the last keystroke so fast typing is checked once, on the
+     * final text. Only search fields are ever read: the node must be an
+     * EditText whose hint contains "search" or "খুঁজুন", or a known
+     * search-box view ID — and never a password field. Messaging apps are
+     * not in [searchPkgs], so chat input is never seen here, and the
+     * address bar is skipped (onBrowserTextChanged already handles it).
+     * The query text itself is never logged or stored; only the matched
+     * keyword (the user's own word) is used, as the overlay title.
+     */
+    private fun onSearchTextChanged(e: AccessibilityEvent) {
+        try {
+            val src = e.source ?: return
+            val cls = src.className?.toString() ?: ""
+            if (!cls.contains("EditText")) return
+            if (src.isPassword) return
+            val vid = try { src.viewIdResourceName } catch (_: Exception) { null } ?: ""
+            if (addressBarIds.contains(vid)) return
+            val hint = (src.hintText?.toString() ?: "").lowercase()
+            val isSearchBox = searchBoxIds.contains(vid) ||
+                hint.contains("search") || hint.contains("খুঁজুন")
+            if (!isSearchBox) return
+            val text = e.text?.joinToString("") ?: return
+            if (text.isBlank()) return
+            pendingSearchPkg = e.packageName?.toString() ?: return
+            pendingSearchText = text
+            handler.removeCallbacks(searchKwCheckTask)
+            handler.postDelayed(searchKwCheckTask, 700)
+        } catch (ex: Exception) {
+            Log.e(TAG, "search keyword check failed", ex)
+        }
+    }
+
+    /** A search query may contain a keyword: same shared overlay + logging
+     * path as URL detection, titled with the keyword. The same query text
+     * is checked once (typing the same text again does not re-fire). */
+    private fun maybeCheckSearchKeywords(pkg: String, rawText: String) {
+        val text = rawText.trim()
+        if (text.isEmpty()) return
+        val key = "$pkg|${text.lowercase()}"
+        if (key == lastCheckedSearchKw) return
+        lastCheckedSearchKw = key
+        val kw = try {
+            KeywordBlock.findMatch(text, Extra.siteKeywords(applicationContext))
+        } catch (ex: Exception) {
+            Log.e(TAG, "search keyword match failed", ex)
+            return
+        } ?: return
+        if (protecting()) onSiteBlocked(L.t("Keyword: $kw", "কিওয়ার্ড: $kw"), pkg, allowSearch = true)
     }
 
     /**
