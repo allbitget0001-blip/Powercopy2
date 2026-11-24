@@ -84,7 +84,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "68"
+    const val BUILD_ID = "69"
 
     // ---------- extend time (never reduce) ----------
 
@@ -1310,16 +1310,21 @@ fun MainActivity.siteBlockCard(): View {
             ),
             lp(MATCH, WRAP, t = dp(6))
         )
-        val viewList = outlineBtn(L.t("View blocklist", "ব্লকলিস্ট দেখুন"), C.primary)
-        viewList.setOnClickListener {
-            try {
-                startActivity(Intent(this, BlocklistActivity::class.java))
-            } catch (e: Exception) {
-                Log.e(TAG, "blocklist viewer launch failed", e)
-                toast(L.t("Could not open the blocklist", "ব্লকলিস্ট খোলা যায়নি"))
+        // the viewers are hidden by default — the lists contain bad words a
+        // bystander could misunderstand — and appear only after the secret
+        // "Z" draw gesture on this card (see attachSecretZGesture)
+        if (secretViewersShown) {
+            val viewList = outlineBtn(L.t("View blocklist", "ব্লকলিস্ট দেখুন"), C.primary)
+            viewList.setOnClickListener {
+                try {
+                    startActivity(Intent(this, BlocklistActivity::class.java))
+                } catch (e: Exception) {
+                    Log.e(TAG, "blocklist viewer launch failed", e)
+                    toast(L.t("Could not open the blocklist", "ব্লকলিস্ট খোলা যায়নি"))
+                }
             }
+            c.addView(viewList, lp(MATCH, dp(48), t = dp(10)))
         }
-        c.addView(viewList, lp(MATCH, dp(48), t = dp(10)))
     }
     val domains = Extra.siteDomains(this)
     for (d in domains) {
@@ -1373,17 +1378,20 @@ fun MainActivity.siteBlockCard(): View {
             lp(MATCH, WRAP, t = dp(4))
         )
         // keyword viewer: the built-in list, A to Z, with search — next to
-        // the blocklist viewer above, so both viewers sit in this one card
-        val viewKw = outlineBtn(L.t("View keywords", "কিওয়ার্ড দেখুন"), C.primary)
-        viewKw.setOnClickListener {
-            try {
-                startActivity(Intent(this, KeywordListActivity::class.java))
-            } catch (e: Exception) {
-                Log.e(TAG, "keyword viewer launch failed", e)
-                toast(L.t("Could not open the keywords", "কিওয়ার্ড খোলা যায়নি"))
+        // the blocklist viewer above, so both viewers sit in this one card.
+        // Hidden by default like the blocklist viewer (secret "Z" gesture).
+        if (secretViewersShown) {
+            val viewKw = outlineBtn(L.t("View keywords", "কিওয়ার্ড দেখুন"), C.primary)
+            viewKw.setOnClickListener {
+                try {
+                    startActivity(Intent(this, KeywordListActivity::class.java))
+                } catch (e: Exception) {
+                    Log.e(TAG, "keyword viewer launch failed", e)
+                    toast(L.t("Could not open the keywords", "কিওয়ার্ড খোলা যায়নি"))
+                }
             }
+            c.addView(viewKw, lp(MATCH, dp(48), t = dp(10)))
         }
-        c.addView(viewKw, lp(MATCH, dp(48), t = dp(10)))
     }
     val keywords = Extra.siteKeywords(this)
     for (k in keywords) {
@@ -1415,7 +1423,162 @@ fun MainActivity.siteBlockCard(): View {
     val addKw = outlineBtn(L.t("Add a keyword", "কিওয়ার্ড যোগ করুন"), C.primary)
     addKw.setOnClickListener { addSiteKeywordDialog() }
     c.addView(addKw, lp(MATCH, dp(48), t = dp(10)))
+    // secret draw gesture: a single-stroke "Z" on this card reveals the
+    // hidden viewer buttons above (see attachSecretZGesture)
+    attachSecretZGesture(c)
     return c
+}
+
+// ---------------------------------------------------------------------
+// Secret viewers: the site/keyword list viewers are hidden by default —
+// the lists contain bad words a bystander could misunderstand — and are
+// revealed only by drawing a single-stroke "Z" on the site-block card.
+// The reveal flag lives only in memory and is reset whenever the screen
+// is left (MainActivity.onPause / go), so the buttons never linger.
+// ---------------------------------------------------------------------
+
+/** Attaches the secret "Z" gesture to a view. The listener never consumes a
+ * touch (always returns false), so taps and scrolling keep working exactly
+ * as before; it only asks the parent ScrollView not to intercept once a
+ * horizontal stroke is under way, because the diagonal of the Z moves down
+ * and a ScrollView would otherwise steal the rest of the gesture. */
+private fun MainActivity.attachSecretZGesture(v: View) {
+    val pts = ArrayList<Pair<Float, Float>>()
+    var disallowed = false
+    v.setOnTouchListener { _, ev ->
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                pts.clear()
+                pts.add(ev.x to ev.y)
+                disallowed = false
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val last = pts.lastOrNull()
+                // keep points at least ~4px apart so slow drawing does not
+                // pile up near-identical points and skew the angles
+                if (last == null || kotlin.math.abs(ev.x - last.first) > 4f || kotlin.math.abs(ev.y - last.second) > 4f) {
+                    pts.add(ev.x to ev.y)
+                }
+                if (!disallowed && pts.size >= 2) {
+                    val dx = ev.x - pts[0].first
+                    val dy = ev.y - pts[0].second
+                    if (dx > dp(24) && kotlin.math.abs(dy) < dp(16)) {
+                        v.requestDisallowInterceptTouchEvent(true)
+                        disallowed = true
+                    }
+                }
+            }
+            MotionEvent.ACTION_UP -> {
+                pts.add(ev.x to ev.y)
+                if (isZStroke(pts)) {
+                    secretViewersShown = true
+                    go(3, false) // rebuild the card with the viewers visible
+                }
+                pts.clear()
+            }
+            MotionEvent.ACTION_CANCEL -> pts.clear()
+        }
+        false // never consume: taps and scrolling work as before
+    }
+}
+
+/** A "Z": right, then down-left diagonal, then right again. The stroke is
+ * resampled by length and each step is classified coarsely (right /
+ * down-left / other); the three phases must appear in order, each with real
+ * length behind it. Tolerant of size, position, speed and wobble — but a
+ * straight vertical scroll (steps near 90°) or a horizontal swipe (no
+ * down-left phase) can never match it. */
+private fun MainActivity.isZStroke(pts: List<Pair<Float, Float>>): Boolean {
+    if (pts.size < 6) return false
+    var minX = Float.MAX_VALUE
+    var maxX = -Float.MAX_VALUE
+    var minY = Float.MAX_VALUE
+    var maxY = -Float.MAX_VALUE
+    for ((x, y) in pts) {
+        if (x < minX) minX = x
+        if (x > maxX) maxX = x
+        if (y < minY) minY = y
+        if (y > maxY) maxY = y
+    }
+    // a deliberate stroke, not a tap or a jitter
+    if (maxX - minX < dp(100) || maxY - minY < dp(50)) return false
+    // ends lower than it starts (a Z drops down the screen)
+    if (pts.last().second - pts.first().second < dp(24)) return false
+    // resample to evenly spaced points, then classify each step's direction
+    // (screen coords: x right, y down — right is 0°, down-left is 135°)
+    val res = resamplePath(pts, 24)
+    val phases = ArrayList<Int>() // 0 = right, 1 = down-left
+    val phaseLen = ArrayList<Float>()
+    var cur = -1
+    var curLen = 0f
+    for (i in 1 until res.size) {
+        val dx = res[i].first - res[i - 1].first
+        val dy = res[i].second - res[i - 1].second
+        val len = kotlin.math.hypot(dx, dy)
+        val ang = Math.toDegrees(kotlin.math.atan2(dy.toDouble(), dx.toDouble()))
+        val dir = when {
+            ang >= -30 && ang <= 30 -> 0 // right
+            ang >= 105 && ang <= 165 -> 1 // down-left
+            else -> -1 // other: wobble or a corner, ignored
+        }
+        if (dir == -1) continue
+        if (dir == cur) {
+            curLen += len
+            continue
+        }
+        if (cur != -1) {
+            phases.add(cur)
+            phaseLen.add(curLen)
+        }
+        cur = dir
+        curLen = len
+    }
+    if (cur != -1) {
+        phases.add(cur)
+        phaseLen.add(curLen)
+    }
+    if (phases.size != 3) return false
+    if (phases[0] != 0 || phases[1] != 1 || phases[2] != 0) return false
+    // every phase must have real length behind it (not a wobble)
+    return phaseLen.all { it >= dp(20) }
+}
+
+/** Evenly spaced points along a path (arc-length resampling, $1-recogniser
+ * style), so the direction test does not depend on drawing speed. */
+private fun resamplePath(pts: List<Pair<Float, Float>>, n: Int): List<Pair<Float, Float>> {
+    if (pts.size < 2 || n < 2) return pts
+    var total = 0f
+    for (i in 1 until pts.size) {
+        total += kotlin.math.hypot(pts[i].first - pts[i - 1].first, pts[i].second - pts[i - 1].second)
+    }
+    if (total <= 0f) return pts
+    val step = total / (n - 1)
+    val out = ArrayList<Pair<Float, Float>>(n)
+    out.add(pts[0])
+    var px = pts[0].first
+    var py = pts[0].second
+    var acc = 0f
+    var i = 1
+    while (out.size < n - 1 && i < pts.size) {
+        val (x, y) = pts[i]
+        val seg = kotlin.math.hypot(x - px, y - py)
+        if (acc + seg >= step) {
+            val t = if (seg > 0f) (step - acc) / seg else 0f
+            val nx = px + (x - px) * t
+            val ny = py + (y - py) * t
+            out.add(nx to ny)
+            px = nx
+            py = ny
+            acc = 0f
+        } else {
+            acc += seg
+            px = x
+            py = y
+            i++
+        }
+    }
+    out.add(pts.last())
+    return out
 }
 
 private fun MainActivity.addSiteDomainDialog() {

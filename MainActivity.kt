@@ -35,6 +35,11 @@ class MainActivity : Activity() {
     private val navIcons = ArrayList<IconView>()
     private var tab = 0
     private var lastNavTab = -1
+    /** Secret viewers (site/keyword lists) revealed by the secret "Z" draw
+     * gesture on the site-block card — in memory only, never persisted, and
+     * reset whenever the screen is left (onPause / go), so a bystander
+     * cannot stumble on the lists later. */
+    var secretViewersShown = false
     /** Saved vertical scroll position per tab, so a screen rebuild keeps the user's place instead of jumping to the top. */
     private val tabScroll = IntArray(5)
     private var home: HomeScreen? = null
@@ -164,6 +169,8 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         VoiceQuotes.stop() // leaving the app stops any spoken quote
+        secretViewersShown = false // hide the secret viewers again (a viewer
+        // being opened pauses this activity, so returning from one rebuilds hidden)
         handler.removeCallbacks(ticker)
         super.onPause()
     }
@@ -245,6 +252,9 @@ class MainActivity : Activity() {
 
     fun go(i: Int, animate: Boolean = true) {
         VoiceQuotes.stop() // leaving a screen stops any spoken quote
+        // leaving the Settings tab hides the secret viewers again (the reveal
+        // itself rebuilds tab 3, so only other tabs reset the flag)
+        if (i != 3) secretViewersShown = false
         // remember where the current tab was scrolled, before the rebuild below throws the view away
         findScroll(if (content.childCount > 0) content.getChildAt(0) else null)?.let { tabScroll[tab] = it.scrollY }
         tab = i
