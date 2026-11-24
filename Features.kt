@@ -84,7 +84,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "71"
+    const val BUILD_ID = "72"
 
     // ---------- extend time (never reduce) ----------
 
@@ -435,10 +435,13 @@ object Extra {
         "xnxx", "xvideos", "pornhub", "xhamster"
     )
 
-    /** Keyword block: matches the full URL (accessibility path) and the
-     * queried domain (DNS path). Independent of the DNS/VPN switch for the
-     * URL path — it works during a lock even when DNS is off. Defaults ON:
-     * it is the hard fallback when domain blocking fails. */
+    /** Keyword block: matches the full URL (accessibility path), the
+     * queried domain (DNS path), and text typed in any text field, in
+     * any app (accessibility path — the user's choice: keywords block
+     * wherever they are typed on the phone). Independent of the DNS/VPN
+     * switch for the accessibility paths — they work during a lock even
+     * when DNS is off. Defaults ON: it is the hard fallback when domain
+     * blocking fails. */
     fun siteKwOn(ctx: Context): Boolean = Store.settings(ctx).getBoolean("site_kw_on", true)
 
     fun setSiteKwOn(ctx: Context, on: Boolean) {
@@ -1263,16 +1266,17 @@ fun MainActivity.siteBlockCard(): View {
         lp(MATCH, WRAP, t = dp(6))
     )
     // third option: keyword block — any keyword anywhere in the URL blocks
-    // the site. The URL path (accessibility) works during a lock even when
-    // the DNS option above is off; the DNS path runs in the VPN when it runs.
+    // the site, and a keyword typed in any text field, in any app, blocks
+    // too. The accessibility paths work during a lock even when the DNS
+    // option above is off; the DNS path runs in the VPN when it runs.
     val kwOn = Extra.siteKwOn(this)
     val kwSw = toggle(kwOn) { v ->
         Extra.setSiteKwOn(this, v)
         if (v && !Perm.accessibilityOn(this)) {
-            toast(L.t("Keyword block needs accessibility for URL matching — turn it on in Settings", "কিওয়ার্ড ব্লকের URL ম্যাচিং-এর জন্য অ্যাক্সেসিবিলিটি লাগবে — Settings থেকে চালু করুন"))
+            toast(L.t("Keyword block needs accessibility — turn it on in Settings", "কিওয়ার্ড ব্লকের জন্য অ্যাক্সেসিবিলিটি লাগবে — Settings থেকে চালু করুন"))
         } else {
             toast(
-                if (v) L.t("Keyword block is on — any URL containing a keyword is blocked during a lock", "কিওয়ার্ড ব্লক চালু — লক চলাকালীন কিওয়ার্ড থাকা যেকোনো URL ব্লক হবে")
+                if (v) L.t("Keyword block is on — keywords are blocked in URLs and wherever you type during a lock", "কিওয়ার্ড ব্লক চালু — লক চলাকালীন URL-এ বা যেকোনো জায়গায় লিখলে কিওয়ার্ড ব্লক হবে")
                 else L.t("Keyword block is off", "কিওয়ার্ড ব্লক বন্ধ")
             )
         }
@@ -1282,7 +1286,7 @@ fun MainActivity.siteBlockCard(): View {
     c.addView(
         row(
             L.t("Keyword block", "কিওয়ার্ড ব্লক"),
-            L.t("Blocks any site whose address contains a keyword — yours or one of the built-in bad words (Bengali + English) — anywhere in the URL, even a single word — and blocks searches that contain a keyword. Works during a lock even when the DNS option above is off. Needs accessibility for URL matching.", "যে সাইটের ঠিকানায় কিওয়ার্ড আছে তা ব্লক করে — তোমার নিজের বা বিল্ট-ইন খারাপ শব্দের (বাংলা + ইংরেজি) যেকোনো একটা — URL-এর যেকোনো জায়গায় একটা শব্দ মিললেই হবে — আর কিওয়ার্ড দিয়ে সার্চ করলেও ব্লক করে। ওপরের DNS অপশন বন্ধ থাকলেও লক চলাকালীন কাজ করে। URL ম্যাচিং-এর জন্য অ্যাক্সেসিবিলিটি লাগবে."),
+            L.t("Blocks any site whose address contains a keyword — yours or one of the built-in bad words (Bengali + English) — anywhere in the URL, even a single word — and blocks text typed anywhere on the phone (any app, messages included) that contains a keyword. Works during a lock even when the DNS option above is off. Needs accessibility. Password fields are never read.", "যে সাইটের ঠিকানায় কিওয়ার্ড আছে তা ব্লক করে — তোমার নিজের বা বিল্ট-ইন খারাপ শব্দের (বাংলা + ইংরেজি) যেকোনো একটা — URL-এর যেকোনো জায়গায় একটা শব্দ মিললেই হবে — আর ফোনের যেকোনো জায়গায় (যেকোনো অ্যাপ, মেসেজসহ) কিওয়ার্ড লিখলেও ব্লক করে। ওপরের DNS অপশন বন্ধ থাকলেও লক চলাকালীন কাজ করে। অ্যাক্সেসিবিলিটি লাগবে। পাসওয়ার্ডের ঘর কখনো পড়া হয় না।"),
             kwSw
         ),
         lp(MATCH, WRAP, t = dp(6))
@@ -1303,80 +1307,53 @@ fun MainActivity.siteBlockCard(): View {
         c.addView(
             tv(
                 L.t(
-                    "${L.num(String.format(Locale.US, "%,d", blCount))} adult sites auto-blocked, plus your own list.",
-                    "${L.num(String.format(Locale.US, "%,d", blCount))}টি খারাপ সাইট অটো ব্লক — তোমার নিজের তালিকাও আছে।"
+                    "${L.num(String.format(Locale.US, "%,d", blCount))} adult sites auto-blocked, plus your own list below.",
+                    "${L.num(String.format(Locale.US, "%,d", blCount))}টি খারাপ সাইট অটো ব্লক — নিচে তোমার নিজের তালিকাও আছে।"
                 ),
                 12f, C.primary
             ),
             lp(MATCH, WRAP, t = dp(6))
         )
-        // the viewers are hidden by default — the lists contain bad words a
-        // bystander could misunderstand — and appear only after drawing on
-        // the touch bar below (see secretTouchBar)
-        if (secretOptionsShown) {
-            val viewList = outlineBtn(L.t("View blocklist", "ব্লকলিস্ট দেখুন"), C.primary)
-            viewList.setOnClickListener {
-                try {
-                    startActivity(Intent(this, BlocklistActivity::class.java))
-                } catch (e: Exception) {
-                    Log.e(TAG, "blocklist viewer launch failed", e)
-                    toast(L.t("Could not open the blocklist", "ব্লকলিস্ট খোলা যায়নি"))
-                }
+        val viewList = outlineBtn(L.t("View blocklist", "ব্লকলিস্ট দেখুন"), C.primary)
+        viewList.setOnClickListener {
+            try {
+                startActivity(Intent(this, BlocklistActivity::class.java))
+            } catch (e: Exception) {
+                Log.e(TAG, "blocklist viewer launch failed", e)
+                toast(L.t("Could not open the blocklist", "ব্লকলিস্ট খোলা যায়নি"))
             }
-            c.addView(viewList, lp(MATCH, dp(48), t = dp(10)))
         }
+        c.addView(viewList, lp(MATCH, dp(48), t = dp(10)))
     }
-    // your own lists, counts only — the words themselves stay hidden until
-    // the touch bar below is drawn on (see secretTouchBar)
-    val ownSiteN = Extra.siteDomains(this).size
-    val ownKwN = Extra.siteKeywords(this).size
-    if (ownSiteN > 0 || ownKwN > 0) {
+    val domains = Extra.siteDomains(this)
+    for (d in domains) {
+        val r = LinearLayout(this)
+        r.gravity = Gravity.CENTER_VERTICAL
+        r.setPadding(0, dp(8), 0, dp(8))
+        r.addView(tv(d, 15f, C.text), lp(0, WRAP, weight = 1f))
+        val remove = tv(L.t("Remove", "সরান"), 13f, if (locked) C.muted else C.warn)
+        remove.setPadding(dp(8), dp(8), dp(8), dp(8))
+        remove.pressFeedback()
+        remove.setOnClickListener {
+            if (Store.isActive(this)) {
+                toast(L.t("Locked while a session is active — you can still add domains", "সেশন চলাকালীন সরানো যাবে না — তবে নতুন ডোমেইন যোগ করা যাবে"))
+            } else {
+                Extra.removeSiteDomain(this, d)
+                go(3)
+            }
+        }
+        r.addView(remove)
+        c.addView(r, lp(MATCH, WRAP, t = dp(4)))
+    }
+    if (locked) {
         c.addView(
-            tv(
-                L.t(
-                    "Your own ${L.num(ownSiteN.toString())} sites and ${L.num(ownKwN.toString())} keywords are also blocked.",
-                    "তোমার নিজের ${L.num(ownSiteN.toString())}টি সাইট ও ${L.num(ownKwN.toString())}টি কিওয়ার্ডও ব্লক করা আছে।"
-                ),
-                12f, C.muted
-            ),
-            lp(MATCH, WRAP, t = dp(4))
+            tv(L.t("While a session runs, domains cannot be removed here — but new ones can be added below.", "সেশন চলাকালীন এখান থেকে সরানো যাবে না — তবে নিচে নতুন যোগ করা যাবে।"), 12f, C.warn),
+            lp(MATCH, WRAP, t = dp(8))
         )
     }
-    // the touch bar: draw anything on it to reveal the hidden lists and
-    // viewer buttons. It looks like a plain handle — no label, no hint
-    // of what it unlocks.
-    c.addView(secretTouchBar(), lp(MATCH, dp(48), t = dp(10)))
-    val domains = Extra.siteDomains(this)
-    if (secretOptionsShown) {
-        for (d in domains) {
-            val r = LinearLayout(this)
-            r.gravity = Gravity.CENTER_VERTICAL
-            r.setPadding(0, dp(8), 0, dp(8))
-            r.addView(tv(d, 15f, C.text), lp(0, WRAP, weight = 1f))
-            val remove = tv(L.t("Remove", "সরান"), 13f, if (locked) C.muted else C.warn)
-            remove.setPadding(dp(8), dp(8), dp(8), dp(8))
-            remove.pressFeedback()
-            remove.setOnClickListener {
-                if (Store.isActive(this)) {
-                    toast(L.t("Locked while a session is active — you can still add domains", "সেশন চলাকালীন সরানো যাবে না — তবে নতুন ডোমেইন যোগ করা যাবে"))
-                } else {
-                    Extra.removeSiteDomain(this, d)
-                    go(3)
-                }
-            }
-            r.addView(remove)
-            c.addView(r, lp(MATCH, WRAP, t = dp(4)))
-        }
-        if (locked) {
-            c.addView(
-                tv(L.t("While a session runs, domains cannot be removed here — but new ones can be added below.", "সেশন চলাকালীন এখান থেকে সরানো যাবে না — তবে নিচে নতুন যোগ করা যাবে।"), 12f, C.warn),
-                lp(MATCH, WRAP, t = dp(8))
-            )
-        }
-        val add = outlineBtn(L.t("Add a domain", "ডোমেইন যোগ করুন"), C.primary)
-        add.setOnClickListener { addSiteDomainDialog() }
-        c.addView(add, lp(MATCH, dp(48), t = dp(10)))
-    }
+    val add = outlineBtn(L.t("Add a domain", "ডোমেইন যোগ করুন"), C.primary)
+    add.setOnClickListener { addSiteDomainDialog() }
+    c.addView(add, lp(MATCH, dp(48), t = dp(10)))
     // keyword list (same rules as the domain list: add-only while a session runs)
     c.addView(
         tv(L.t("Blocked keywords", "ব্লক করা কিওয়ার্ড"), 15f, C.text),
@@ -1400,136 +1377,49 @@ fun MainActivity.siteBlockCard(): View {
             lp(MATCH, WRAP, t = dp(4))
         )
         // keyword viewer: the built-in list, A to Z, with search — next to
-        // the blocklist viewer above, so both viewers sit in this one card.
-        // Hidden by default like the blocklist viewer (touch bar).
-        if (secretOptionsShown) {
-            val viewKw = outlineBtn(L.t("View keywords", "কিওয়ার্ড দেখুন"), C.primary)
-            viewKw.setOnClickListener {
-                try {
-                    startActivity(Intent(this, KeywordListActivity::class.java))
-                } catch (e: Exception) {
-                    Log.e(TAG, "keyword viewer launch failed", e)
-                    toast(L.t("Could not open the keywords", "কিওয়ার্ড খোলা যায়নি"))
-                }
+        // the blocklist viewer above, so both viewers sit in this one card
+        val viewKw = outlineBtn(L.t("View keywords", "কিওয়ার্ড দেখুন"), C.primary)
+        viewKw.setOnClickListener {
+            try {
+                startActivity(Intent(this, KeywordListActivity::class.java))
+            } catch (e: Exception) {
+                Log.e(TAG, "keyword viewer launch failed", e)
+                toast(L.t("Could not open the keywords", "কিওয়ার্ড খোলা যায়নি"))
             }
-            c.addView(viewKw, lp(MATCH, dp(48), t = dp(10)))
         }
+        c.addView(viewKw, lp(MATCH, dp(48), t = dp(10)))
     }
     val keywords = Extra.siteKeywords(this)
-    if (secretOptionsShown) {
-        for (k in keywords) {
-            val r = LinearLayout(this)
-            r.gravity = Gravity.CENTER_VERTICAL
-            r.setPadding(0, dp(8), 0, dp(8))
-            r.addView(tv(k, 15f, C.text), lp(0, WRAP, weight = 1f))
-            val remove = tv(L.t("Remove", "সরান"), 13f, if (locked) C.muted else C.warn)
-            remove.setPadding(dp(8), dp(8), dp(8), dp(8))
-            remove.pressFeedback()
-            remove.setOnClickListener {
-                if (Store.isActive(this)) {
-                    toast(L.t("Locked while a session is active — you can still add keywords", "সেশন চলাকালীন সরানো যাবে না — তবে নতুন কিওয়ার্ড যোগ করা যাবে"))
-                } else {
-                    Extra.removeSiteKeyword(this, k)
-                    SiteBlockService.sync(this) // reload the list in the running VPN
-                    go(3)
-                }
+    for (k in keywords) {
+        val r = LinearLayout(this)
+        r.gravity = Gravity.CENTER_VERTICAL
+        r.setPadding(0, dp(8), 0, dp(8))
+        r.addView(tv(k, 15f, C.text), lp(0, WRAP, weight = 1f))
+        val remove = tv(L.t("Remove", "সরান"), 13f, if (locked) C.muted else C.warn)
+        remove.setPadding(dp(8), dp(8), dp(8), dp(8))
+        remove.pressFeedback()
+        remove.setOnClickListener {
+            if (Store.isActive(this)) {
+                toast(L.t("Locked while a session is active — you can still add keywords", "সেশন চলাকালীন সরানো যাবে না — তবে নতুন কিওয়ার্ড যোগ করা যাবে"))
+            } else {
+                Extra.removeSiteKeyword(this, k)
+                SiteBlockService.sync(this) // reload the list in the running VPN
+                go(3)
             }
-            r.addView(remove)
-            c.addView(r, lp(MATCH, WRAP, t = dp(4)))
         }
-        if (locked) {
-            c.addView(
-                tv(L.t("While a session runs, keywords cannot be removed here — but new ones can be added below.", "সেশন চলাকালীন এখান থেকে সরানো যাবে না — তবে নিচে নতুন যোগ করা যাবে।"), 12f, C.warn),
-                lp(MATCH, WRAP, t = dp(8))
-            )
-        }
-        val addKw = outlineBtn(L.t("Add a keyword", "কিওয়ার্ড যোগ করুন"), C.primary)
-        addKw.setOnClickListener { addSiteKeywordDialog() }
-        c.addView(addKw, lp(MATCH, dp(48), t = dp(10)))
+        r.addView(remove)
+        c.addView(r, lp(MATCH, WRAP, t = dp(4)))
     }
+    if (locked) {
+        c.addView(
+            tv(L.t("While a session runs, keywords cannot be removed here — but new ones can be added below.", "সেশন চলাকালীন এখান থেকে সরানো যাবে না — তবে নিচে নতুন যোগ করা যাবে।"), 12f, C.warn),
+            lp(MATCH, WRAP, t = dp(8))
+        )
+    }
+    val addKw = outlineBtn(L.t("Add a keyword", "কিওয়ার্ড যোগ করুন"), C.primary)
+    addKw.setOnClickListener { addSiteKeywordDialog() }
+    c.addView(addKw, lp(MATCH, dp(48), t = dp(10)))
     return c
-}
-
-// ---------------------------------------------------------------------
-// Secret options: the site/keyword lists (your own domains and keywords,
-// plus the two viewers) are hidden by default — the lists contain bad
-// words a bystander could misunderstand — and are revealed only by
-// drawing on the touch bar in the site-block card (see secretTouchBar).
-// The reveal flag lives only in memory and is reset whenever the screen
-// is left (MainActivity.onPause / go), so the lists never linger.
-// ---------------------------------------------------------------------
-
-/** The touch bar: a plain, unlabelled handle-like strip in the site-block
- * card. Any stroke drawn on it — any shape, any direction — reveals the
- * hidden site/keyword options. A tap does nothing (the stroke must have
- * real length), and normal scrolling starting on the bar still works:
- * the ScrollView is only asked not to intercept once the stroke moves
- * sideways, so a vertical scroll is never blocked. */
-private fun MainActivity.secretTouchBar(): View {
-    val bar = LinearLayout(this)
-    bar.orientation = LinearLayout.HORIZONTAL
-    bar.gravity = Gravity.CENTER
-    // the pill: a small rounded handle, muted, no text — it looks like a
-    // decorative divider, with no hint of what drawing on it unlocks
-    val pill = View(this)
-    pill.background = rounded(C.muted, dp(3).toFloat())
-    bar.addView(pill, lp(dp(72), dp(5)))
-    val pts = ArrayList<Pair<Float, Float>>()
-    var disallowed = false
-    var triggered = false
-    bar.setOnTouchListener { v, ev ->
-        when (ev.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                pts.clear()
-                pts.add(ev.x to ev.y)
-                disallowed = false
-                triggered = false
-            }
-            MotionEvent.ACTION_MOVE -> {
-                val last = pts.lastOrNull()
-                // keep points at least ~4px apart so slow drawing does not
-                // pile up near-identical points and inflate the length
-                if (last == null || kotlin.math.abs(ev.x - last.first) > 4f || kotlin.math.abs(ev.y - last.second) > 4f) {
-                    pts.add(ev.x to ev.y)
-                }
-                // sideways movement means drawing, not scrolling: keep the
-                // ScrollView from stealing the rest of the stroke (either
-                // direction — a leftward stroke is still drawing)
-                if (!disallowed && pts.size >= 2) {
-                    val dx = ev.x - pts[0].first
-                    val dy = ev.y - pts[0].second
-                    if (kotlin.math.abs(dx) > dp(12) && kotlin.math.abs(dx) >= kotlin.math.abs(dy)) {
-                        v.parent?.requestDisallowInterceptTouchEvent(true)
-                        disallowed = true
-                    }
-                }
-            }
-            MotionEvent.ACTION_UP -> {
-                pts.add(ev.x to ev.y)
-                if (!triggered && !secretOptionsShown && strokeLength(pts) >= dp(40)) {
-                    triggered = true
-                    secretOptionsShown = true
-                    toast(L.t("Hidden options shown", "লুকানো অপশন দেখা যাচ্ছে"))
-                    go(3, false) // rebuild the card with the options visible
-                }
-                pts.clear()
-            }
-            MotionEvent.ACTION_CANCEL -> pts.clear()
-        }
-        true // the bar is a dedicated touch area: it keeps the whole stroke
-    }
-    return bar
-}
-
-/** Total length of a stroke (sum of segment lengths), so any drawing —
- * a scribble, a line, a shape — counts, while a tap (near-zero length)
- * never triggers. */
-private fun strokeLength(pts: List<Pair<Float, Float>>): Float {
-    var total = 0f
-    for (i in 1 until pts.size) {
-        total += kotlin.math.hypot(pts[i].first - pts[i - 1].first, pts[i].second - pts[i - 1].second)
-    }
-    return total
 }
 
 private fun MainActivity.addSiteDomainDialog() {

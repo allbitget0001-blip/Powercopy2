@@ -1,5 +1,6 @@
 package com.powerlock.app
 
+import android.animation.ValueAnimator
 import android.app.Activity
 import android.os.Bundle
 import android.text.Editable
@@ -9,6 +10,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.widget.AbsListView
 import android.widget.BaseAdapter
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -30,6 +32,8 @@ import java.util.Locale
  * An A-Z fast-scroll index sits beside the list (same pattern as the app
  * picker in Features.kt): touch or drag a letter to jump to that section,
  * with a letter bubble while dragging. The index hides while searching.
+ * As the list scrolls, the letter for the current section glows green in
+ * the index strip, with a smooth pulsing glow.
  */
 class BlocklistActivity : Activity() {
 
@@ -47,6 +51,25 @@ class BlocklistActivity : Activity() {
     /** First index for each side-index letter, built once when the list loads. */
     @Volatile
     private var sectionStarts: Map<Char, Int> = emptyMap()
+
+    /** The side-index letters ('A'..'Z'), in strip order. */
+    private var letters: List<Char> = emptyList()
+
+    /** The side-index letter views, in the same order as [letters]. */
+    private var letterViews: List<TextView> = emptyList()
+
+    /** Index of the letter currently under the finger (-1 when not dragging). */
+    private var enlargedIdx = -1
+
+    /** Index of the letter for the list's current scroll position (-1 when unset). */
+    private var activeLetterIdx = -1
+
+    /** The pulsing glow on the active letter; cancelled when it changes. */
+    private var glowAnimator: ValueAnimator? = null
+
+    /** Fixed green for the active letter — the accent (C.primary) can be
+     * re-themed by the user, but the active letter is always green. */
+    private val GREEN_GLOW = 0xFF4CAF50.toInt()
 
     /** Current search query (trimmed, lowercase); the index hides while searching. */
     private var currentQuery = ""
@@ -104,27 +127,20 @@ class BlocklistActivity : Activity() {
         // A-Z fast-scroll index beside the list: touch or drag a letter to
         // jump to the first domain starting with it (same pattern as the
         // app picker in Features.kt; hidden while searching).
-        val letters = ('A'..'Z').toList()
+        letters = ('A'..'Z').toList()
         lettersCol = LinearLayout(this)
         lettersCol.orientation = LinearLayout.VERTICAL
         lettersCol.gravity = Gravity.CENTER
         lettersCol.visibility = View.GONE
-        val letterViews = ArrayList<TextView>()
+        val views = ArrayList<TextView>()
         for (ch in letters) {
             val lt = tv(ch.toString(), 10f, C.muted)
             lt.gravity = Gravity.CENTER
             lt.setPadding(0, dp(1), 0, dp(1))
             lettersCol.addView(lt, lp(MATCH, WRAP))
-            letterViews.add(lt)
+            views.add(lt)
         }
-        // the letter under the finger pops a bit bigger (animated) while touched
-        var enlargedIdx = -1
-        fun setLetterPop(idx: Int, popped: Boolean) {
-            val v = letterViews.getOrNull(idx) ?: return
-            v.setTextColor(if (popped) C.primary else C.muted)
-            val s = if (popped) 1.5f else 1f
-            v.animate().scaleX(s).scaleY(s).setDuration(120).start()
-        }
+        letterViews = views
         // big letter bubble in the middle while dragging the index (like Contacts)
         val bubble = tv("", 30f, C.onPrimary)
         bubble.gravity = Gravity.CENTER
@@ -179,6 +195,17 @@ class BlocklistActivity : Activity() {
         contentRow.orientation = LinearLayout.HORIZONTAL
         contentRow.addView(listView, lp(0, MATCH, weight = 1f))
         contentRow.addView(lettersCol, lp(dp(22), MATCH, l = dp(4)))
+        // active letter: as the list scrolls, the letter for the current
+        // section glows green in the index strip (see setActiveLetter)
+        listView.setOnScrollListener(object : AbsListView.OnScrollListener {
+            override fun onScrollStateChanged(view: AbsListView?, scrollState: Int) {}
+            override fun onScroll(
+                view: AbsListView?, firstVisibleItem: Int,
+                visibleItemCount: Int, totalItemCount: Int
+            ) {
+                refreshActiveLetter()
+            }
+        })
         val contentFrame = FrameLayout(this)
         contentFrame.addView(contentRow, FrameLayout.LayoutParams(MATCH, MATCH))
         val bubbleSize = dp(64)
@@ -197,6 +224,8 @@ class BlocklistActivity : Activity() {
     }
 
     override fun onDestroy() {
+        glowAnimator?.cancel()
+        glowAnimator = null
         destroyed = true
         super.onDestroy()
     }
@@ -265,6 +294,8 @@ class BlocklistActivity : Activity() {
         listView.visibility = if (noMatch) View.GONE else View.VISIBLE
         // the A-Z index only makes sense on the full list, not on a search result
         lettersCol.visibility = if (allDomains.isNotEmpty() && currentQuery.isEmpty()) View.VISIBLE else View.GONE
+        // the list re-laid-out: re-derive the glowing letter for the new position
+        if (lettersCol.visibility == View.VISIBLE) listView.post { refreshActiveLetter() }
     }
 
     /**
@@ -291,6 +322,104 @@ class BlocklistActivity : Activity() {
     private fun jumpToLetter(ch: Char) {
         val pos = sectionStarts[ch] ?: return
         listView.setSelection(pos)
+    }
+
+    /**
+     * The letter for list position [pos]: the last side-index letter
+     * whose section starts at or before it. -1 when the list has not
+     * loaded yet. Section starts are non-decreasing (a letter with no
+     * entries points at the next letter's start), so the last match is
+     * the section the position actually sits in.
+     */
+    private fun letterForPosition(pos: Int): Int {
+        val starts = sectionStarts
+        if (starts.isEmpty() || letters.isEmpty()) return -1
+        var found = -1
+        for (i in letters.indices) {
+            val start = starts[letters[i]] ?: continue
+            if (start <= pos) found = i else break
+        }
+        return found
+    }
+
+    /** Re-derives the glowing letter from the list's current scroll position. */
+    private fun refreshActiveLetter() {
+        if (lettersCol.visibility != View.VISIBLE) return
+        if (listView.count == 0) return
+        setActiveLetter(letterForPosition(listView.firstVisiblePosition))
+    }
+
+    /**
+     * The letter for the current scroll position glows green: green text,
+     * a green shadow glow, and a slow scale pulse. The previous letter
+     * goes back to muted. A letter under the finger is left alone — the
+     * pop owns its scale until the finger lifts (see [setLetterPop]).
+     */
+    private fun setActiveLetter(idx: Int) {
+        if (idx == activeLetterIdx) return
+        val old = activeLetterIdx
+        activeLetterIdx = idx
+        if (old >= 0 && old != enlargedIdx) {
+            val ov = letterViews.getOrNull(old)
+            if (ov != null) {
+                glowAnimator?.cancel()
+                glowAnimator = null
+                ov.setTextColor(C.muted)
+                ov.setShadowLayer(0f, 0f, 0f, 0)
+                ov.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+            }
+        }
+        if (idx < 0) return
+        val nv = letterViews.getOrNull(idx) ?: return
+        nv.setTextColor(GREEN_GLOW)
+        nv.setShadowLayer(dp(6).toFloat(), 0f, 0f, GREEN_GLOW)
+        if (idx != enlargedIdx) startGlowPulse(idx)
+    }
+
+    /** Slow scale pulse on the active letter: 1.0 → 1.22 → 1.0, forever. */
+    private fun startGlowPulse(idx: Int) {
+        val v = letterViews.getOrNull(idx) ?: return
+        glowAnimator?.cancel()
+        val anim = ValueAnimator.ofFloat(1f, 1.22f, 1f)
+        anim.duration = 900
+        anim.repeatCount = ValueAnimator.INFINITE
+        anim.addUpdateListener { a ->
+            val s = a.animatedValue as Float
+            v.scaleX = s
+            v.scaleY = s
+        }
+        anim.start()
+        glowAnimator = anim
+    }
+
+    /**
+     * The letter under the finger pops a bit bigger (animated) while
+     * touched. Popping cancels the glow pulse on that letter (the pop
+     * owns its scale now); releasing restores the green glow if the
+     * letter is still the active one, muted otherwise.
+     */
+    private fun setLetterPop(idx: Int, popped: Boolean) {
+        val v = letterViews.getOrNull(idx) ?: return
+        if (popped) {
+            if (idx == activeLetterIdx) {
+                glowAnimator?.cancel()
+                glowAnimator = null
+            }
+            v.setTextColor(C.primary)
+            v.setShadowLayer(0f, 0f, 0f, 0)
+            v.animate().scaleX(1.5f).scaleY(1.5f).setDuration(120).start()
+        } else {
+            val active = idx == activeLetterIdx
+            v.setTextColor(if (active) GREEN_GLOW else C.muted)
+            if (active) {
+                v.setShadowLayer(dp(6).toFloat(), 0f, 0f, GREEN_GLOW)
+                v.animate().scaleX(1f).scaleY(1f).setDuration(120).withEndAction {
+                    if (idx == activeLetterIdx && enlargedIdx != idx) startGlowPulse(idx)
+                }.start()
+            } else {
+                v.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+            }
+        }
     }
 
     private fun updateCount(shown: Int, total: Int) {

@@ -59,8 +59,10 @@ import java.util.Locale
  * changes plus once when a lock starts — so a page already open, or a
  * navigation inside an open tab, is still caught. Keyword block rides the
  * same watching: any keyword anywhere in the full URL covers the screen
- * too, and a keyword typed in a search field (browsers + the Google app)
- * does the same. Search fields only — never messaging or password input.
+ * too, and a keyword typed in ANY text field, in ANY app (browsers,
+ * search, WhatsApp/Messenger/Telegram — the user's own choice: keywords
+ * block wherever they are typed on the phone) does the same. Password
+ * fields are never read.
  */
 class PowerBlockService : AccessibilityService() {
 
@@ -166,6 +168,7 @@ class PowerBlockService : AccessibilityService() {
     private var lastCheckedKwUrl = ""
     private var lastForegroundPkg: String? = null
     private var lastBrowserScanAt = 0L
+    private var lastTypedScanAt = 0L // throttles the non-browser typed-field scan (once per 2 s)
     private var lastUrlCheckAt = 0L
     private var lastCheckedUrl = ""
     private var lastSiteOverlayAt = 0L
@@ -179,16 +182,16 @@ class PowerBlockService : AccessibilityService() {
     // must still be caught; no navigation event fires for it).
     private var lastLockActive = false
     private var lastLockStart = 0L
-    // Keyword block on search: the typed query is checked INSTANTLY on
+    // Keyword block on typing: typed text is checked INSTANTLY on
     // every keystroke — no debounce, no throttle. The match is an
     // Aho-Corasick scan over the built-in + custom keywords (linear in
     // the text, microseconds), so checking per keystroke is cheap and
     // the block fires the moment the typed text first contains a
     // keyword. Only the last checked text is kept, so the same text is
     // not re-checked while the block screen is up; the key resets when
-    // the screen hides, so returning to the same search re-checks and
-    // re-blocks. The query itself is never logged or stored.
-    private var lastCheckedSearchKw = ""
+    // the screen hides, so returning to the same text re-checks and
+    // re-blocks. The typed text itself is never logged or stored.
+    private var lastCheckedTypedKw = ""
 
     /** Fallback browser packages: the well-known browsers, kept so URL
      * detection still works on a device where the dynamic query below
@@ -207,10 +210,6 @@ class PowerBlockService : AccessibilityService() {
         "mark.via.gp", "mark.via"
     )
 
-    /** The Google search app: its search field is keyword-checked like a
-     * browser's, but it is not a browser — it stays explicitly listed. */
-    private val googleSearchPkg = "com.google.android.googlequicksearchbox"
-
     /** Browsers discovered on THIS phone: every installed app that can
      * open a web link (ACTION_VIEW for http/https), found with
      * PackageManager. Cached — the query is IPC, so it runs only on
@@ -226,14 +225,6 @@ class PowerBlockService : AccessibilityService() {
     private fun isBrowser(pkg: String?): Boolean {
         if (pkg == null) return false
         return discoveredBrowsers.contains(pkg) || knownBrowsers.contains(pkg)
-    }
-
-    /** True when [pkg] may carry a keyword in a search field: any
-     * browser, plus the Google search app. Messaging apps are NEVER
-     * here — chat input is never read for keyword blocking. */
-    private fun isSearchPkg(pkg: String?): Boolean {
-        if (pkg == null) return false
-        return isBrowser(pkg) || pkg == googleSearchPkg
     }
 
     /** (Re)discover the browsers installed on this phone. Cheap enough
@@ -281,14 +272,6 @@ class PowerBlockService : AccessibilityService() {
         "com.vivaldi.browser:id/url_bar",
         "com.kiwibrowser.browser:id/url_bar",
         "com.duckduckgo.mobile.android:id/omnibarTextInput"
-    )
-
-    /** Search-box view IDs (Google app + browser search fields). Used only
-     * to recognise a search field; the text itself is only keyword-checked. */
-    private val searchBoxIds = setOf(
-        "com.google.android.googlequicksearchbox:id/search_box",
-        "com.android.chrome:id/search_box",
-        "com.microsoft.emmx:id/search_box"
     )
 
     /** The VPN saw a DNS query for a blocked domain: cover the screen. */
@@ -416,9 +399,10 @@ class PowerBlockService : AccessibilityService() {
         if (siteUrlOn) SiteBlockService.preloadBlocklist(this)
         siteKwOn = st.getBoolean("site_kw_on", true) // default ON: hard fallback
         if (siteKwOn) KeywordBlock.preload(this) // built-in keywords load in the background
-        // lock just started? scan the foreground browser at once: a page
-        // already open before the lock must still be caught (no navigation
-        // event fires for it). readState runs on every lock-pref write
+        // lock just started? scan the foreground window at once: a page
+        // already open before the lock (or a keyword already sitting in
+        // a text field) must still be caught — no event fires for it.
+        // readState runs on every lock-pref write
         // (heartbeats included), so only the false→true transition — or a
         // new start time — triggers a scan. Posted to the main thread: the
         // prefs listener can fire off-thread, and the scan needs the
@@ -430,7 +414,7 @@ class PowerBlockService : AccessibilityService() {
         if (lockStarted) {
             // a new lock: re-discover the browsers on this phone first
             // (a browser installed since the service started must be
-            // covered too), then scan the foreground browser at once
+            // covered too), then scan the foreground window at once
             refreshBrowsers()
             if (siteUrlOn || siteKwOn) {
                 handler.post { scanBrowserNow() }
@@ -484,15 +468,29 @@ class PowerBlockService : AccessibilityService() {
                     AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> onBrowserWindowChanged(pkg)
                 }
             }
-            // Keyword block on search: text typed in a search field
-            // (browsers + the Google app) is keyword-checked as it is
-            // typed. Only search fields are ever read — never messaging
-            // apps, password fields, or other inputs (see
-            // onSearchTextChanged).
-            if (siteKwOn && protecting() && isSearchPkg(pkg) &&
+            // Keyword block on typing: text typed in ANY editable field,
+            // in ANY app — browsers, search, WhatsApp/Messenger/Telegram —
+            // is keyword-checked as it is typed. The user asked for
+            // keywords to block wherever they are typed on the phone, so
+            // there is no app exclusion here. Password fields are never
+            // read (see onTypedTextChanged), and our own app is excluded:
+            // typing a keyword in Settings (to add it) must not block.
+            if (siteKwOn && protecting() && pkg != packageName &&
                 e.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED
             ) {
-                onSearchTextChanged(e)
+                onTypedTextChanged(e)
+            }
+            // Keyword block on return: coming back to an app (a window
+            // change) fires no typing event, so a keyword still sitting
+            // in a text field would otherwise never be re-checked —
+            // scan the foreground window's text fields once. Browsers
+            // are covered by onBrowserWindowChanged above; this branch
+            // is for every other app. State changes only, not content
+            // changes — those fire constantly while scrolling a chat.
+            if (siteKwOn && protecting() && pkg != packageName && !isBrowser(pkg) &&
+                e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+            ) {
+                scanForegroundTypedFields(pkg)
             }
             // the block screen follows the foreground app: hide it once protection ends,
             // or once a real window change shows another app in front. Our own package
@@ -854,7 +852,7 @@ class PowerBlockService : AccessibilityService() {
     }
 
     /**
-     * The block screen is gone: forget which URLs and searches were
+     * The block screen is gone: forget which URLs and typed texts were
      * already checked, so returning to the same page re-checks and
      * re-blocks. Without this the dedup keys (set when the block first
      * fired) would skip the check forever — the user could walk
@@ -867,7 +865,7 @@ class PowerBlockService : AccessibilityService() {
     private fun resetSiteCheckDedup() {
         lastCheckedKwUrl = ""
         lastCheckedUrl = ""
-        lastCheckedSearchKw = ""
+        lastCheckedTypedKw = ""
     }
 
     // ---------- site block: shared "block this site" path ----------
@@ -875,20 +873,21 @@ class PowerBlockService : AccessibilityService() {
     /**
      * One shared path for all site-block triggers: a DNS query seen by the
      * VPN, an address-bar URL seen here, a keyword in a URL, or a keyword
-     * in a search query. Shows the block screen with the domain/keyword as
-     * its title and logs the attempt (kind "site"). The overlay only
-     * appears while a lock is running and a browser is in front — a
-     * background prefetch must not cover whatever the user is doing. For
-     * search triggers ([allowSearch]) the Google search app counts too.
-     * Throttled: the same domain at most once per 2 s; a new domain always
-     * refreshes the screen at once.
+     * typed in any text field. Shows the block screen with the
+     * domain/keyword as its title and logs the attempt (kind "site"). The
+     * overlay only appears while a lock is running and the right app is in
+     * front — a background prefetch must not cover whatever the user is
+     * doing. For URL/DNS triggers that means a browser; for typed-text
+     * triggers ([allowAnyApp]) any app counts — keywords block wherever
+     * they are typed. Throttled: the same domain at most once per 2 s; a
+     * new domain always refreshes the screen at once.
      */
-    private fun onSiteBlocked(domain: String, pkg: String?, allowSearch: Boolean = false) {
+    private fun onSiteBlocked(domain: String, pkg: String?, allowAnyApp: Boolean = false) {
         try {
             if (!protecting()) return
             val fg = pkg ?: lastForegroundPkg
             if (fg == null) return
-            val allowed = if (allowSearch) isSearchPkg(fg) else isBrowser(fg)
+            val allowed = if (allowAnyApp) true else isBrowser(fg)
             if (!allowed) return
             val now = SystemClock.uptimeMillis()
             if (domain == lastSiteOverlayDomain && now - lastSiteOverlayAt < 2000) return
@@ -906,7 +905,7 @@ class PowerBlockService : AccessibilityService() {
             // a fresh tab it exits the browser (returning re-blocks: the
             // dedup resets when the screen hides). One press per block;
             // the 2 s throttle above bounds repeats. The overlay is
-            // NOT_FOCUSABLE, so Back reaches the browser underneath,
+            // NOT_FOCUSABLE, so Back reaches the app underneath,
             // not the overlay.
             try { performGlobalAction(GLOBAL_ACTION_BACK) } catch (_: Exception) { }
             Extra.logAttempt(this, "site")
@@ -938,9 +937,9 @@ class PowerBlockService : AccessibilityService() {
      * A browser window just opened or a page loaded (new tab, app switch,
      * in-tab navigation, or RETURNING to the browser after a block): scan
      * the tree once for the address bar and check its text, and also
-     * check any search field's text — returning fires no typing event,
-     * so a keyword still sitting in a search box would otherwise never
-     * be re-checked. Throttled to once per 2 s — content changes fire
+     * check any typed-text field's text — returning fires no typing
+     * event, so a keyword still sitting in a text field would otherwise
+     * never be re-checked. Throttled to once per 2 s — content changes fire
      * often while a page loads. [force] bypasses the throttle for the
      * lock-start scan, which fires at most once per lock. If no address
      * bar is found by view ID, the fallback scan below looks for
@@ -983,10 +982,10 @@ class PowerBlockService : AccessibilityService() {
                 }
                 // no address bar by ID — fall back to URL-like text in the tree
                 if (!foundAddressBar) scanForUrlLikeText(root, pkg)
-                // also check search fields: the address bar alone does not
-                // catch a keyword sitting in a search box, and returning
-                // to the browser fires no typing event at all
-                if (siteKwOn) scanSearchFields(root, pkg)
+                // also check typed-text fields: the address bar alone does
+                // not catch a keyword sitting in a text field, and
+                // returning to the browser fires no typing event at all
+                if (siteKwOn) scanTypedFields(root, pkg)
             } finally {
                 try { root.recycle() } catch (_: Exception) { }
             }
@@ -996,15 +995,19 @@ class PowerBlockService : AccessibilityService() {
     }
 
     /** A lock just started (or the service re-bound mid-lock): scan the
-     * foreground window at once — a page already open before the lock must
-     * still be caught. Bypasses the scan throttle: this fires at most once
-     * per lock start. */
+     * foreground window at once — a page already open before the lock, or
+     * a keyword already sitting in a text field, must still be caught.
+     * Bypasses the scan throttle: this fires at most once per lock start. */
     private fun scanBrowserNow() {
         try {
             if (!protecting() || !(siteUrlOn || siteKwOn)) return
             val pkg = lastForegroundPkg ?: return
-            if (!isBrowser(pkg)) return
-            onBrowserWindowChanged(pkg, force = true)
+            if (pkg == packageName) return
+            if (isBrowser(pkg)) {
+                onBrowserWindowChanged(pkg, force = true)
+            } else if (siteKwOn) {
+                scanForegroundTypedFields(pkg, force = true)
+            }
         } catch (ex: Exception) {
             Log.e(TAG, "lock-start browser scan failed", ex)
         }
@@ -1184,66 +1187,95 @@ class PowerBlockService : AccessibilityService() {
     }
 
     /**
-     * Is this node a SEARCH field — the only kind of input the keyword
-     * block ever reads? An EditText whose hint contains "search" or
-     * "খুঁজুন", or a known search-box view ID — never a password field,
+     * Is this node a text field the keyword block may read? ANY editable
+     * text field — the user asked for keywords to block wherever they are
+     * typed on the phone, so there is no search-field restriction and no
+     * app restriction. The guards that stay: never a password field, and
      * never the address bar (handled by the URL path). Shared by the
-     * typing check and the window-change scan so both recognise the
-     * same fields.
+     * typing check and the window-change scans so all paths recognise
+     * the same fields.
      */
-    private fun isSearchFieldNode(n: AccessibilityNodeInfo): Boolean {
+    private fun isKeywordFieldNode(n: AccessibilityNodeInfo): Boolean {
         try {
             val cls = n.className?.toString() ?: ""
             if (!cls.contains("EditText")) return false
             if (n.isPassword) return false
             val vid = try { n.viewIdResourceName } catch (_: Exception) { null } ?: ""
             if (addressBarIds.contains(vid)) return false
-            if (searchBoxIds.contains(vid)) return true
-            val hint = (n.hintText?.toString() ?: "").lowercase()
-            return hint.contains("search") || hint.contains("খুঁজুন")
+            return true
         } catch (_: Exception) {
             return false
         }
     }
 
     /**
-     * Keyword block on search: text typed in a SEARCH field (browsers +
-     * the Google app) is keyword-checked INSTANTLY on every keystroke —
-     * no debounce, so the block fires the moment the typed text first
-     * contains a keyword. Only search fields are ever read (see
-     * [isSearchFieldNode]) — never messaging apps, password fields, or
-     * other inputs, and the address bar is skipped (onBrowserTextChanged
-     * already handles it). The query text itself is never logged or
-     * stored; only the matched keyword (the user's own word) is used,
-     * as the overlay title.
+     * Keyword block on typing: text typed in ANY editable field, in ANY
+     * app, is keyword-checked INSTANTLY on every keystroke — no
+     * debounce, so the block fires the moment the typed text first
+     * contains a keyword. Any editable field is read (see
+     * [isKeywordFieldNode]) — password fields never are, and the address
+     * bar is skipped (onBrowserTextChanged already handles it). The typed
+     * text itself is never logged or stored; only the matched keyword
+     * (the user's own word) is used, as the overlay title.
      */
-    private fun onSearchTextChanged(e: AccessibilityEvent) {
+    private fun onTypedTextChanged(e: AccessibilityEvent) {
         try {
             val src = e.source ?: return
-            if (!isSearchFieldNode(src)) return
+            if (!isKeywordFieldNode(src)) return
             val text = e.text?.joinToString("") ?: return
             if (text.isBlank()) return
             // instant: check the typed text right now, on this keystroke —
             // no debounce, no throttle (the match itself is microseconds)
-            maybeCheckSearchKeywords(e.packageName?.toString() ?: return, text)
+            maybeCheckTypedKeywords(e.packageName?.toString() ?: return, text)
         } catch (ex: Exception) {
-            Log.e(TAG, "search keyword check failed", ex)
+            Log.e(TAG, "typed keyword check failed", ex)
         }
     }
 
     /**
-     * Window-change search scan: find search fields in the foreground
-     * browser window and keyword-check their text. This is what
-     * re-blocks a search page the user returns to — returning fires no
-     * typing event, so the typing check never runs, and without this
-     * scan a keyword still sitting in the search box would never be
-     * seen again. Same field rules as the typing check (see
-     * [isSearchFieldNode]): only search fields are read, never
-     * password fields or the address bar. Bounded like the URL
-     * fallback scan: at most 600 nodes walked, at most 3 search
-     * fields checked, nodes recycled as the walk goes.
+     * Window-change typed-text scan for NON-browser apps: find editable
+     * text fields in the foreground window and keyword-check their text.
+     * This is what re-blocks a messaging app the user returns to —
+     * returning fires no typing event, so a keyword still sitting in the
+     * message box would otherwise never be seen again (it could even be
+     * sent without another keystroke). Same field rules as the typing
+     * check (see [isKeywordFieldNode]). Bounded: throttled to once per
+     * 2 s (window state changes are infrequent), at most 600 nodes
+     * walked, at most 3 fields checked. [force] bypasses the throttle
+     * for the lock-start scan, which fires at most once per lock.
      */
-    private fun scanSearchFields(root: AccessibilityNodeInfo, pkg: String) {
+    private fun scanForegroundTypedFields(pkg: String, force: Boolean = false) {
+        val now = SystemClock.uptimeMillis()
+        if (!force && now - lastTypedScanAt < 2000) return
+        lastTypedScanAt = now
+        try {
+            val root = rootInActiveWindow ?: return
+            try {
+                // only scan when a real app is in front — never our own
+                // package (typing a keyword in Settings must not block)
+                val rootPkg = root.packageName?.toString() ?: return
+                if (rootPkg == packageName) return
+                scanTypedFields(root, pkg)
+            } finally {
+                try { root.recycle() } catch (_: Exception) { }
+            }
+        } catch (ex: Exception) {
+            Log.e(TAG, "foreground typed-field scan failed", ex)
+        }
+    }
+
+    /**
+     * Window-change typed-text scan: find editable text fields in the
+     * given window and keyword-check their text. This is what re-blocks
+     * a page or chat the user returns to — returning fires no typing
+     * event, so the typing check never runs, and without this scan a
+     * keyword still sitting in a text field would never be seen again.
+     * Same field rules as the typing check (see [isKeywordFieldNode]):
+     * any editable field, never password fields or the address bar.
+     * Bounded like the URL fallback scan: at most 600 nodes walked, at
+     * most 3 fields checked, nodes recycled as the walk goes.
+     */
+    private fun scanTypedFields(root: AccessibilityNodeInfo, pkg: String) {
         val stack = ArrayDeque<AccessibilityNodeInfo>()
         stack.add(root)
         var used = 0
@@ -1253,11 +1285,11 @@ class PowerBlockService : AccessibilityService() {
                 val n = stack.removeFirst()
                 used++
                 try {
-                    if (isSearchFieldNode(n)) {
+                    if (isKeywordFieldNode(n)) {
                         val text = n.text?.toString()?.trim() ?: ""
                         if (text.isNotEmpty()) {
                             checked++
-                            maybeCheckSearchKeywords(pkg, text)
+                            maybeCheckTypedKeywords(pkg, text)
                         }
                     }
                     for (i in 0 until n.childCount) {
@@ -1271,28 +1303,28 @@ class PowerBlockService : AccessibilityService() {
                 }
             }
         } catch (ex: Exception) {
-            Log.e(TAG, "search field scan failed", ex)
+            Log.e(TAG, "typed field scan failed", ex)
         }
     }
 
-    /** A search query may contain a keyword: same shared overlay + logging
-     * path as URL detection, titled with the keyword. The same query text
-     * is checked once while the block screen is up (typing the same text
+    /** Typed text may contain a keyword: same shared overlay + logging
+     * path as URL detection, titled with the keyword. The same text is
+     * checked once while the block screen is up (typing the same text
      * again does not re-fire); the dedup resets when the screen hides, so
-     * returning to the same search re-checks and re-blocks. */
-    private fun maybeCheckSearchKeywords(pkg: String, rawText: String) {
+     * returning to the same text re-checks and re-blocks. */
+    private fun maybeCheckTypedKeywords(pkg: String, rawText: String) {
         val text = rawText.trim()
         if (text.isEmpty()) return
         val key = "$pkg|${text.lowercase()}"
-        if (key == lastCheckedSearchKw) return
-        lastCheckedSearchKw = key
+        if (key == lastCheckedTypedKw) return
+        lastCheckedTypedKw = key
         val kw = try {
             KeywordBlock.findMatch(applicationContext, text, Extra.siteKeywords(applicationContext))
         } catch (ex: Exception) {
-            Log.e(TAG, "search keyword match failed", ex)
+            Log.e(TAG, "typed keyword match failed", ex)
             return
         } ?: return
-        if (protecting()) onSiteBlocked(L.t("Keyword: $kw", "কিওয়ার্ড: $kw"), pkg, allowSearch = true)
+        if (protecting()) onSiteBlocked(L.t("Keyword: $kw", "কিওয়ার্ড: $kw"), pkg, allowAnyApp = true)
     }
 
     /**
