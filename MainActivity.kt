@@ -35,6 +35,8 @@ class MainActivity : Activity() {
     private val navIcons = ArrayList<IconView>()
     private var tab = 0
     private var lastNavTab = -1
+    /** Saved vertical scroll position per tab, so a screen rebuild keeps the user's place instead of jumping to the top. */
+    private val tabScroll = IntArray(5)
     private var home: HomeScreen? = null
     private var stats: StatsScreen? = null
 
@@ -231,8 +233,20 @@ class MainActivity : Activity() {
         go(tab, false)
     }
 
+    /**
+     * Finds the ScrollView inside a tab root: the view itself, or its first
+     * ScrollView child (the Home page may be wrapped in a FrameLayout for the wallpaper).
+     */
+    private fun findScroll(v: View?): ScrollView? = when (v) {
+        is ScrollView -> v
+        is ViewGroup -> (0 until v.childCount).firstNotNullOfOrNull { v.getChildAt(it) as? ScrollView }
+        else -> null
+    }
+
     fun go(i: Int, animate: Boolean = true) {
         VoiceQuotes.stop() // leaving a screen stops any spoken quote
+        // remember where the current tab was scrolled, before the rebuild below throws the view away
+        findScroll(if (content.childCount > 0) content.getChildAt(0) else null)?.let { tabScroll[tab] = it.scrollY }
         tab = i
         content.removeAllViews()
         home = null
@@ -253,6 +267,13 @@ class MainActivity : Activity() {
             else -> ProtectionScreen(this).build()
         }
         content.addView(v, FrameLayout.LayoutParams(MATCH, MATCH))
+        // restore this tab's scroll position once the new layout is ready (posted so it
+        // runs after measure/layout; scrollTo clamps if the new content is shorter)
+        val y = tabScroll[i]
+        if (y > 0) {
+            val sv = findScroll(v)
+            sv?.post { if (sv.isAttachedToWindow) sv.scrollTo(0, y) }
+        }
         refreshNav(animate)
         if (animate) enter(v)
     }
@@ -261,12 +282,7 @@ class MainActivity : Activity() {
     private fun enter(v: View) {
         v.alpha = 0f
         v.animate().alpha(1f).setDuration(Motion.MED).setInterpolator(Motion.EASE).start()
-        // the Home page may be wrapped in a FrameLayout (wallpaper behind it)
-        val sv = when (v) {
-            is ScrollView -> v
-            is ViewGroup -> (0 until v.childCount).firstNotNullOfOrNull { v.getChildAt(it) as? ScrollView }
-            else -> null
-        }
+        val sv = findScroll(v)
         val col = sv?.getChildAt(0) as? ViewGroup
         if (col != null) staggerIn(col)
     }
