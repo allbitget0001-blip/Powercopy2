@@ -15,11 +15,22 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- Lets the app see all launcher apps (Android 11+ hides them otherwise). -->
+    <!-- Lets the app see all launcher apps (Android 11+ hides them otherwise),
+         and every app that can open a web link — the browser set for URL
+         detection is discovered at runtime, so any installed browser is
+         covered, not just a fixed list. -->
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="http" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
         </intent>
     </queries>
 

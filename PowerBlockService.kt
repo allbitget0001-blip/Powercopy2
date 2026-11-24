@@ -8,6 +8,7 @@ import android.content.BroadcastReceiver
 import android.widget.TextView
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
+import android.net.Uri
 import android.content.SharedPreferences
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -194,12 +195,13 @@ class PowerBlockService : AccessibilityService() {
         maybeCheckSearchKeywords(pkg, text)
     }
 
-    /** Browsers whose address bar is watched for URL detection. Includes
-     * the Chrome variants — Chrome Beta/Dev/Canary are separate packages,
-     * and a missed package means no URL detection at all in that browser.
-     * Also the other major browsers: Brave, Opera (+ Mini), DuckDuckGo,
-     * Vivaldi, Kiwi, UC Browser and Via (Play + China builds). */
-    private val urlDetectBrowsers = setOf(
+    /** Fallback browser packages: the well-known browsers, kept so URL
+     * detection still works on a device where the dynamic query below
+     * returns nothing (some firmwares filter the query). The real
+     * watched set is discovered at runtime — see [discoveredBrowsers]
+     * — so ANY browser installed on the phone is covered, not just the
+     * names listed here. */
+    private val knownBrowsers = setOf(
         "com.android.chrome", "com.chrome.beta", "com.chrome.dev",
         "com.chrome.canary", "org.chromium.chrome",
         "org.mozilla.firefox",
@@ -210,12 +212,60 @@ class PowerBlockService : AccessibilityService() {
         "mark.via.gp", "mark.via"
     )
 
-    /** Packages where a search field may carry a keyword: the browsers
-     * above plus the Google search app. Messaging apps are NEVER in this
-     * set — chat input is never read for keyword blocking. */
-    private val searchPkgs = urlDetectBrowsers + setOf(
-        "com.google.android.googlequicksearchbox"
-    )
+    /** The Google search app: its search field is keyword-checked like a
+     * browser's, but it is not a browser — it stays explicitly listed. */
+    private val googleSearchPkg = "com.google.android.googlequicksearchbox"
+
+    /** Browsers discovered on THIS phone: every installed app that can
+     * open a web link (ACTION_VIEW for http/https), found with
+     * PackageManager. Cached — the query is IPC, so it runs only on
+     * service start and when a lock starts, never on an accessibility
+     * event. The manifest's <queries> entry for VIEW http/https is what
+     * lets the query see user-installed browsers on Android 11+;
+     * without it the system would filter the results. */
+    @Volatile
+    private var discoveredBrowsers: Set<String> = emptySet()
+
+    /** True when [pkg] is a browser on this phone: found by the runtime
+     * query, or a known browser as fallback. */
+    private fun isBrowser(pkg: String?): Boolean {
+        if (pkg == null) return false
+        return discoveredBrowsers.contains(pkg) || knownBrowsers.contains(pkg)
+    }
+
+    /** True when [pkg] may carry a keyword in a search field: any
+     * browser, plus the Google search app. Messaging apps are NEVER
+     * here — chat input is never read for keyword blocking. */
+    private fun isSearchPkg(pkg: String?): Boolean {
+        if (pkg == null) return false
+        return isBrowser(pkg) || pkg == googleSearchPkg
+    }
+
+    /** (Re)discover the browsers installed on this phone. Cheap enough
+     * to run on service start and on lock start; never called from an
+     * accessibility event. The set is only replaced when the query
+     * returns something, so a failed query can never turn detection
+     * off — the previous set (and the known-browser fallback) stay. */
+    private fun refreshBrowsers() {
+        try {
+            val pm = packageManager
+            val found = HashSet<String>()
+            for (scheme in listOf("http", "https")) {
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("$scheme://www.example.com"))
+                try {
+                    for (ri in pm.queryIntentActivities(intent, 0)) {
+                        val p = ri.activityInfo?.packageName ?: continue
+                        if (p != packageName) found.add(p)
+                    }
+                } catch (ex: Exception) {
+                    Log.e(TAG, "browser query ($scheme) failed", ex)
+                }
+            }
+            if (found.isNotEmpty()) discoveredBrowsers = found
+        } catch (ex: Exception) {
+            Log.e(TAG, "browser discovery failed", ex)
+        }
+    }
 
     /** Address-bar view IDs (full "package:id/name" form). Chromium-based
      * browsers share the "url_bar" ID. Browser updates can rename these —
@@ -302,6 +352,7 @@ class PowerBlockService : AccessibilityService() {
         try {
             L.load(this)
             readState()
+            refreshBrowsers() // discover this phone's browsers before events flow
             loadUsage()
             Store.lock(this).registerOnSharedPreferenceChangeListener(prefsListener)
             Store.settings(this).registerOnSharedPreferenceChangeListener(prefsListener)
@@ -380,8 +431,14 @@ class PowerBlockService : AccessibilityService() {
         val lockStarted = active && (!lastLockActive || start != lastLockStart)
         lastLockActive = active
         lastLockStart = start
-        if (lockStarted && (siteUrlOn || siteKwOn)) {
-            handler.post { scanBrowserNow() }
+        if (lockStarted) {
+            // a new lock: re-discover the browsers on this phone first
+            // (a browser installed since the service started must be
+            // covered too), then scan the foreground browser at once
+            refreshBrowsers()
+            if (siteUrlOn || siteKwOn) {
+                handler.post { scanBrowserNow() }
+            }
         }
     }
 
@@ -424,7 +481,7 @@ class PowerBlockService : AccessibilityService() {
             // without that trigger a page load in an open tab is never
             // scanned, which is how a blocked site slipped through.
             // Either switch enables the watching.
-            if ((siteUrlOn || siteKwOn) && protecting() && urlDetectBrowsers.contains(pkg)) {
+            if ((siteUrlOn || siteKwOn) && protecting() && isBrowser(pkg)) {
                 when (e.eventType) {
                     AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> onBrowserTextChanged(e)
                     AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> onBrowserWindowChanged(pkg)
@@ -436,7 +493,7 @@ class PowerBlockService : AccessibilityService() {
             // typed. Only search fields are ever read — never messaging
             // apps, password fields, or other inputs (see
             // onSearchTextChanged).
-            if (siteKwOn && protecting() && searchPkgs.contains(pkg) &&
+            if (siteKwOn && protecting() && isSearchPkg(pkg) &&
                 e.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED
             ) {
                 onSearchTextChanged(e)
@@ -816,7 +873,7 @@ class PowerBlockService : AccessibilityService() {
             if (!protecting()) return
             val fg = pkg ?: lastForegroundPkg
             if (fg == null) return
-            val allowed = if (allowSearch) searchPkgs.contains(fg) else urlDetectBrowsers.contains(fg)
+            val allowed = if (allowSearch) isSearchPkg(fg) else isBrowser(fg)
             if (!allowed) return
             val now = SystemClock.uptimeMillis()
             if (domain == lastSiteOverlayDomain && now - lastSiteOverlayAt < 2000) return
@@ -873,7 +930,7 @@ class PowerBlockService : AccessibilityService() {
                 // only scan when a watched browser is actually in front —
                 // the event package can be stale (e.g. the lock was just
                 // started from this app while the browser was behind it)
-                if (!urlDetectBrowsers.contains(root.packageName?.toString())) return
+                if (!isBrowser(root.packageName?.toString())) return
                 for (id in addressBarIds) {
                     val nodes = try {
                         root.findAccessibilityNodeInfosByViewId(id)
@@ -912,7 +969,7 @@ class PowerBlockService : AccessibilityService() {
         try {
             if (!protecting() || !(siteUrlOn || siteKwOn)) return
             val pkg = lastForegroundPkg ?: return
-            if (!urlDetectBrowsers.contains(pkg)) return
+            if (!isBrowser(pkg)) return
             onBrowserWindowChanged(pkg, force = true)
         } catch (ex: Exception) {
             Log.e(TAG, "lock-start browser scan failed", ex)
@@ -1097,7 +1154,7 @@ class PowerBlockService : AccessibilityService() {
      * final text. Only search fields are ever read: the node must be an
      * EditText whose hint contains "search" or "খুঁজুন", or a known
      * search-box view ID — and never a password field. Messaging apps are
-     * not in [searchPkgs], so chat input is never seen here, and the
+     * never in the search set, so chat input is never seen here, and the
      * address bar is skipped (onBrowserTextChanged already handles it).
      * The query text itself is never logged or stored; only the matched
      * keyword (the user's own word) is used, as the overlay title.
