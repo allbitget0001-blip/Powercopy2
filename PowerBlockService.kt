@@ -180,14 +180,14 @@ class PowerBlockService : AccessibilityService() {
     private var lastLockActive = false
     private var lastLockStart = 0L
     // Keyword block on search: the typed query is checked INSTANTLY on
-    // every keystroke — no debounce, no throttle. The keyword match is a
-    // substring scan over ~17 short keywords (microseconds), so checking
-    // per keystroke is cheap and the block fires the moment the typed
-    // text first contains a keyword. Only the last checked text is kept,
-    // so the same text is not re-checked while the block screen is up;
-    // the key resets when the screen hides, so returning to the same
-    // search re-checks and re-blocks. The query itself is never logged
-    // or stored.
+    // every keystroke — no debounce, no throttle. The match is an
+    // Aho-Corasick scan over the built-in + custom keywords (linear in
+    // the text, microseconds), so checking per keystroke is cheap and
+    // the block fires the moment the typed text first contains a
+    // keyword. Only the last checked text is kept, so the same text is
+    // not re-checked while the block screen is up; the key resets when
+    // the screen hides, so returning to the same search re-checks and
+    // re-blocks. The query itself is never logged or stored.
     private var lastCheckedSearchKw = ""
 
     /** Fallback browser packages: the well-known browsers, kept so URL
@@ -415,6 +415,7 @@ class PowerBlockService : AccessibilityService() {
         siteUrlOn = st.getBoolean("site_url_on", false)
         if (siteUrlOn) SiteBlockService.preloadBlocklist(this)
         siteKwOn = st.getBoolean("site_kw_on", true) // default ON: hard fallback
+        if (siteKwOn) KeywordBlock.preload(this) // built-in keywords load in the background
         // lock just started? scan the foreground browser at once: a page
         // already open before the lock must still be caught (no navigation
         // event fires for it). readState runs on every lock-pref write
@@ -899,6 +900,15 @@ class PowerBlockService : AccessibilityService() {
                 L.t("This site is blocked while the lock runs", "লক চলাকালীন এই সাইট ব্লক করা আছে"),
                 titleOverride = domain
             )
+            // navigate away from the blocked page: Android has no API to
+            // close another app's browser tab, so Back is the closest
+            // reliable move — with history it leaves the blocked page, on
+            // a fresh tab it exits the browser (returning re-blocks: the
+            // dedup resets when the screen hides). One press per block;
+            // the 2 s throttle above bounds repeats. The overlay is
+            // NOT_FOCUSABLE, so Back reaches the browser underneath,
+            // not the overlay.
+            try { performGlobalAction(GLOBAL_ACTION_BACK) } catch (_: Exception) { }
             Extra.logAttempt(this, "site")
         } catch (ex: Exception) {
             Log.e(TAG, "site block overlay failed", ex)
@@ -1088,10 +1098,11 @@ class PowerBlockService : AccessibilityService() {
 
     /**
      * Keyword block: the FULL address-bar text (host + path + query) is
-     * checked for any keyword — a case-insensitive substring match, so a
-     * single word anywhere in the URL is enough. Runs synchronously and
-     * INSTANTLY on every text change: the list is tiny and the match is a
-     * short string scan, so no throttle may delay it — the block must fire
+     * checked for any keyword — a case-insensitive match against the
+     * built-in + custom lists (Aho-Corasick, linear in the text; short
+     * keywords need a word boundary — see KeywordBlock). Runs
+     * synchronously and INSTANTLY on every text change: the match is
+     * microseconds, so no throttle may delay it — the block must fire
      * the moment the typed text first contains a keyword. Deduped on the
      * full text (not just the host), so navigating to a new path on the
      * same host re-checks. The dedup resets when the block screen hides,
@@ -1105,7 +1116,7 @@ class PowerBlockService : AccessibilityService() {
         if (key == lastCheckedKwUrl) return
         lastCheckedKwUrl = key
         val kw = try {
-            KeywordBlock.findMatch(text, Extra.siteKeywords(applicationContext))
+            KeywordBlock.findMatch(applicationContext, text, Extra.siteKeywords(applicationContext))
         } catch (ex: Exception) {
             Log.e(TAG, "keyword check failed", ex)
             return
@@ -1276,7 +1287,7 @@ class PowerBlockService : AccessibilityService() {
         if (key == lastCheckedSearchKw) return
         lastCheckedSearchKw = key
         val kw = try {
-            KeywordBlock.findMatch(text, Extra.siteKeywords(applicationContext))
+            KeywordBlock.findMatch(applicationContext, text, Extra.siteKeywords(applicationContext))
         } catch (ex: Exception) {
             Log.e(TAG, "search keyword match failed", ex)
             return

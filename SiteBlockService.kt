@@ -273,6 +273,7 @@ class SiteBlockService : VpnService() {
             keywords = Extra.siteKeywords(this)
             kwOn = Extra.siteKwOn(this)
             ensureBlocklistLoaded(this) // background thread; the VPN never waits for it
+            KeywordBlock.preload(this) // built-in keywords load the same way
             if (running.get()) return START_STICKY // already up: the list is refreshed, nothing else to do
             if (!Extra.siteOn(this) || !Store.isActive(this)) {
                 stopSelf()
@@ -479,7 +480,7 @@ class SiteBlockService : VpnService() {
         for (d in list) {
             if (domain == d || domain.endsWith(".$d")) return true
         }
-        if (kwOn && KeywordBlock.matches(domain, keywords)) return true
+        if (kwOn && KeywordBlock.matches(this, domain, keywords)) return true
         return isInBlocklist(domain)
     }
 
@@ -713,23 +714,250 @@ class SiteBlockService : VpnService() {
 }
 
 /**
- * Keyword block: substring matching shared by the DNS path (this file) and
- * the URL-detection path (PowerBlockService). Case-insensitive SUBSTRING:
- * any single keyword appearing anywhere in the text blocks. No
- * word-boundary logic — that is what the user asked for. Keywords are
- * stored lowercased (see Extra.normalizeKeyword), so only the text is
- * lowercased here.
+ * Keyword block: multi-pattern matching shared by the DNS path (this file)
+ * and the URL-detection path (PowerBlockService). Two keyword sources are
+ * merged into one matcher:
+ *
+ *  - the built-in list (~5,000 bad words, Bengali + English, shipped in
+ *    assets/keyword_blocklist.txt), loaded once per process on a background
+ *    thread;
+ *  - the user's own list ([Extra.siteKeywords]), which they can still edit
+ *    in Settings (add-only while a session runs).
+ *
+ * Matching is an Aho-Corasick automaton built once from both lists: the
+ * check runs on every keystroke (build 64, instant), so a naive
+ * per-keyword substring scan over ~5,000 keywords per keystroke would be
+ * far too slow. The automaton scans the text once, in linear time, and
+ * reports the first keyword found.
+ *
+ * False positives: short keywords (4 characters or fewer) only match on a
+ * word boundary — a non-letter/digit on both sides, or the string edge —
+ * so "sex" does not match "Essex", "ass" does not match "class", and
+ * "anal" does not match "canal". Longer keywords match as substrings,
+ * which is what the user asked for. The boundary test uses
+ * [Char.isLetterOrDigit], which is Unicode-aware, so Bengali letters
+ * count as word characters too.
+ *
+ * The matcher is rebuilt on a background thread whenever the custom list
+ * changes (the fingerprint of the list is compared on every check). Until
+ * a matcher is ready, checks fall back to the previous matcher — or, on
+ * the very first check, to a small matcher built from the custom list
+ * alone — so the starter keywords work immediately, before the asset has
+ * even finished loading.
  */
 object KeywordBlock {
-    /** The first keyword found in [text], or null. Keywords must be lowercase. */
-    fun findMatch(text: String, keywords: List<String>): String? {
-        if (keywords.isEmpty()) return null
-        val lower = text.lowercase()
-        for (kw in keywords) {
-            if (kw.isNotEmpty() && lower.contains(kw)) return kw
-        }
-        return null
+    /** Built-in keyword blocklist asset (one keyword per line, lowercase). */
+    private const val KEYWORD_ASSET = "keyword_blocklist.txt"
+
+    /** The built-in list, once loaded (null = not loaded yet). */
+    @Volatile
+    private var assetKeywords: List<String>? = null
+
+    /** True once the asset load has been started (it runs only once per process). */
+    private val assetLoadStarted = AtomicBoolean(false)
+
+    /** The matcher currently in use (null = none built yet). */
+    @Volatile
+    private var matcher: Matcher? = null
+
+    /** Fingerprint ([List.hashCode]) of the custom list the matcher was built from. */
+    @Volatile
+    private var matcherFingerprint = 0
+
+    /** True when the current matcher includes the built-in asset. */
+    @Volatile
+    private var matcherHasAsset = false
+
+    /** True while a matcher rebuild is running (only one at a time). */
+    private val rebuildRunning = AtomicBoolean(false)
+
+    /** Cached keyword count of the asset (-1 = not counted yet). */
+    @Volatile
+    private var builtInCachedCount = -1
+
+    /** One trie node of the Aho-Corasick automaton. */
+    private class Node {
+        val next = HashMap<Char, Int>()
+        var fail = 0
+        val outputs = ArrayList<String>()
     }
 
-    fun matches(text: String, keywords: List<String>): Boolean = findMatch(text, keywords) != null
+    /**
+     * Aho-Corasick multi-pattern matcher over [patterns] (already
+     * lowercased). Built once; [findFirst] then scans any text in linear
+     * time and returns the first keyword found, or null.
+     */
+    private class Matcher(patterns: Collection<String>) {
+        private val nodes = ArrayList<Node>()
+
+        init {
+            nodes.add(Node()) // root
+            for (p in patterns) {
+                if (p.isEmpty()) continue
+                var cur = 0
+                for (c in p) {
+                    val nxt = nodes[cur].next.getOrPut(c) {
+                        nodes.add(Node())
+                        nodes.size - 1
+                    }
+                    cur = nxt
+                }
+                nodes[cur].outputs.add(p)
+            }
+            // failure links, breadth-first: a node's fail link is the
+            // longest proper suffix that is also a trie prefix; outputs
+            // merge down the fail chain so every match is reported
+            val q = ArrayDeque<Int>()
+            for ((_, child) in nodes[0].next) {
+                nodes[child].fail = 0
+                q.add(child)
+            }
+            while (q.isNotEmpty()) {
+                val r = q.removeFirst()
+                for ((c, child) in nodes[r].next) {
+                    q.add(child)
+                    var f = nodes[r].fail
+                    while (f != 0 && !nodes[f].next.containsKey(c)) f = nodes[f].fail
+                    val failTo = nodes[f].next[c] ?: 0
+                    nodes[child].fail = failTo
+                    nodes[child].outputs.addAll(nodes[failTo].outputs)
+                }
+            }
+        }
+
+        /**
+         * The first keyword found in [lower] (already lowercased), or
+         * null. Keywords of 4 characters or fewer need a word boundary
+         * on both sides (see the [KeywordBlock] docs).
+         */
+        fun findFirst(lower: String): String? {
+            var state = 0
+            for (i in lower.indices) {
+                val c = lower[i]
+                while (state != 0 && !nodes[state].next.containsKey(c)) state = nodes[state].fail
+                state = nodes[state].next[c] ?: 0
+                val outs = nodes[state].outputs
+                if (outs.isEmpty()) continue
+                for (kw in outs) {
+                    if (kw.length <= 4) {
+                        val start = i - kw.length + 1
+                        val beforeOk = start == 0 || !lower[start - 1].isLetterOrDigit()
+                        val afterOk = i + 1 >= lower.length || !lower[i + 1].isLetterOrDigit()
+                        if (!beforeOk || !afterOk) continue
+                    }
+                    return kw
+                }
+            }
+            return null
+        }
+    }
+
+    /** Starts the one-time background load of the built-in keyword asset. */
+    fun preload(ctx: Context) = ensureAssetLoaded(ctx)
+
+    private fun ensureAssetLoaded(ctx: Context) {
+        if (!assetLoadStarted.compareAndSet(false, true)) return
+        val appCtx = ctx.applicationContext
+        val t = Thread({
+            try {
+                val list = ArrayList<String>()
+                appCtx.assets.open(KEYWORD_ASSET).bufferedReader().useLines { lines ->
+                    for (raw in lines) {
+                        val w = raw.trim().lowercase()
+                        if (w.isNotEmpty() && !w.startsWith("#")) list.add(w)
+                    }
+                }
+                assetKeywords = list
+                Log.i(TAG, "keyword blocklist loaded: ${list.size} keywords")
+                // build the matcher now, so the first check after a lock
+                // start is already covered by the full list
+                val custom = Extra.siteKeywords(appCtx)
+                triggerRebuild(custom, custom.hashCode())
+            } catch (e: Exception) {
+                Log.e(TAG, "keyword blocklist load failed", e)
+            }
+        }, "keyword-list-load")
+        t.isDaemon = true
+        t.start()
+    }
+
+    /**
+     * Rebuilds the matcher on a background thread from the asset (if
+     * loaded) plus [customKeywords]. No-op while a rebuild is already
+     * running — the next check re-triggers it if the list changed again.
+     */
+    private fun triggerRebuild(customKeywords: List<String>, fingerprint: Int) {
+        if (!rebuildRunning.compareAndSet(false, true)) return
+        val t = Thread({
+            try {
+                val asset = assetKeywords
+                val patterns = HashSet<String>()
+                if (asset != null) patterns.addAll(asset)
+                patterns.addAll(customKeywords)
+                matcher = Matcher(patterns)
+                matcherHasAsset = asset != null
+                matcherFingerprint = fingerprint
+                Log.i(TAG, "keyword matcher built: ${patterns.size} patterns (asset=${asset != null})")
+            } catch (e: Exception) {
+                Log.e(TAG, "keyword matcher build failed", e)
+            } finally {
+                rebuildRunning.set(false)
+            }
+        }, "keyword-matcher-build")
+        t.isDaemon = true
+        t.start()
+    }
+
+    /**
+     * The first keyword found in [text] (built-in list + [customKeywords]),
+     * or null. [customKeywords] must be lowercase (see
+     * [Extra.normalizeKeyword]); only the text is lowercased here. Safe
+     * to call on every keystroke: the automaton scan is linear in the
+     * text, and the matcher is built on a background thread.
+     */
+    fun findMatch(ctx: Context, text: String, customKeywords: List<String>): String? {
+        if (text.isEmpty()) return null
+        ensureAssetLoaded(ctx)
+        val fp = customKeywords.hashCode()
+        val assetLoaded = assetKeywords != null
+        val m = matcher
+        if (m != null && matcherFingerprint == fp && matcherHasAsset == assetLoaded) {
+            return m.findFirst(text.lowercase())
+        }
+        // matcher missing or stale: rebuild in the background, and use
+        // what we have right now — the old matcher (stale custom list,
+        // still blocks the asset words), or a small matcher built from
+        // the custom list alone on the very first check
+        triggerRebuild(customKeywords, fp)
+        val use = m ?: Matcher(customKeywords)
+        return use.findFirst(text.lowercase())
+    }
+
+    fun matches(ctx: Context, text: String, customKeywords: List<String>): Boolean =
+        findMatch(ctx, text, customKeywords) != null
+
+    /**
+     * Number of keywords in the built-in asset (0 when the asset is
+     * missing or unreadable). Counts non-comment lines once and caches
+     * the result.
+     */
+    fun builtInCount(ctx: Context): Int {
+        val cached = builtInCachedCount
+        if (cached >= 0) return cached
+        val n = try {
+            var count = 0
+            ctx.assets.open(KEYWORD_ASSET).bufferedReader().useLines { lines ->
+                for (raw in lines) {
+                    val w = raw.trim()
+                    if (w.isNotEmpty() && !w.startsWith("#")) count++
+                }
+            }
+            count
+        } catch (e: Exception) {
+            Log.e(TAG, "keyword count failed", e)
+            0
+        }
+        builtInCachedCount = n
+        return n
+    }
 }

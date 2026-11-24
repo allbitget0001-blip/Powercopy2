@@ -84,7 +84,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "65"
+    const val BUILD_ID = "66"
 
     // ---------- extend time (never reduce) ----------
 
@@ -1282,7 +1282,7 @@ fun MainActivity.siteBlockCard(): View {
     c.addView(
         row(
             L.t("Keyword block", "কিওয়ার্ড ব্লক"),
-            L.t("Blocks any site whose address contains one of your keywords — anywhere in the URL, even a single word — and blocks searches that contain a keyword. Works during a lock even when the DNS option above is off. Needs accessibility for URL matching.", "যে সাইটের ঠিকানায় তোমার কোনো কিওয়ার্ড আছে তা ব্লক করে — URL-এর যেকোনো জায়গায় একটা শব্দ মিললেই হবে — আর কিওয়ার্ড দিয়ে সার্চ করলেও ব্লক করে। ওপরের DNS অপশন বন্ধ থাকলেও লক চলাকালীন কাজ করে। URL ম্যাচিং-এর জন্য অ্যাক্সেসিবিলিটি লাগবে."),
+            L.t("Blocks any site whose address contains a keyword — yours or one of the built-in bad words (Bengali + English) — anywhere in the URL, even a single word — and blocks searches that contain a keyword. Works during a lock even when the DNS option above is off. Needs accessibility for URL matching.", "যে সাইটের ঠিকানায় কিওয়ার্ড আছে তা ব্লক করে — তোমার নিজের বা বিল্ট-ইন খারাপ শব্দের (বাংলা + ইংরেজি) যেকোনো একটা — URL-এর যেকোনো জায়গায় একটা শব্দ মিললেই হবে — আর কিওয়ার্ড দিয়ে সার্চ করলেও ব্লক করে। ওপরের DNS অপশন বন্ধ থাকলেও লক চলাকালীন কাজ করে। URL ম্যাচিং-এর জন্য অ্যাক্সেসিবিলিটি লাগবে."),
             kwSw
         ),
         lp(MATCH, WRAP, t = dp(6))
@@ -1359,6 +1359,20 @@ fun MainActivity.siteBlockCard(): View {
         tv(L.t("Any one of these words anywhere in a URL blocks the site.", "এই শব্দগুলোর যেকোনো একটা URL-এর যেকোনো জায়গায় থাকলেই সাইট ব্লক হয়।"), 12f, C.muted),
         lp(MATCH, WRAP, t = dp(4))
     )
+    // built-in keyword count (0 when the asset could not be read)
+    val kwCount = KeywordBlock.builtInCount(this)
+    if (kwCount > 0) {
+        c.addView(
+            tv(
+                L.t(
+                    "${L.num(String.format(Locale.US, "%,d", kwCount))} built-in bad keywords (Bengali + English) are also blocked automatically.",
+                    "${L.num(String.format(Locale.US, "%,d", kwCount))}টি বিল্ট-ইন খারাপ কিওয়ার্ড (বাংলা + ইংরেজি) অটোমেটিক ব্লক হয়।"
+                ),
+                12f, C.primary
+            ),
+            lp(MATCH, WRAP, t = dp(4))
+        )
+    }
     val keywords = Extra.siteKeywords(this)
     for (k in keywords) {
         val r = LinearLayout(this)
