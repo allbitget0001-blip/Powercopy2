@@ -10,6 +10,7 @@ import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.util.Log
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -67,6 +68,12 @@ class SiteBlockService : VpnService() {
         private const val NOTIF_ID = 3
         private const val CHANNEL_ID = "powerlock_vpn"
 
+        /** Broadcast when the VPN blocks a DNS query: PowerBlockService covers the screen. */
+        const val ACTION_SITE_BLOCKED = "com.powerlock.app.SITE_BLOCKED"
+
+        /** Extra on [ACTION_SITE_BLOCKED]: the blocked domain. */
+        const val EXTRA_BLOCKED_DOMAIN = "blocked_domain"
+
         /** Built-in adult-domain blocklist asset (one domain per line). */
         private const val BLOCKLIST_ASSET = "adult_blocklist.txt"
 
@@ -76,6 +83,9 @@ class SiteBlockService : VpnService() {
 
         /** True once the blocklist load has been started (it runs only once per process). */
         private val blocklistLoadStarted = AtomicBoolean(false)
+
+        /** Guards the one-time blocklist load (async and sync callers share it). */
+        private val blocklistLock = Any()
 
         /** Cached domain count of the blocklist asset (-1 = not counted yet). */
         @Volatile
@@ -116,9 +126,25 @@ class SiteBlockService : VpnService() {
             if (!blocklistLoadStarted.compareAndSet(false, true)) return
             val appCtx = ctx.applicationContext
             val t = Thread({
+                loadBlocklistSync(appCtx)
+            }, "siteblock-list-load")
+            t.isDaemon = true
+            t.start()
+        }
+
+        /**
+         * Loads the blocklist on the calling thread (blocking) and returns
+         * it. Safe to call any number of times: the load runs once and later
+         * calls return the cached set. Never call on the main thread.
+         */
+        private fun loadBlocklistSync(ctx: Context): Set<String> {
+            synchronized(blocklistLock) {
+                val loaded = blocklist
+                if (loaded.isNotEmpty()) return loaded
+                blocklistLoadStarted.set(true)
+                val set = HashSet<String>(110000)
                 try {
-                    val set = HashSet<String>(110000)
-                    appCtx.assets.open(BLOCKLIST_ASSET).bufferedReader().useLines { lines ->
+                    ctx.assets.open(BLOCKLIST_ASSET).bufferedReader().useLines { lines ->
                         for (raw in lines) {
                             val d = raw.trim().lowercase()
                             if (d.isNotEmpty() && !d.startsWith("#")) set.add(d)
@@ -130,9 +156,42 @@ class SiteBlockService : VpnService() {
                 } catch (e: Exception) {
                     Log.e(TAG, "blocklist load failed", e)
                 }
-            }, "siteblock-list-load")
-            t.isDaemon = true
-            t.start()
+                return blocklist
+            }
+        }
+
+        /** Starts the blocklist load on a background thread (no-op once loaded/loading). */
+        fun preloadBlocklist(ctx: Context) = ensureBlocklistLoaded(ctx)
+
+        /**
+         * True when [domain] (or one of its parent domains) is in the
+         * built-in blocklist. Loads the list synchronously on first use, so
+         * callers MUST run this off the main thread. Used by the URL
+         * detection in PowerBlockService and by the duplicate check when the
+         * user adds a custom domain.
+         */
+        fun isBlockedByBuiltInList(ctx: Context, domain: String): Boolean {
+            val set = loadBlocklistSync(ctx.applicationContext)
+            return suffixMatch(set, domain)
+        }
+
+        /**
+         * Suffix match against a blocklist set: walks up the labels
+         * (a.b.com → b.com), so a subdomain of a listed domain matches too.
+         * Hash lookups only — fast even with ~100,000 entries. Never matches
+         * a bare TLD, so a stray "com" in the list could not match everything.
+         */
+        private fun suffixMatch(set: Set<String>, domain: String): Boolean {
+            if (set.isEmpty()) return false
+            var d: String? = domain
+            while (d != null) {
+                if (set.contains(d)) return true
+                val dot = d.indexOf('.')
+                if (dot < 0) return false
+                d = d.substring(dot + 1)
+                if (!d.contains('.')) return false // bare TLD: stop, do not match
+            }
+            return false
         }
 
         /** True when the user has already granted the VPN permission. */
@@ -192,6 +251,9 @@ class SiteBlockService : VpnService() {
     /** Blocked domains, reloaded on every start (the user may have edited the list). */
     @Volatile
     private var blocked: List<String> = emptyList()
+
+    /** Throttles the blocked-site broadcast: browsers retry a failed lookup hard. */
+    private var lastSiteBroadcastAt = 0L
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         try {
@@ -352,7 +414,10 @@ class SiteBlockService : VpnService() {
         }
         val list = blocked
         val answer: ByteArray? = when {
-            isBlocked(q.domain, list) -> buildResponse(pkt, dnsOff, q, rcode = 3, answers = emptyList())
+            isBlocked(q.domain, list) -> {
+                onSiteBlocked(q.domain)
+                buildResponse(pkt, dnsOff, q, rcode = 3, answers = emptyList())
+            }
             else -> {
                 val safeIp = safeSearchIp(q.domain)
                 when {
@@ -373,6 +438,29 @@ class SiteBlockService : VpnService() {
         return wrapResponse(pkt, ihl, srcPort, dstPort, answer)
     }
 
+    /**
+     * A blocked domain was asked for: log the attempt (feeds the temptation
+     * counter; logAttempt itself throttles to one entry per kind per 3 s)
+     * and tell PowerBlockService to cover the screen — throttled to one
+     * broadcast per 3 s. The broadcast is restricted to our own package. If
+     * accessibility is off there is no overlay, but the DNS answer is still
+     * NXDOMAIN and the attempt is still logged.
+     */
+    private fun onSiteBlocked(domain: String) {
+        try {
+            Extra.logAttempt(this, "site")
+            val now = SystemClock.uptimeMillis()
+            if (now - lastSiteBroadcastAt < 3000) return
+            lastSiteBroadcastAt = now
+            val i = Intent(ACTION_SITE_BLOCKED)
+            i.setPackage(packageName)
+            i.putExtra(EXTRA_BLOCKED_DOMAIN, domain)
+            sendBroadcast(i)
+        } catch (e: Exception) {
+            Log.e(TAG, "site blocked notify failed", e)
+        }
+    }
+
     /** Exact match or any subdomain of a blocked domain — user list or built-in blocklist. */
     private fun isBlocked(domain: String, list: List<String>): Boolean {
         for (d in list) {
@@ -381,25 +469,8 @@ class SiteBlockService : VpnService() {
         return isInBlocklist(domain)
     }
 
-    /**
-     * Suffix match against the built-in blocklist: walks up the labels
-     * (a.b.com → b.com), so a subdomain of a listed domain is blocked too.
-     * Hash lookups only — fast even with ~100,000 entries. Never matches a
-     * bare TLD, so a stray "com" in the list could not block everything.
-     */
-    private fun isInBlocklist(domain: String): Boolean {
-        val set = blocklist
-        if (set.isEmpty()) return false
-        var d: String? = domain
-        while (d != null) {
-            if (set.contains(d)) return true
-            val dot = d.indexOf('.')
-            if (dot < 0) return false
-            d = d.substring(dot + 1)
-            if (!d.contains('.')) return false // bare TLD: stop, do not match
-        }
-        return false
-    }
+    /** Suffix match against the built-in blocklist (see [suffixMatch]). */
+    private fun isInBlocklist(domain: String): Boolean = suffixMatch(blocklist, domain)
 
     /**
      * SafeSearch / restricted-mode addresses. A query for one of these search

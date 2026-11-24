@@ -49,6 +49,10 @@ import java.util.Locale
  * channel is not blocked.
  * Home is never used for Reels: it sends YouTube Shorts into picture-in-picture
  * instead of closing it.
+ * Site block also runs here: when the DNS VPN sees a query for a blocked
+ * domain it broadcasts, and this service covers the screen with the block
+ * screen; and when URL detection is on, the browser address bar is watched
+ * directly, so a blocked site is covered even when the DNS option is off.
  */
 class PowerBlockService : AccessibilityService() {
 
@@ -141,6 +145,61 @@ class PowerBlockService : AccessibilityService() {
     private var lastHomeFallbackAt = 0L // throttles the HOME fallback on add failure
     private val appLabelCache = HashMap<String, String>()
 
+    // Site block (URL detection + DNS-block overlay): the accessibility side
+    // of the site block. Works during a lock even when the DNS/VPN option is
+    // off — it reads the browser address bar, not the network.
+    @Volatile
+    private var siteUrlOn = false
+    private var lastForegroundPkg: String? = null
+    private var lastBrowserScanAt = 0L
+    private var lastUrlCheckAt = 0L
+    private var lastCheckedUrl = ""
+    private var lastSiteOverlayAt = 0L
+    private var lastSiteOverlayDomain = ""
+    @Volatile
+    private var urlCheckRunning = false
+    private var siteReceiverOn = false
+
+    /** Browsers whose address bar is watched for URL detection. */
+    private val urlDetectBrowsers = setOf(
+        "com.android.chrome", "org.mozilla.firefox",
+        "com.sec.android.app.sbrowser", "com.microsoft.emmx"
+    )
+
+    /** Browsers (for the DNS-block overlay guard): the overlay only pops up
+     * when one of these is in front, so a background prefetch cannot cover
+     * whatever the user is doing. */
+    private val browserPkgs = urlDetectBrowsers + setOf(
+        "com.brave.browser", "com.opera.browser", "com.opera.mini.native",
+        "com.duckduckgo.mobile.android", "com.vivaldi.browser", "com.kiwibrowser.browser"
+    )
+
+    /** Address-bar view IDs (full "package:id/name" form). Browser updates
+     * can rename these — the DNS option stays the reliable backstop, and a
+     * missed ID only means no URL detection, never a crash. */
+    private val addressBarIds = setOf(
+        "com.android.chrome:id/url_bar",
+        "com.android.chrome:id/search_box",
+        "org.mozilla.firefox:id/mozac_browser_toolbar_url_view",
+        "org.mozilla.firefox:id/url_bar_title",
+        "com.sec.android.app.sbrowser:id/location_bar_edit_text",
+        "com.sec.android.app.sbrowser:id/url_bar",
+        "com.microsoft.emmx:id/url_bar",
+        "com.microsoft.emmx:id/search_box"
+    )
+
+    /** The VPN saw a DNS query for a blocked domain: cover the screen. */
+    private val siteBlockedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context?, i: Intent?) {
+            try {
+                val domain = i?.getStringExtra(SiteBlockService.EXTRA_BLOCKED_DOMAIN) ?: return
+                onSiteBlocked(domain, lastForegroundPkg)
+            } catch (ex: Exception) {
+                Log.e(TAG, "site-blocked receiver failed", ex)
+            }
+        }
+    }
+
 
     // Tab labels that mean a Reels / Shorts / Status feed is showing when selected.
     private val reelsTabMarkers = listOf(
@@ -191,6 +250,7 @@ class PowerBlockService : AccessibilityService() {
             ensureOverlay() // pre-build the shield so it can appear instantly
             ensureBlockOverlay() // pre-build the block screen too: it must appear instantly
             registerCloseDialogs()
+            registerSiteBlocked()
             Store.kickService(this)
             Scheduler.onAlarm(this)
         } catch (e: Exception) {
@@ -214,6 +274,21 @@ class PowerBlockService : AccessibilityService() {
         }
     }
 
+    /** The VPN's blocked-site broadcast is ours only (setPackage), so it is not exported. */
+    private fun registerSiteBlocked() {
+        try {
+            val f = IntentFilter(SiteBlockService.ACTION_SITE_BLOCKED)
+            if (Build.VERSION.SDK_INT >= 33) {
+                registerReceiver(siteBlockedReceiver, f, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                registerReceiver(siteBlockedReceiver, f)
+            }
+            siteReceiverOn = true
+        } catch (ex: Exception) {
+            Log.e(TAG, "register site-blocked failed", ex)
+        }
+    }
+
     private fun readState() {
         val p = Store.lock(this)
         active = p.getBoolean("active", false)
@@ -233,6 +308,8 @@ class PowerBlockService : AccessibilityService() {
         abMsg = Extra.appBlockMsg(this)
         limitMap = Extra.dailyLimits(this)
         blockMsg = Extra.blockMessage(this)
+        siteUrlOn = st.getBoolean("site_url_on", false)
+        if (siteUrlOn) SiteBlockService.preloadBlocklist(this)
     }
 
     private fun protecting(): Boolean = (active && System.currentTimeMillis() < endAt) || locProtecting
@@ -264,6 +341,15 @@ class PowerBlockService : AccessibilityService() {
             maybeReviveKeepAlive() // the system re-binds this service, so it revives the keep-alive service
             // daily limits work without a lock: track foreground time on every app switch
             if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) trackUsage(pkg)
+            if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && pkg != packageName) {
+                lastForegroundPkg = pkg
+            }
+            // URL detection (site block, second option): the browser address
+            // bar changed, or a browser window just opened.
+            if (siteUrlOn && protecting() && urlDetectBrowsers.contains(pkg)) {
+                if (e.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) onBrowserTextChanged(e)
+                else if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) onBrowserWindowChanged(pkg)
+            }
             // the block screen follows the foreground app: hide it once protection ends,
             // or once a real window change shows another app in front. Our own package
             // is excluded: taps on the overlay itself must not dismiss it. A daily-limit
@@ -527,14 +613,15 @@ class PowerBlockService : AccessibilityService() {
     private fun isShieldAttached(): Boolean =
         overlayAttached || (overlay?.isAttachedToWindow == true)
 
-    private fun showBlockOverlay(pkg: String, sub: String? = null) {
+    private fun showBlockOverlay(pkg: String, sub: String? = null, titleOverride: String? = null) {
         hideOverlay() // never stack the power-menu shield under the block screen
         blockedPkg = pkg
         val subText = sub ?: L.t("This app is blocked while the lock runs", "লক চলাকালীন এই অ্যাপ ব্লক করা আছে")
+        val titleText = titleOverride ?: appLabel(pkg)
         if (isBlockOverlayAttached()) {
             // already up: refresh the text instead of re-adding (re-adding an
             // attached view throws IllegalStateException)
-            blockOverlayTitle?.text = appLabel(pkg)
+            blockOverlayTitle?.text = titleText
             blockOverlaySub?.text = subText
             blockOverlayMsg?.text = blockMsg
             blockOverlayMsg?.visibility = if (blockMsg.isBlank()) View.GONE else View.VISIBLE
@@ -557,7 +644,7 @@ class PowerBlockService : AccessibilityService() {
             )
             wm.addView(v, params)
             blockOverlayAttached = true
-            blockOverlayTitle?.text = appLabel(pkg)
+            blockOverlayTitle?.text = titleText
             blockOverlaySub?.text = subText
             blockOverlayMsg?.text = blockMsg
             blockOverlayMsg?.visibility = if (blockMsg.isBlank()) View.GONE else View.VISIBLE
@@ -618,6 +705,168 @@ class PowerBlockService : AccessibilityService() {
             // state — isBlockOverlayAttached() reconciles the flag with the
             // view on the next check instead of trusting a stale flag
         }
+    }
+
+    // ---------- site block: shared "block this site" path ----------
+
+    /**
+     * One shared path for both site-block triggers: a DNS query seen by the
+     * VPN, and an address-bar URL seen here. Shows the block screen with the
+     * domain as its title and logs the attempt (kind "site"). The overlay
+     * only appears while a lock is running and a browser is in front — a
+     * background prefetch must not cover whatever the user is doing.
+     * Throttled: the same domain at most once per 2 s; a new domain always
+     * refreshes the screen at once.
+     */
+    private fun onSiteBlocked(domain: String, pkg: String?) {
+        try {
+            if (!protecting()) return
+            val fg = pkg ?: lastForegroundPkg
+            if (fg == null || !browserPkgs.contains(fg)) return
+            val now = SystemClock.uptimeMillis()
+            if (domain == lastSiteOverlayDomain && now - lastSiteOverlayAt < 2000) return
+            lastSiteOverlayAt = now
+            lastSiteOverlayDomain = domain
+            limitBlockActive = false // a lock block, not a limit block
+            showBlockOverlay(
+                fg,
+                L.t("This site is blocked while the lock runs", "লক চলাকালীন এই সাইট ব্লক করা আছে"),
+                titleOverride = domain
+            )
+            Extra.logAttempt(this, "site")
+        } catch (ex: Exception) {
+            Log.e(TAG, "site block overlay failed", ex)
+        }
+    }
+
+    // ---------- site block: URL detection (accessibility) ----------
+
+    /**
+     * The address-bar text changed in a browser: the event carries the new
+     * text, so no tree scan is needed. Only the known address-bar view IDs
+     * are trusted — typing anywhere else in the browser is ignored.
+     */
+    private fun onBrowserTextChanged(e: AccessibilityEvent) {
+        try {
+            val src = e.source ?: return
+            val vid = try { src.viewIdResourceName } catch (_: Exception) { null } ?: ""
+            if (!addressBarIds.contains(vid)) return
+            val text = e.text?.joinToString("") ?: return
+            maybeCheckUrl(e.packageName?.toString() ?: return, text)
+        } catch (ex: Exception) {
+            Log.e(TAG, "browser text check failed", ex)
+        }
+    }
+
+    /**
+     * A browser window just opened (new tab, app switch, navigation): scan
+     * the tree once for the address bar and check its text. Throttled to
+     * once per 2 s — window changes fire often while a page loads.
+     */
+    private fun onBrowserWindowChanged(pkg: String) {
+        val now = SystemClock.uptimeMillis()
+        if (now - lastBrowserScanAt < 2000) return
+        lastBrowserScanAt = now
+        try {
+            val root = rootInActiveWindow ?: return
+            try {
+                for (id in addressBarIds) {
+                    val nodes = try {
+                        root.findAccessibilityNodeInfosByViewId(id)
+                    } catch (ex: Exception) {
+                        continue
+                    }
+                    try {
+                        for (n in nodes) {
+                            val text = n.text?.toString() ?: ""
+                            if (text.isNotEmpty()) {
+                                maybeCheckUrl(pkg, text)
+                                return
+                            }
+                        }
+                    } finally {
+                        for (n in nodes) {
+                            try { n.recycle() } catch (_: Exception) { }
+                        }
+                    }
+                }
+            } finally {
+                try { root.recycle() } catch (_: Exception) { }
+            }
+        } catch (ex: Exception) {
+            Log.e(TAG, "browser window scan failed", ex)
+        }
+    }
+
+    /**
+     * The URL in a browser address bar may have changed: extract the host
+     * and, if it is new, check it on a worker thread (the blocklist load may
+     * block on first use). At most one check per 2 s, and only one running
+     * at a time — the next URL change retries anything skipped.
+     */
+    private fun maybeCheckUrl(pkg: String, rawText: String) {
+        val host = hostFromUrl(rawText) ?: return
+        val key = "$pkg|$host"
+        if (key == lastCheckedUrl) return
+        val now = SystemClock.uptimeMillis()
+        if (now - lastUrlCheckAt < 2000) return
+        lastUrlCheckAt = now
+        lastCheckedUrl = key
+        if (urlCheckRunning) return
+        urlCheckRunning = true
+        val appCtx = applicationContext
+        val t = Thread({
+            try {
+                // the user's own list first (fast), then the 100k blocklist
+                var blocked = false
+                for (d in Extra.siteDomains(appCtx)) {
+                    if (host == d || host.endsWith(".$d")) { blocked = true; break }
+                }
+                if (!blocked) blocked = SiteBlockService.isBlockedByBuiltInList(appCtx, host)
+                if (blocked) {
+                    handler.post {
+                        try {
+                            if (protecting()) onSiteBlocked(host, pkg)
+                        } catch (ex: Exception) {
+                            Log.e(TAG, "site overlay post failed", ex)
+                        }
+                    }
+                }
+            } catch (ex: Exception) {
+                Log.e(TAG, "url check failed", ex)
+            } finally {
+                urlCheckRunning = false
+            }
+        }, "siteblock-url-check")
+        t.isDaemon = true
+        t.start()
+    }
+
+    /**
+     * Pulls a host out of address-bar text ("https://www.example.com/x" or
+     * just "example.com"). Returns null for search queries and anything
+     * that is not a plain domain name.
+     */
+    private fun hostFromUrl(raw: String): String? {
+        var s = raw.trim().lowercase()
+        if (s.isEmpty() || s.contains(' ') || s.contains('\n')) return null
+        if (s.startsWith("http://")) s = s.substring(7)
+        else if (s.startsWith("https://")) s = s.substring(8)
+        val slash = s.indexOf('/')
+        if (slash >= 0) s = s.substring(0, slash)
+        val q = s.indexOf('?')
+        if (q >= 0) s = s.substring(0, q)
+        val colon = s.indexOf(':')
+        if (colon >= 0) s = s.substring(0, colon)
+        if (s.startsWith("www.")) s = s.substring(4)
+        s = s.trimEnd('.')
+        if (s.isEmpty() || s.length > 253 || !s.contains('.')) return null
+        for (part in s.split('.')) {
+            if (part.isEmpty() || part.length > 63) return null
+            if (!part.all { it.isLetterOrDigit() || it == '-' }) return null
+            if (part.startsWith('-') || part.endsWith('-')) return null
+        }
+        return s
     }
 
     /**
@@ -1339,6 +1588,14 @@ class PowerBlockService : AccessibilityService() {
                 unregisterReceiver(closeDialogsReceiver)
             } catch (ex: Exception) {
                 Log.e(TAG, "unregister close-dialogs failed", ex)
+            }
+        }
+        if (siteReceiverOn) {
+            siteReceiverOn = false
+            try {
+                unregisterReceiver(siteBlockedReceiver)
+            } catch (ex: Exception) {
+                Log.e(TAG, "unregister site-blocked failed", ex)
             }
         }
         try {

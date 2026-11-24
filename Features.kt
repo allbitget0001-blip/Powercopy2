@@ -84,7 +84,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "58"
+    const val BUILD_ID = "59"
 
     // ---------- extend time (never reduce) ----------
 
@@ -106,7 +106,7 @@ object Extra {
 
     private val lastLog = HashMap<String, Long>()
 
-    /** kind: "power", "settings", "focus", "appblock", "reels", "msgsearch" or "limit". At most one entry per kind every 3 seconds. */
+    /** kind: "power", "settings", "focus", "appblock", "reels", "msgsearch", "limit" or "site". At most one entry per kind every 3 seconds. */
     @Synchronized
     fun logAttempt(ctx: Context, kind: String) {
         try {
@@ -373,6 +373,14 @@ object Extra {
 
     fun setSiteOn(ctx: Context, on: Boolean) {
         Store.settings(ctx).edit().putBoolean("site_on", on).apply()
+    }
+
+    /** URL-detection block (AccessibilityService): watches the browser
+     * address bar during a lock. Independent of the DNS/VPN option. */
+    fun siteUrlOn(ctx: Context): Boolean = Store.settings(ctx).getBoolean("site_url_on", false)
+
+    fun setSiteUrlOn(ctx: Context, on: Boolean) {
+        Store.settings(ctx).edit().putBoolean("site_url_on", on).apply()
     }
 
     /** Blocked domains (lowercase, no scheme/path). Defaults apply until the user saves a list. */
@@ -1157,6 +1165,30 @@ fun MainActivity.siteBlockCard(): View {
         ),
         lp(MATCH, WRAP, t = dp(6))
     )
+    // second option: URL detection via the accessibility service — works
+    // during a lock even when the DNS/VPN option above is off
+    val urlOn = Extra.siteUrlOn(this)
+    val urlSw = toggle(urlOn) { v ->
+        Extra.setSiteUrlOn(this, v)
+        if (v) SiteBlockService.preloadBlocklist(this)
+        if (v && !Perm.accessibilityOn(this)) {
+            toast(L.t("URL detection needs accessibility — turn it on in Settings", "URL ডিটেকশনের জন্য অ্যাক্সেসিবিলিটি লাগবে — Settings থেকে চালু করুন"))
+        } else {
+            toast(
+                if (v) L.t("URL detection is on — blocked sites are covered during a lock", "URL ডিটেকশন চালু — লক চলাকালীন ব্লক করা সাইট ঢাকা পড়বে")
+                else L.t("URL detection is off", "URL ডিটেকশন বন্ধ")
+            )
+        }
+        go(3)
+    }
+    c.addView(
+        row(
+            L.t("URL detection block", "URL ডিটেকশন ব্লক"),
+            L.t("Watches the browser address bar during a lock and covers blocked sites. Works even when the DNS option above is off. Needs accessibility.", "লক চলাকালীন ব্রাউজারের অ্যাড্রেস বার দেখে ব্লক করা সাইট ঢেকে দেয়। ওপরের DNS অপশন বন্ধ থাকলেও কাজ করে। অ্যাক্সেসিবিলিটি লাগবে।"),
+            urlSw
+        ),
+        lp(MATCH, WRAP, t = dp(6))
+    )
     c.addView(
         tv(
             L.t(
@@ -1180,6 +1212,16 @@ fun MainActivity.siteBlockCard(): View {
             ),
             lp(MATCH, WRAP, t = dp(6))
         )
+        val viewList = outlineBtn(L.t("View blocklist", "ব্লকলিস্ট দেখুন"), C.primary)
+        viewList.setOnClickListener {
+            try {
+                startActivity(Intent(this, BlocklistActivity::class.java))
+            } catch (e: Exception) {
+                Log.e(TAG, "blocklist viewer launch failed", e)
+                toast(L.t("Could not open the blocklist", "ব্লকলিস্ট খোলা যায়নি"))
+            }
+        }
+        c.addView(viewList, lp(MATCH, dp(48), t = dp(10)))
     }
     val domains = Extra.siteDomains(this)
     for (d in domains) {
@@ -1228,13 +1270,37 @@ private fun MainActivity.addSiteDomainDialog() {
         .setView(body)
         .setPositiveButton(L.t("Add", "যোগ করুন")) { _, _ ->
             val raw = et.text.toString()
-            if (Extra.addSiteDomain(this, raw)) {
-                SiteBlockService.sync(this) // reload the list in the running VPN
-                toast(L.t("Domain added", "ডোমেইন যোগ হয়েছে"))
-                go(3)
-            } else {
-                toast(L.t("Not a valid domain, or already in the list", "সঠিক ডোমেইন নয়, অথবা তালিকায় আগেই আছে"))
-            }
+            // the blocklist check reads a 1.8 MB asset: run it off the UI thread
+            val t = Thread({
+                val d = Extra.normalizeDomain(raw)
+                if (d == null) {
+                    runOnUiThread { toast(L.t("Not a valid domain", "সঠিক ডোমেইন নয়")) }
+                    return@Thread
+                }
+                if (d in Extra.siteDomains(this)) {
+                    runOnUiThread { toast(L.t("Already in your list", "তোমার তালিকায় আগেই আছে")) }
+                    return@Thread
+                }
+                val inBlocklist = try {
+                    SiteBlockService.isBlockedByBuiltInList(this, d)
+                } catch (e: Exception) {
+                    Log.e(TAG, "blocklist check failed", e)
+                    false
+                }
+                runOnUiThread {
+                    if (inBlocklist) {
+                        toast(L.t("This site is already in the blocklist", "এই সাইট আগে থেকেই ব্লকলিস্টে আছে"))
+                    } else if (Extra.addSiteDomain(this, d)) {
+                        SiteBlockService.sync(this) // reload the list in the running VPN
+                        toast(L.t("Domain added", "ডোমেইন যোগ হয়েছে"))
+                        go(3)
+                    } else {
+                        toast(L.t("Not a valid domain, or already in the list", "সঠিক ডোমেইন নয়, অথবা তালিকায় আগেই আছে"))
+                    }
+                }
+            }, "siteblock-add-check")
+            t.isDaemon = true
+            t.start()
         }
         .setNegativeButton(L.t("Cancel", "বাতিল"), null)
         .show()
@@ -2844,6 +2910,7 @@ fun MainActivity.attemptsCard(): View {
     var nReels = 0
     var nMsgSearch = 0
     var nLimit = 0
+    var nSite = 0
     for ((t, k) in list) {
         if (t >= today) nToday++
         if (t >= week) nWeek++
@@ -2854,6 +2921,7 @@ fun MainActivity.attemptsCard(): View {
             "reels" -> nReels++
             "msgsearch" -> nMsgSearch++
             "limit" -> nLimit++
+            "site" -> nSite++
             else -> nFocus++
         }
     }
@@ -2891,8 +2959,8 @@ fun MainActivity.attemptsCard(): View {
     c.addView(
         tv(
             L.t(
-                "Power menu: $nPower · App settings: $nSettings · Focus apps: $nFocus · App block: $nAppBlock · Reels block: $nReels · Search block: $nMsgSearch · Daily limit: $nLimit",
-                "পাওয়ার মেনু: $nPower · অ্যাপ সেটিংস: $nSettings · ফোকাস অ্যাপ: $nFocus · অ্যাপ ব্লক: $nAppBlock · রিলস ব্লক: $nReels · সার্চ ব্লক: $nMsgSearch · দৈনিক লিমিট: $nLimit"
+                "Power menu: $nPower · App settings: $nSettings · Focus apps: $nFocus · App block: $nAppBlock · Reels block: $nReels · Search block: $nMsgSearch · Daily limit: $nLimit · Site block: $nSite",
+                "পাওয়ার মেনু: $nPower · অ্যাপ সেটিংস: $nSettings · ফোকাস অ্যাপ: $nFocus · অ্যাপ ব্লক: $nAppBlock · রিলস ব্লক: $nReels · সার্চ ব্লক: $nMsgSearch · দৈনিক লিমিট: $nLimit · সাইট ব্লক: $nSite"
             ),
             12f, C.muted
         ),
