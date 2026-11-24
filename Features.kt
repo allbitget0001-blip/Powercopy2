@@ -84,7 +84,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "57"
+    const val BUILD_ID = "58"
 
     // ---------- extend time (never reduce) ----------
 
@@ -1167,6 +1167,20 @@ fun MainActivity.siteBlockCard(): View {
         ),
         lp(MATCH, WRAP, t = dp(4))
     )
+    // built-in blocklist size (0 when the asset could not be read)
+    val blCount = SiteBlockService.blocklistCount(this)
+    if (blCount > 0) {
+        c.addView(
+            tv(
+                L.t(
+                    "${L.num(String.format(Locale.US, "%,d", blCount))} adult sites auto-blocked, plus your own list below.",
+                    "${L.num(String.format(Locale.US, "%,d", blCount))}টি খারাপ সাইট অটো ব্লক — নিচে তোমার নিজের তালিকাও আছে।"
+                ),
+                12f, C.primary
+            ),
+            lp(MATCH, WRAP, t = dp(6))
+        )
+    }
     val domains = Extra.siteDomains(this)
     for (d in domains) {
         val r = LinearLayout(this)

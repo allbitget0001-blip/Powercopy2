@@ -30,7 +30,10 @@ const val REQ_VPN_CONSENT = 1001
  * keeps flowing over the normal network untouched.
  *
  * For each DNS question:
- *  - a blocked domain (or any of its subdomains) gets NXDOMAIN;
+ *  - a blocked domain (or any of its subdomains) gets NXDOMAIN — the check
+ *    covers the user's own list AND a built-in blocklist of ~100,000 adult
+ *    domains shipped in the app (assets/adult_blocklist.txt), loaded once
+ *    per process on a background thread;
  *  - Google / Bing / DuckDuckGo / YouTube get their SafeSearch / restricted
  *    addresses, so search results stay filtered;
  *  - anything else is forwarded to an upstream resolver (8.8.8.8, then
@@ -63,6 +66,74 @@ class SiteBlockService : VpnService() {
 
         private const val NOTIF_ID = 3
         private const val CHANNEL_ID = "powerlock_vpn"
+
+        /** Built-in adult-domain blocklist asset (one domain per line). */
+        private const val BLOCKLIST_ASSET = "adult_blocklist.txt"
+
+        /** The built-in blocklist, loaded once per process on a background thread. */
+        @Volatile
+        private var blocklist: Set<String> = emptySet()
+
+        /** True once the blocklist load has been started (it runs only once per process). */
+        private val blocklistLoadStarted = AtomicBoolean(false)
+
+        /** Cached domain count of the blocklist asset (-1 = not counted yet). */
+        @Volatile
+        private var blocklistCachedCount = -1
+
+        /**
+         * Number of domains in the built-in blocklist (0 when the asset is
+         * missing or unreadable). Counts the asset's lines once and caches
+         * the result; a fast byte scan, no full parse.
+         */
+        fun blocklistCount(ctx: Context): Int {
+            val cached = blocklistCachedCount
+            if (cached >= 0) return cached
+            val n = try {
+                ctx.assets.open(BLOCKLIST_ASSET).use { ins ->
+                    var count = 0
+                    val buf = ByteArray(8192)
+                    var lastByte = -1
+                    while (true) {
+                        val r = ins.read(buf)
+                        if (r <= 0) break
+                        for (i in 0 until r) if (buf[i] == '\n'.code.toByte()) count++
+                        lastByte = buf[r - 1].toInt()
+                    }
+                    if (lastByte != -1 && lastByte != '\n'.code) count++ // final line, no trailing newline
+                    count
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "blocklist count failed", e)
+                0
+            }
+            blocklistCachedCount = n
+            return n
+        }
+
+        /** Starts the one-time background load of the built-in blocklist. */
+        private fun ensureBlocklistLoaded(ctx: Context) {
+            if (!blocklistLoadStarted.compareAndSet(false, true)) return
+            val appCtx = ctx.applicationContext
+            val t = Thread({
+                try {
+                    val set = HashSet<String>(110000)
+                    appCtx.assets.open(BLOCKLIST_ASSET).bufferedReader().useLines { lines ->
+                        for (raw in lines) {
+                            val d = raw.trim().lowercase()
+                            if (d.isNotEmpty() && !d.startsWith("#")) set.add(d)
+                        }
+                    }
+                    blocklist = set
+                    blocklistCachedCount = set.size
+                    Log.i(TAG, "blocklist loaded: ${set.size} domains")
+                } catch (e: Exception) {
+                    Log.e(TAG, "blocklist load failed", e)
+                }
+            }, "siteblock-list-load")
+            t.isDaemon = true
+            t.start()
+        }
 
         /** True when the user has already granted the VPN permission. */
         fun vpnGranted(ctx: Context): Boolean {
@@ -126,6 +197,7 @@ class SiteBlockService : VpnService() {
         try {
             L.load(this)
             blocked = Extra.siteDomains(this)
+            ensureBlocklistLoaded(this) // background thread; the VPN never waits for it
             if (running.get()) return START_STICKY // already up: the list is refreshed, nothing else to do
             if (!Extra.siteOn(this) || !Store.isActive(this)) {
                 stopSelf()
@@ -301,10 +373,30 @@ class SiteBlockService : VpnService() {
         return wrapResponse(pkt, ihl, srcPort, dstPort, answer)
     }
 
-    /** Exact match or any subdomain of a blocked domain. */
+    /** Exact match or any subdomain of a blocked domain — user list or built-in blocklist. */
     private fun isBlocked(domain: String, list: List<String>): Boolean {
         for (d in list) {
             if (domain == d || domain.endsWith(".$d")) return true
+        }
+        return isInBlocklist(domain)
+    }
+
+    /**
+     * Suffix match against the built-in blocklist: walks up the labels
+     * (a.b.com → b.com), so a subdomain of a listed domain is blocked too.
+     * Hash lookups only — fast even with ~100,000 entries. Never matches a
+     * bare TLD, so a stray "com" in the list could not block everything.
+     */
+    private fun isInBlocklist(domain: String): Boolean {
+        val set = blocklist
+        if (set.isEmpty()) return false
+        var d: String? = domain
+        while (d != null) {
+            if (set.contains(d)) return true
+            val dot = d.indexOf('.')
+            if (dot < 0) return false
+            d = d.substring(dot + 1)
+            if (!d.contains('.')) return false // bare TLD: stop, do not match
         }
         return false
     }
