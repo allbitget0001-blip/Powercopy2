@@ -31,7 +31,7 @@ android {
         applicationId = "com.powerlock.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 46
+        versionCode = 47
         versionName = "3.0"
     }
 

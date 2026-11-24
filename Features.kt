@@ -84,7 +84,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "69"
+    const val BUILD_ID = "70"
 
     // ---------- extend time (never reduce) ----------
 
@@ -1463,7 +1463,7 @@ private fun MainActivity.attachSecretZGesture(v: View) {
                     val dx = ev.x - pts[0].first
                     val dy = ev.y - pts[0].second
                     if (dx > dp(24) && kotlin.math.abs(dy) < dp(16)) {
-                        v.requestDisallowInterceptTouchEvent(true)
+                        v.parent?.requestDisallowInterceptTouchEvent(true)
                         disallowed = true
                     }
                 }
