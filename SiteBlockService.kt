@@ -724,6 +724,11 @@ class SiteBlockService : VpnService() {
  *  - the user's own list ([Extra.siteKeywords]), which they can still edit
  *    in Settings (add-only while a session runs).
  *
+ * The asset carries formatting artifacts from its source lists
+ * (surrounding quotes like "4r5e" and asterisks like *fuck*); [cleanKeyword]
+ * strips them when loading, so the matcher, the keyword viewer, and the
+ * Settings count all agree on the same cleaned, deduplicated list.
+ *
  * Matching is an Aho-Corasick automaton built once from both lists: the
  * check runs on every keystroke (build 64, instant), so a naive
  * per-keyword substring scan over ~5,000 keywords per keystroke would be
@@ -855,18 +860,41 @@ object KeywordBlock {
     /** Starts the one-time background load of the built-in keyword asset. */
     fun preload(ctx: Context) = ensureAssetLoaded(ctx)
 
+    /**
+     * Cleans one raw line from the built-in keyword asset: trimmed,
+     * lowercased, with the formatting artifacts the source lists
+     * carried stripped off — surrounding quotes ("4r5e") and asterisks
+     * (*fuck*, arse*) — so the entry actually matches instead of being
+     * dead weight (as-is, "*fuck*" would only match the literal string
+     * with asterisks). Returns "" for blank/comment lines and for
+     * anything shorter than 3 characters after cleaning: a 1–2 letter
+     * keyword would match whole country domains like .ge, so those
+     * stay out. Shared by the matcher loader, the count, and the
+     * keyword viewer, so all three agree on the list.
+     */
+    fun cleanKeyword(raw: String): String {
+        var w = raw.trim().lowercase()
+        if (w.isEmpty() || w.startsWith("#")) return ""
+        while (w.isNotEmpty() && (w.first() == '"' || w.first() == '\'' || w.first() == '*' || w.first() == '`')) w = w.drop(1)
+        while (w.isNotEmpty() && (w.last() == '"' || w.last() == '\'' || w.last() == '*' || w.last() == '`')) w = w.dropLast(1)
+        w = w.trim()
+        if (w.length < 3) return ""
+        return w
+    }
+
     private fun ensureAssetLoaded(ctx: Context) {
         if (!assetLoadStarted.compareAndSet(false, true)) return
         val appCtx = ctx.applicationContext
         val t = Thread({
             try {
-                val list = ArrayList<String>()
+                val seen = LinkedHashSet<String>()
                 appCtx.assets.open(KEYWORD_ASSET).bufferedReader().useLines { lines ->
                     for (raw in lines) {
-                        val w = raw.trim().lowercase()
-                        if (w.isNotEmpty() && !w.startsWith("#")) list.add(w)
+                        val w = cleanKeyword(raw)
+                        if (w.isNotEmpty()) seen.add(w)
                     }
                 }
+                val list = seen.toList()
                 assetKeywords = list
                 Log.i(TAG, "keyword blocklist loaded: ${list.size} keywords")
                 // build the matcher now, so the first check after a lock
@@ -938,21 +966,22 @@ object KeywordBlock {
 
     /**
      * Number of keywords in the built-in asset (0 when the asset is
-     * missing or unreadable). Counts non-comment lines once and caches
-     * the result.
+     * missing or unreadable). Counts cleaned, deduplicated keywords
+     * ([cleanKeyword]) once and caches the result, so the Settings
+     * count is the true total the matcher and the viewer use.
      */
     fun builtInCount(ctx: Context): Int {
         val cached = builtInCachedCount
         if (cached >= 0) return cached
         val n = try {
-            var count = 0
+            val seen = HashSet<String>()
             ctx.assets.open(KEYWORD_ASSET).bufferedReader().useLines { lines ->
                 for (raw in lines) {
-                    val w = raw.trim()
-                    if (w.isNotEmpty() && !w.startsWith("#")) count++
+                    val w = cleanKeyword(raw)
+                    if (w.isNotEmpty()) seen.add(w)
                 }
             }
-            count
+            seen.size
         } catch (e: Exception) {
             Log.e(TAG, "keyword count failed", e)
             0
