@@ -84,7 +84,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "70"
+    const val BUILD_ID = "71"
 
     // ---------- extend time (never reduce) ----------
 
@@ -1303,17 +1303,17 @@ fun MainActivity.siteBlockCard(): View {
         c.addView(
             tv(
                 L.t(
-                    "${L.num(String.format(Locale.US, "%,d", blCount))} adult sites auto-blocked, plus your own list below.",
-                    "${L.num(String.format(Locale.US, "%,d", blCount))}টি খারাপ সাইট অটো ব্লক — নিচে তোমার নিজের তালিকাও আছে।"
+                    "${L.num(String.format(Locale.US, "%,d", blCount))} adult sites auto-blocked, plus your own list.",
+                    "${L.num(String.format(Locale.US, "%,d", blCount))}টি খারাপ সাইট অটো ব্লক — তোমার নিজের তালিকাও আছে।"
                 ),
                 12f, C.primary
             ),
             lp(MATCH, WRAP, t = dp(6))
         )
         // the viewers are hidden by default — the lists contain bad words a
-        // bystander could misunderstand — and appear only after the secret
-        // "Z" draw gesture on this card (see attachSecretZGesture)
-        if (secretViewersShown) {
+        // bystander could misunderstand — and appear only after drawing on
+        // the touch bar below (see secretTouchBar)
+        if (secretOptionsShown) {
             val viewList = outlineBtn(L.t("View blocklist", "ব্লকলিস্ট দেখুন"), C.primary)
             viewList.setOnClickListener {
                 try {
@@ -1326,35 +1326,57 @@ fun MainActivity.siteBlockCard(): View {
             c.addView(viewList, lp(MATCH, dp(48), t = dp(10)))
         }
     }
-    val domains = Extra.siteDomains(this)
-    for (d in domains) {
-        val r = LinearLayout(this)
-        r.gravity = Gravity.CENTER_VERTICAL
-        r.setPadding(0, dp(8), 0, dp(8))
-        r.addView(tv(d, 15f, C.text), lp(0, WRAP, weight = 1f))
-        val remove = tv(L.t("Remove", "সরান"), 13f, if (locked) C.muted else C.warn)
-        remove.setPadding(dp(8), dp(8), dp(8), dp(8))
-        remove.pressFeedback()
-        remove.setOnClickListener {
-            if (Store.isActive(this)) {
-                toast(L.t("Locked while a session is active — you can still add domains", "সেশন চলাকালীন সরানো যাবে না — তবে নতুন ডোমেইন যোগ করা যাবে"))
-            } else {
-                Extra.removeSiteDomain(this, d)
-                go(3)
-            }
-        }
-        r.addView(remove)
-        c.addView(r, lp(MATCH, WRAP, t = dp(4)))
-    }
-    if (locked) {
+    // your own lists, counts only — the words themselves stay hidden until
+    // the touch bar below is drawn on (see secretTouchBar)
+    val ownSiteN = Extra.siteDomains(this).size
+    val ownKwN = Extra.siteKeywords(this).size
+    if (ownSiteN > 0 || ownKwN > 0) {
         c.addView(
-            tv(L.t("While a session runs, domains cannot be removed here — but new ones can be added below.", "সেশন চলাকালীন এখান থেকে সরানো যাবে না — তবে নিচে নতুন যোগ করা যাবে।"), 12f, C.warn),
-            lp(MATCH, WRAP, t = dp(8))
+            tv(
+                L.t(
+                    "Your own ${L.num(ownSiteN.toString())} sites and ${L.num(ownKwN.toString())} keywords are also blocked.",
+                    "তোমার নিজের ${L.num(ownSiteN.toString())}টি সাইট ও ${L.num(ownKwN.toString())}টি কিওয়ার্ডও ব্লক করা আছে।"
+                ),
+                12f, C.muted
+            ),
+            lp(MATCH, WRAP, t = dp(4))
         )
     }
-    val add = outlineBtn(L.t("Add a domain", "ডোমেইন যোগ করুন"), C.primary)
-    add.setOnClickListener { addSiteDomainDialog() }
-    c.addView(add, lp(MATCH, dp(48), t = dp(10)))
+    // the touch bar: draw anything on it to reveal the hidden lists and
+    // viewer buttons. It looks like a plain handle — no label, no hint
+    // of what it unlocks.
+    c.addView(secretTouchBar(), lp(MATCH, dp(48), t = dp(10)))
+    val domains = Extra.siteDomains(this)
+    if (secretOptionsShown) {
+        for (d in domains) {
+            val r = LinearLayout(this)
+            r.gravity = Gravity.CENTER_VERTICAL
+            r.setPadding(0, dp(8), 0, dp(8))
+            r.addView(tv(d, 15f, C.text), lp(0, WRAP, weight = 1f))
+            val remove = tv(L.t("Remove", "সরান"), 13f, if (locked) C.muted else C.warn)
+            remove.setPadding(dp(8), dp(8), dp(8), dp(8))
+            remove.pressFeedback()
+            remove.setOnClickListener {
+                if (Store.isActive(this)) {
+                    toast(L.t("Locked while a session is active — you can still add domains", "সেশন চলাকালীন সরানো যাবে না — তবে নতুন ডোমেইন যোগ করা যাবে"))
+                } else {
+                    Extra.removeSiteDomain(this, d)
+                    go(3)
+                }
+            }
+            r.addView(remove)
+            c.addView(r, lp(MATCH, WRAP, t = dp(4)))
+        }
+        if (locked) {
+            c.addView(
+                tv(L.t("While a session runs, domains cannot be removed here — but new ones can be added below.", "সেশন চলাকালীন এখান থেকে সরানো যাবে না — তবে নিচে নতুন যোগ করা যাবে।"), 12f, C.warn),
+                lp(MATCH, WRAP, t = dp(8))
+            )
+        }
+        val add = outlineBtn(L.t("Add a domain", "ডোমেইন যোগ করুন"), C.primary)
+        add.setOnClickListener { addSiteDomainDialog() }
+        c.addView(add, lp(MATCH, dp(48), t = dp(10)))
+    }
     // keyword list (same rules as the domain list: add-only while a session runs)
     c.addView(
         tv(L.t("Blocked keywords", "ব্লক করা কিওয়ার্ড"), 15f, C.text),
@@ -1379,8 +1401,8 @@ fun MainActivity.siteBlockCard(): View {
         )
         // keyword viewer: the built-in list, A to Z, with search — next to
         // the blocklist viewer above, so both viewers sit in this one card.
-        // Hidden by default like the blocklist viewer (secret "Z" gesture).
-        if (secretViewersShown) {
+        // Hidden by default like the blocklist viewer (touch bar).
+        if (secretOptionsShown) {
             val viewKw = outlineBtn(L.t("View keywords", "কিওয়ার্ড দেখুন"), C.primary)
             viewKw.setOnClickListener {
                 try {
@@ -1394,75 +1416,89 @@ fun MainActivity.siteBlockCard(): View {
         }
     }
     val keywords = Extra.siteKeywords(this)
-    for (k in keywords) {
-        val r = LinearLayout(this)
-        r.gravity = Gravity.CENTER_VERTICAL
-        r.setPadding(0, dp(8), 0, dp(8))
-        r.addView(tv(k, 15f, C.text), lp(0, WRAP, weight = 1f))
-        val remove = tv(L.t("Remove", "সরান"), 13f, if (locked) C.muted else C.warn)
-        remove.setPadding(dp(8), dp(8), dp(8), dp(8))
-        remove.pressFeedback()
-        remove.setOnClickListener {
-            if (Store.isActive(this)) {
-                toast(L.t("Locked while a session is active — you can still add keywords", "সেশন চলাকালীন সরানো যাবে না — তবে নতুন কিওয়ার্ড যোগ করা যাবে"))
-            } else {
-                Extra.removeSiteKeyword(this, k)
-                SiteBlockService.sync(this) // reload the list in the running VPN
-                go(3)
+    if (secretOptionsShown) {
+        for (k in keywords) {
+            val r = LinearLayout(this)
+            r.gravity = Gravity.CENTER_VERTICAL
+            r.setPadding(0, dp(8), 0, dp(8))
+            r.addView(tv(k, 15f, C.text), lp(0, WRAP, weight = 1f))
+            val remove = tv(L.t("Remove", "সরান"), 13f, if (locked) C.muted else C.warn)
+            remove.setPadding(dp(8), dp(8), dp(8), dp(8))
+            remove.pressFeedback()
+            remove.setOnClickListener {
+                if (Store.isActive(this)) {
+                    toast(L.t("Locked while a session is active — you can still add keywords", "সেশন চলাকালীন সরানো যাবে না — তবে নতুন কিওয়ার্ড যোগ করা যাবে"))
+                } else {
+                    Extra.removeSiteKeyword(this, k)
+                    SiteBlockService.sync(this) // reload the list in the running VPN
+                    go(3)
+                }
             }
+            r.addView(remove)
+            c.addView(r, lp(MATCH, WRAP, t = dp(4)))
         }
-        r.addView(remove)
-        c.addView(r, lp(MATCH, WRAP, t = dp(4)))
+        if (locked) {
+            c.addView(
+                tv(L.t("While a session runs, keywords cannot be removed here — but new ones can be added below.", "সেশন চলাকালীন এখান থেকে সরানো যাবে না — তবে নিচে নতুন যোগ করা যাবে।"), 12f, C.warn),
+                lp(MATCH, WRAP, t = dp(8))
+            )
+        }
+        val addKw = outlineBtn(L.t("Add a keyword", "কিওয়ার্ড যোগ করুন"), C.primary)
+        addKw.setOnClickListener { addSiteKeywordDialog() }
+        c.addView(addKw, lp(MATCH, dp(48), t = dp(10)))
     }
-    if (locked) {
-        c.addView(
-            tv(L.t("While a session runs, keywords cannot be removed here — but new ones can be added below.", "সেশন চলাকালীন এখান থেকে সরানো যাবে না — তবে নিচে নতুন যোগ করা যাবে।"), 12f, C.warn),
-            lp(MATCH, WRAP, t = dp(8))
-        )
-    }
-    val addKw = outlineBtn(L.t("Add a keyword", "কিওয়ার্ড যোগ করুন"), C.primary)
-    addKw.setOnClickListener { addSiteKeywordDialog() }
-    c.addView(addKw, lp(MATCH, dp(48), t = dp(10)))
-    // secret draw gesture: a single-stroke "Z" on this card reveals the
-    // hidden viewer buttons above (see attachSecretZGesture)
-    attachSecretZGesture(c)
     return c
 }
 
 // ---------------------------------------------------------------------
-// Secret viewers: the site/keyword list viewers are hidden by default —
-// the lists contain bad words a bystander could misunderstand — and are
-// revealed only by drawing a single-stroke "Z" on the site-block card.
+// Secret options: the site/keyword lists (your own domains and keywords,
+// plus the two viewers) are hidden by default — the lists contain bad
+// words a bystander could misunderstand — and are revealed only by
+// drawing on the touch bar in the site-block card (see secretTouchBar).
 // The reveal flag lives only in memory and is reset whenever the screen
-// is left (MainActivity.onPause / go), so the buttons never linger.
+// is left (MainActivity.onPause / go), so the lists never linger.
 // ---------------------------------------------------------------------
 
-/** Attaches the secret "Z" gesture to a view. The listener never consumes a
- * touch (always returns false), so taps and scrolling keep working exactly
- * as before; it only asks the parent ScrollView not to intercept once a
- * horizontal stroke is under way, because the diagonal of the Z moves down
- * and a ScrollView would otherwise steal the rest of the gesture. */
-private fun MainActivity.attachSecretZGesture(v: View) {
+/** The touch bar: a plain, unlabelled handle-like strip in the site-block
+ * card. Any stroke drawn on it — any shape, any direction — reveals the
+ * hidden site/keyword options. A tap does nothing (the stroke must have
+ * real length), and normal scrolling starting on the bar still works:
+ * the ScrollView is only asked not to intercept once the stroke moves
+ * sideways, so a vertical scroll is never blocked. */
+private fun MainActivity.secretTouchBar(): View {
+    val bar = LinearLayout(this)
+    bar.orientation = LinearLayout.HORIZONTAL
+    bar.gravity = Gravity.CENTER
+    // the pill: a small rounded handle, muted, no text — it looks like a
+    // decorative divider, with no hint of what drawing on it unlocks
+    val pill = View(this)
+    pill.background = rounded(C.muted, dp(3).toFloat())
+    bar.addView(pill, lp(dp(72), dp(5)))
     val pts = ArrayList<Pair<Float, Float>>()
     var disallowed = false
-    v.setOnTouchListener { _, ev ->
+    var triggered = false
+    bar.setOnTouchListener { v, ev ->
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 pts.clear()
                 pts.add(ev.x to ev.y)
                 disallowed = false
+                triggered = false
             }
             MotionEvent.ACTION_MOVE -> {
                 val last = pts.lastOrNull()
                 // keep points at least ~4px apart so slow drawing does not
-                // pile up near-identical points and skew the angles
+                // pile up near-identical points and inflate the length
                 if (last == null || kotlin.math.abs(ev.x - last.first) > 4f || kotlin.math.abs(ev.y - last.second) > 4f) {
                     pts.add(ev.x to ev.y)
                 }
+                // sideways movement means drawing, not scrolling: keep the
+                // ScrollView from stealing the rest of the stroke (either
+                // direction — a leftward stroke is still drawing)
                 if (!disallowed && pts.size >= 2) {
                     val dx = ev.x - pts[0].first
                     val dy = ev.y - pts[0].second
-                    if (dx > dp(24) && kotlin.math.abs(dy) < dp(16)) {
+                    if (kotlin.math.abs(dx) > dp(12) && kotlin.math.abs(dx) >= kotlin.math.abs(dy)) {
                         v.parent?.requestDisallowInterceptTouchEvent(true)
                         disallowed = true
                     }
@@ -1470,115 +1506,30 @@ private fun MainActivity.attachSecretZGesture(v: View) {
             }
             MotionEvent.ACTION_UP -> {
                 pts.add(ev.x to ev.y)
-                if (isZStroke(pts)) {
-                    secretViewersShown = true
-                    go(3, false) // rebuild the card with the viewers visible
+                if (!triggered && !secretOptionsShown && strokeLength(pts) >= dp(40)) {
+                    triggered = true
+                    secretOptionsShown = true
+                    toast(L.t("Hidden options shown", "লুকানো অপশন দেখা যাচ্ছে"))
+                    go(3, false) // rebuild the card with the options visible
                 }
                 pts.clear()
             }
             MotionEvent.ACTION_CANCEL -> pts.clear()
         }
-        false // never consume: taps and scrolling work as before
+        true // the bar is a dedicated touch area: it keeps the whole stroke
     }
+    return bar
 }
 
-/** A "Z": right, then down-left diagonal, then right again. The stroke is
- * resampled by length and each step is classified coarsely (right /
- * down-left / other); the three phases must appear in order, each with real
- * length behind it. Tolerant of size, position, speed and wobble — but a
- * straight vertical scroll (steps near 90°) or a horizontal swipe (no
- * down-left phase) can never match it. */
-private fun MainActivity.isZStroke(pts: List<Pair<Float, Float>>): Boolean {
-    if (pts.size < 6) return false
-    var minX = Float.MAX_VALUE
-    var maxX = -Float.MAX_VALUE
-    var minY = Float.MAX_VALUE
-    var maxY = -Float.MAX_VALUE
-    for ((x, y) in pts) {
-        if (x < minX) minX = x
-        if (x > maxX) maxX = x
-        if (y < minY) minY = y
-        if (y > maxY) maxY = y
-    }
-    // a deliberate stroke, not a tap or a jitter
-    if (maxX - minX < dp(100) || maxY - minY < dp(50)) return false
-    // ends lower than it starts (a Z drops down the screen)
-    if (pts.last().second - pts.first().second < dp(24)) return false
-    // resample to evenly spaced points, then classify each step's direction
-    // (screen coords: x right, y down — right is 0°, down-left is 135°)
-    val res = resamplePath(pts, 24)
-    val phases = ArrayList<Int>() // 0 = right, 1 = down-left
-    val phaseLen = ArrayList<Float>()
-    var cur = -1
-    var curLen = 0f
-    for (i in 1 until res.size) {
-        val dx = res[i].first - res[i - 1].first
-        val dy = res[i].second - res[i - 1].second
-        val len = kotlin.math.hypot(dx, dy)
-        val ang = Math.toDegrees(kotlin.math.atan2(dy.toDouble(), dx.toDouble()))
-        val dir = when {
-            ang >= -30 && ang <= 30 -> 0 // right
-            ang >= 105 && ang <= 165 -> 1 // down-left
-            else -> -1 // other: wobble or a corner, ignored
-        }
-        if (dir == -1) continue
-        if (dir == cur) {
-            curLen += len
-            continue
-        }
-        if (cur != -1) {
-            phases.add(cur)
-            phaseLen.add(curLen)
-        }
-        cur = dir
-        curLen = len
-    }
-    if (cur != -1) {
-        phases.add(cur)
-        phaseLen.add(curLen)
-    }
-    if (phases.size != 3) return false
-    if (phases[0] != 0 || phases[1] != 1 || phases[2] != 0) return false
-    // every phase must have real length behind it (not a wobble)
-    return phaseLen.all { it >= dp(20) }
-}
-
-/** Evenly spaced points along a path (arc-length resampling, $1-recogniser
- * style), so the direction test does not depend on drawing speed. */
-private fun resamplePath(pts: List<Pair<Float, Float>>, n: Int): List<Pair<Float, Float>> {
-    if (pts.size < 2 || n < 2) return pts
+/** Total length of a stroke (sum of segment lengths), so any drawing —
+ * a scribble, a line, a shape — counts, while a tap (near-zero length)
+ * never triggers. */
+private fun strokeLength(pts: List<Pair<Float, Float>>): Float {
     var total = 0f
     for (i in 1 until pts.size) {
         total += kotlin.math.hypot(pts[i].first - pts[i - 1].first, pts[i].second - pts[i - 1].second)
     }
-    if (total <= 0f) return pts
-    val step = total / (n - 1)
-    val out = ArrayList<Pair<Float, Float>>(n)
-    out.add(pts[0])
-    var px = pts[0].first
-    var py = pts[0].second
-    var acc = 0f
-    var i = 1
-    while (out.size < n - 1 && i < pts.size) {
-        val (x, y) = pts[i]
-        val seg = kotlin.math.hypot(x - px, y - py)
-        if (acc + seg >= step) {
-            val t = if (seg > 0f) (step - acc) / seg else 0f
-            val nx = px + (x - px) * t
-            val ny = py + (y - py) * t
-            out.add(nx to ny)
-            px = nx
-            py = ny
-            acc = 0f
-        } else {
-            acc += seg
-            px = x
-            py = y
-            i++
-        }
-    }
-    out.add(pts.last())
-    return out
+    return total
 }
 
 private fun MainActivity.addSiteDomainDialog() {
