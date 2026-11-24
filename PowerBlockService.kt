@@ -184,8 +184,10 @@ class PowerBlockService : AccessibilityService() {
     // substring scan over ~17 short keywords (microseconds), so checking
     // per keystroke is cheap and the block fires the moment the typed
     // text first contains a keyword. Only the last checked text is kept,
-    // so the same text is never re-checked; the query itself is never
-    // logged or stored.
+    // so the same text is not re-checked while the block screen is up;
+    // the key resets when the screen hides, so returning to the same
+    // search re-checks and re-blocks. The query itself is never logged
+    // or stored.
     private var lastCheckedSearchKw = ""
 
     /** Fallback browser packages: the well-known browsers, kept so URL
@@ -820,6 +822,7 @@ class PowerBlockService : AccessibilityService() {
             blockOverlayAttached = false
             blockedPkg = null
             limitBlockActive = false
+            resetSiteCheckDedup()
             return
         }
         try {
@@ -840,12 +843,30 @@ class PowerBlockService : AccessibilityService() {
             blockOverlayAttached = false
             blockedPkg = null
             limitBlockActive = false
+            resetSiteCheckDedup()
         } catch (ex: Exception) {
             Log.e(TAG, "hideBlockOverlay failed", ex)
             // removal failed: the view may still be up, so keep the block
             // state — isBlockOverlayAttached() reconciles the flag with the
             // view on the next check instead of trusting a stale flag
         }
+    }
+
+    /**
+     * The block screen is gone: forget which URLs and searches were
+     * already checked, so returning to the same page re-checks and
+     * re-blocks. Without this the dedup keys (set when the block first
+     * fired) would skip the check forever — the user could walk
+     * straight back to the blocked page and it would never block again.
+     * Called on every hide, including the nothing-attached path: with
+     * no overlay up there is no in-progress block to protect. NOT
+     * called when removal fails — the screen may still be up then, so
+     * the block state stays.
+     */
+    private fun resetSiteCheckDedup() {
+        lastCheckedKwUrl = ""
+        lastCheckedUrl = ""
+        lastCheckedSearchKw = ""
     }
 
     // ---------- site block: shared "block this site" path ----------
@@ -905,13 +926,16 @@ class PowerBlockService : AccessibilityService() {
 
     /**
      * A browser window just opened or a page loaded (new tab, app switch,
-     * in-tab navigation): scan the tree once for the address bar and check
-     * its text. Throttled to once per 2 s — content changes fire often
-     * while a page loads. [force] bypasses the throttle for the lock-start
-     * scan, which fires at most once per lock. If no address bar is found
-     * by view ID, the fallback scan below looks for URL-like text instead
-     * — browser updates rename IDs, and a missed ID must not mean a
-     * missed block.
+     * in-tab navigation, or RETURNING to the browser after a block): scan
+     * the tree once for the address bar and check its text, and also
+     * check any search field's text — returning fires no typing event,
+     * so a keyword still sitting in a search box would otherwise never
+     * be re-checked. Throttled to once per 2 s — content changes fire
+     * often while a page loads. [force] bypasses the throttle for the
+     * lock-start scan, which fires at most once per lock. If no address
+     * bar is found by view ID, the fallback scan below looks for
+     * URL-like text instead — browser updates rename IDs, and a missed
+     * ID must not mean a missed block.
      */
     private fun onBrowserWindowChanged(pkg: String, force: Boolean = false) {
         val now = SystemClock.uptimeMillis()
@@ -924,6 +948,7 @@ class PowerBlockService : AccessibilityService() {
                 // the event package can be stale (e.g. the lock was just
                 // started from this app while the browser was behind it)
                 if (!isBrowser(root.packageName?.toString())) return
+                var foundAddressBar = false
                 for (id in addressBarIds) {
                     val nodes = try {
                         root.findAccessibilityNodeInfosByViewId(id)
@@ -935,7 +960,8 @@ class PowerBlockService : AccessibilityService() {
                             val text = n.text?.toString() ?: ""
                             if (text.isNotEmpty()) {
                                 maybeCheckUrl(pkg, text)
-                                return
+                                foundAddressBar = true
+                                break
                             }
                         }
                     } finally {
@@ -943,9 +969,14 @@ class PowerBlockService : AccessibilityService() {
                             try { n.recycle() } catch (_: Exception) { }
                         }
                     }
+                    if (foundAddressBar) break
                 }
                 // no address bar by ID — fall back to URL-like text in the tree
-                scanForUrlLikeText(root, pkg)
+                if (!foundAddressBar) scanForUrlLikeText(root, pkg)
+                // also check search fields: the address bar alone does not
+                // catch a keyword sitting in a search box, and returning
+                // to the browser fires no typing event at all
+                if (siteKwOn) scanSearchFields(root, pkg)
             } finally {
                 try { root.recycle() } catch (_: Exception) { }
             }
@@ -1063,8 +1094,9 @@ class PowerBlockService : AccessibilityService() {
      * short string scan, so no throttle may delay it — the block must fire
      * the moment the typed text first contains a keyword. Deduped on the
      * full text (not just the host), so navigating to a new path on the
-     * same host re-checks. On a match the shared onSiteBlocked path covers
-     * the screen, titled with the keyword.
+     * same host re-checks. The dedup resets when the block screen hides,
+     * so returning to the same page re-checks and re-blocks. On a match
+     * the shared onSiteBlocked path covers the screen, titled with the keyword.
      */
     private fun maybeCheckKeywords(pkg: String, rawText: String) {
         val text = rawText.trim()
@@ -1089,8 +1121,9 @@ class PowerBlockService : AccessibilityService() {
      * blocklist. The blocklist check runs on a worker thread (the list
      * load may block on first use). Dedup is on the FULL normalized URL:
      * the same host with a new path must re-check, because the substring
-     * match depends on the whole text. At most one check per 2 s, and only
-     * one running at a time — the next URL change retries anything skipped.
+     * match depends on the whole text — and the dedup resets when the
+     * block screen hides, so returning to the same page re-checks.
+     * At most one check per 2 s, and only one running at a time — the next URL change retries anything skipped.
      */
     private fun maybeCheckUrl(pkg: String, rawText: String) {
         // keyword block first: it needs the full text, not just the host,
@@ -1140,29 +1173,43 @@ class PowerBlockService : AccessibilityService() {
     }
 
     /**
+     * Is this node a SEARCH field — the only kind of input the keyword
+     * block ever reads? An EditText whose hint contains "search" or
+     * "খুঁজুন", or a known search-box view ID — never a password field,
+     * never the address bar (handled by the URL path). Shared by the
+     * typing check and the window-change scan so both recognise the
+     * same fields.
+     */
+    private fun isSearchFieldNode(n: AccessibilityNodeInfo): Boolean {
+        try {
+            val cls = n.className?.toString() ?: ""
+            if (!cls.contains("EditText")) return false
+            if (n.isPassword) return false
+            val vid = try { n.viewIdResourceName } catch (_: Exception) { null } ?: ""
+            if (addressBarIds.contains(vid)) return false
+            if (searchBoxIds.contains(vid)) return true
+            val hint = (n.hintText?.toString() ?: "").lowercase()
+            return hint.contains("search") || hint.contains("খুঁজুন")
+        } catch (_: Exception) {
+            return false
+        }
+    }
+
+    /**
      * Keyword block on search: text typed in a SEARCH field (browsers +
      * the Google app) is keyword-checked INSTANTLY on every keystroke —
      * no debounce, so the block fires the moment the typed text first
-     * contains a keyword. Only search fields are ever read: the node must be an
-     * EditText whose hint contains "search" or "খুঁজুন", or a known
-     * search-box view ID — and never a password field. Messaging apps are
-     * never in the search set, so chat input is never seen here, and the
-     * address bar is skipped (onBrowserTextChanged already handles it).
-     * The query text itself is never logged or stored; only the matched
-     * keyword (the user's own word) is used, as the overlay title.
+     * contains a keyword. Only search fields are ever read (see
+     * [isSearchFieldNode]) — never messaging apps, password fields, or
+     * other inputs, and the address bar is skipped (onBrowserTextChanged
+     * already handles it). The query text itself is never logged or
+     * stored; only the matched keyword (the user's own word) is used,
+     * as the overlay title.
      */
     private fun onSearchTextChanged(e: AccessibilityEvent) {
         try {
             val src = e.source ?: return
-            val cls = src.className?.toString() ?: ""
-            if (!cls.contains("EditText")) return
-            if (src.isPassword) return
-            val vid = try { src.viewIdResourceName } catch (_: Exception) { null } ?: ""
-            if (addressBarIds.contains(vid)) return
-            val hint = (src.hintText?.toString() ?: "").lowercase()
-            val isSearchBox = searchBoxIds.contains(vid) ||
-                hint.contains("search") || hint.contains("খুঁজুন")
-            if (!isSearchBox) return
+            if (!isSearchFieldNode(src)) return
             val text = e.text?.joinToString("") ?: return
             if (text.isBlank()) return
             // instant: check the typed text right now, on this keystroke —
@@ -1173,9 +1220,55 @@ class PowerBlockService : AccessibilityService() {
         }
     }
 
+    /**
+     * Window-change search scan: find search fields in the foreground
+     * browser window and keyword-check their text. This is what
+     * re-blocks a search page the user returns to — returning fires no
+     * typing event, so the typing check never runs, and without this
+     * scan a keyword still sitting in the search box would never be
+     * seen again. Same field rules as the typing check (see
+     * [isSearchFieldNode]): only search fields are read, never
+     * password fields or the address bar. Bounded like the URL
+     * fallback scan: at most 600 nodes walked, at most 3 search
+     * fields checked, nodes recycled as the walk goes.
+     */
+    private fun scanSearchFields(root: AccessibilityNodeInfo, pkg: String) {
+        val stack = ArrayDeque<AccessibilityNodeInfo>()
+        stack.add(root)
+        var used = 0
+        var checked = 0
+        try {
+            while (stack.isNotEmpty() && used < 600 && checked < 3) {
+                val n = stack.removeFirst()
+                used++
+                try {
+                    if (isSearchFieldNode(n)) {
+                        val text = n.text?.toString()?.trim() ?: ""
+                        if (text.isNotEmpty()) {
+                            checked++
+                            maybeCheckSearchKeywords(pkg, text)
+                        }
+                    }
+                    for (i in 0 until n.childCount) {
+                        try { n.getChild(i)?.let { stack.add(it) } } catch (_: Exception) { }
+                    }
+                } catch (_: Exception) {
+                } finally {
+                    if (n !== root) {
+                        try { n.recycle() } catch (_: Exception) { }
+                    }
+                }
+            }
+        } catch (ex: Exception) {
+            Log.e(TAG, "search field scan failed", ex)
+        }
+    }
+
     /** A search query may contain a keyword: same shared overlay + logging
      * path as URL detection, titled with the keyword. The same query text
-     * is checked once (typing the same text again does not re-fire). */
+     * is checked once while the block screen is up (typing the same text
+     * again does not re-fire); the dedup resets when the screen hides, so
+     * returning to the same search re-checks and re-blocks. */
     private fun maybeCheckSearchKeywords(pkg: String, rawText: String) {
         val text = rawText.trim()
         if (text.isEmpty()) return
