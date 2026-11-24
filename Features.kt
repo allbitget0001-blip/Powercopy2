@@ -425,16 +425,21 @@ object Extra {
 
     // ---------- keyword block (any keyword anywhere in the URL/domain blocks it) ----------
 
-    /** Starter keywords, used until the user edits the list (all lowercase). */
+    /** Starter keywords, used until the user edits the list (all lowercase).
+     * Includes the major site names as well as generic words, so a site
+     * like xnxx.tv is caught by the keyword "xnxx" even if domain blocking
+     * fails for any reason. */
     val SITE_DEFAULT_KEYWORDS = listOf(
         "porn", "xxx", "sex", "nude", "naked", "hentai", "porno",
-        "erotic", "adult", "camgirl", "boobs", "nsfw", "horny"
+        "erotic", "adult", "camgirl", "boobs", "nsfw", "horny",
+        "xnxx", "xvideos", "pornhub", "xhamster"
     )
 
     /** Keyword block: matches the full URL (accessibility path) and the
      * queried domain (DNS path). Independent of the DNS/VPN switch for the
-     * URL path — it works during a lock even when DNS is off. */
-    fun siteKwOn(ctx: Context): Boolean = Store.settings(ctx).getBoolean("site_kw_on", false)
+     * URL path — it works during a lock even when DNS is off. Defaults ON:
+     * it is the hard fallback when domain blocking fails. */
+    fun siteKwOn(ctx: Context): Boolean = Store.settings(ctx).getBoolean("site_kw_on", true)
 
     fun setSiteKwOn(ctx: Context, on: Boolean) {
         Store.settings(ctx).edit().putBoolean("site_kw_on", on).apply()

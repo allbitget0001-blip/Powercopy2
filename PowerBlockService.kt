@@ -319,7 +319,7 @@ class PowerBlockService : AccessibilityService() {
         blockMsg = Extra.blockMessage(this)
         siteUrlOn = st.getBoolean("site_url_on", false)
         if (siteUrlOn) SiteBlockService.preloadBlocklist(this)
-        siteKwOn = st.getBoolean("site_kw_on", false)
+        siteKwOn = st.getBoolean("site_kw_on", true) // default ON: hard fallback
     }
 
     private fun protecting(): Boolean = (active && System.currentTimeMillis() < endAt) || locProtecting
