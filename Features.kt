@@ -84,7 +84,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "63"
+    const val BUILD_ID = "64"
 
     // ---------- extend time (never reduce) ----------
 

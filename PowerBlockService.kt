@@ -163,7 +163,6 @@ class PowerBlockService : AccessibilityService() {
     // switch — it rides the same address-bar watching.
     @Volatile
     private var siteKwOn = false
-    private var lastKwCheckAt = 0L
     private var lastCheckedKwUrl = ""
     private var lastForegroundPkg: String? = null
     private var lastBrowserScanAt = 0L
@@ -180,20 +179,14 @@ class PowerBlockService : AccessibilityService() {
     // must still be caught; no navigation event fires for it).
     private var lastLockActive = false
     private var lastLockStart = 0L
-    // Keyword block on search: the typed query is debounced (one check
-    // ~700 ms after the last keystroke) so fast typing is checked once, on
-    // the final text — never dropped by a throttle. The pending text lives
-    // in memory only and is cleared after the check; it is never logged.
-    private var pendingSearchPkg: String? = null
-    private var pendingSearchText = ""
+    // Keyword block on search: the typed query is checked INSTANTLY on
+    // every keystroke — no debounce, no throttle. The keyword match is a
+    // substring scan over ~17 short keywords (microseconds), so checking
+    // per keystroke is cheap and the block fires the moment the typed
+    // text first contains a keyword. Only the last checked text is kept,
+    // so the same text is never re-checked; the query itself is never
+    // logged or stored.
     private var lastCheckedSearchKw = ""
-    private val searchKwCheckTask = Runnable {
-        val pkg = pendingSearchPkg ?: return@Runnable
-        val text = pendingSearchText
-        pendingSearchPkg = null
-        pendingSearchText = ""
-        maybeCheckSearchKeywords(pkg, text)
-    }
 
     /** Fallback browser packages: the well-known browsers, kept so URL
      * detection still works on a device where the dynamic query below
@@ -1065,20 +1058,19 @@ class PowerBlockService : AccessibilityService() {
     /**
      * Keyword block: the FULL address-bar text (host + path + query) is
      * checked for any keyword — a case-insensitive substring match, so a
-     * single word anywhere in the URL is enough. Runs synchronously: the
-     * list is tiny and the match is a short string scan. Deduped on the
+     * single word anywhere in the URL is enough. Runs synchronously and
+     * INSTANTLY on every text change: the list is tiny and the match is a
+     * short string scan, so no throttle may delay it — the block must fire
+     * the moment the typed text first contains a keyword. Deduped on the
      * full text (not just the host), so navigating to a new path on the
-     * same host re-checks; throttled to one check per 2 s. On a match the
-     * shared onSiteBlocked path covers the screen, titled with the keyword.
+     * same host re-checks. On a match the shared onSiteBlocked path covers
+     * the screen, titled with the keyword.
      */
     private fun maybeCheckKeywords(pkg: String, rawText: String) {
         val text = rawText.trim()
         if (text.isEmpty()) return
         val key = "$pkg|${text.lowercase()}"
         if (key == lastCheckedKwUrl) return
-        val now = SystemClock.uptimeMillis()
-        if (now - lastKwCheckAt < 2000) return
-        lastKwCheckAt = now
         lastCheckedKwUrl = key
         val kw = try {
             KeywordBlock.findMatch(text, Extra.siteKeywords(applicationContext))
@@ -1149,9 +1141,9 @@ class PowerBlockService : AccessibilityService() {
 
     /**
      * Keyword block on search: text typed in a SEARCH field (browsers +
-     * the Google app) is keyword-checked as it is typed, debounced ~700 ms
-     * after the last keystroke so fast typing is checked once, on the
-     * final text. Only search fields are ever read: the node must be an
+     * the Google app) is keyword-checked INSTANTLY on every keystroke —
+     * no debounce, so the block fires the moment the typed text first
+     * contains a keyword. Only search fields are ever read: the node must be an
      * EditText whose hint contains "search" or "খুঁজুন", or a known
      * search-box view ID — and never a password field. Messaging apps are
      * never in the search set, so chat input is never seen here, and the
@@ -1173,10 +1165,9 @@ class PowerBlockService : AccessibilityService() {
             if (!isSearchBox) return
             val text = e.text?.joinToString("") ?: return
             if (text.isBlank()) return
-            pendingSearchPkg = e.packageName?.toString() ?: return
-            pendingSearchText = text
-            handler.removeCallbacks(searchKwCheckTask)
-            handler.postDelayed(searchKwCheckTask, 700)
+            // instant: check the typed text right now, on this keystroke —
+            // no debounce, no throttle (the match itself is microseconds)
+            maybeCheckSearchKeywords(e.packageName?.toString() ?: return, text)
         } catch (ex: Exception) {
             Log.e(TAG, "search keyword check failed", ex)
         }
