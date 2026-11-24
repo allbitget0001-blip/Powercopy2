@@ -84,7 +84,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "60"
+    const val BUILD_ID = "61"
 
     // ---------- extend time (never reduce) ----------
 
@@ -421,6 +421,74 @@ object Extra {
 
     fun removeSiteDomain(ctx: Context, domain: String) {
         setSiteDomains(ctx, siteDomains(ctx).filter { it != domain })
+    }
+
+    // ---------- keyword block (any keyword anywhere in the URL/domain blocks it) ----------
+
+    /** Starter keywords, used until the user edits the list (all lowercase). */
+    val SITE_DEFAULT_KEYWORDS = listOf(
+        "porn", "xxx", "sex", "nude", "naked", "hentai", "porno",
+        "erotic", "adult", "camgirl", "boobs", "nsfw", "horny"
+    )
+
+    /** Keyword block: matches the full URL (accessibility path) and the
+     * queried domain (DNS path). Independent of the DNS/VPN switch for the
+     * URL path — it works during a lock even when DNS is off. */
+    fun siteKwOn(ctx: Context): Boolean = Store.settings(ctx).getBoolean("site_kw_on", false)
+
+    fun setSiteKwOn(ctx: Context, on: Boolean) {
+        Store.settings(ctx).edit().putBoolean("site_kw_on", on).apply()
+    }
+
+    /** Blocked keywords (lowercase, trimmed). Defaults apply until the user saves a list. */
+    fun siteKeywords(ctx: Context): List<String> {
+        val raw = Store.settings(ctx).getString("site_keywords", null) ?: return SITE_DEFAULT_KEYWORDS
+        return try {
+            val arr = JSONArray(raw)
+            val out = ArrayList<String>()
+            for (i in 0 until arr.length()) {
+                val k = normalizeKeyword(arr.optString(i, "")) ?: continue
+                if (k !in out) out.add(k)
+            }
+            out.sorted()
+        } catch (e: Exception) {
+            Log.e(TAG, "site keywords read failed", e)
+            SITE_DEFAULT_KEYWORDS
+        }
+    }
+
+    fun setSiteKeywords(ctx: Context, list: List<String>) {
+        val arr = JSONArray()
+        for (k in list) {
+            val n = normalizeKeyword(k) ?: continue
+            arr.put(n)
+        }
+        Store.settings(ctx).edit().putString("site_keywords", arr.toString()).apply()
+    }
+
+    /** Adds one keyword. Returns false when it is empty or already listed. */
+    fun addSiteKeyword(ctx: Context, raw: String): Boolean {
+        val k = normalizeKeyword(raw) ?: return false
+        val list = siteKeywords(ctx).toMutableList()
+        if (k in list) return false
+        list.add(k)
+        setSiteKeywords(ctx, list)
+        return true
+    }
+
+    fun removeSiteKeyword(ctx: Context, keyword: String) {
+        setSiteKeywords(ctx, siteKeywords(ctx).filter { it != keyword })
+    }
+
+    /**
+     * Normalizes keyword input: trimmed, lowercased. Returns null for empty
+     * or over-long input. Spaces are allowed (a phrase keyword), and Bengali
+     * or mixed words work the same way — matching is a plain substring test.
+     */
+    fun normalizeKeyword(raw: String): String? {
+        val s = raw.trim().lowercase()
+        if (s.isEmpty() || s.length > 64) return null
+        return s
     }
 
     /**
@@ -1189,6 +1257,31 @@ fun MainActivity.siteBlockCard(): View {
         ),
         lp(MATCH, WRAP, t = dp(6))
     )
+    // third option: keyword block — any keyword anywhere in the URL blocks
+    // the site. The URL path (accessibility) works during a lock even when
+    // the DNS option above is off; the DNS path runs in the VPN when it runs.
+    val kwOn = Extra.siteKwOn(this)
+    val kwSw = toggle(kwOn) { v ->
+        Extra.setSiteKwOn(this, v)
+        if (v && !Perm.accessibilityOn(this)) {
+            toast(L.t("Keyword block needs accessibility for URL matching — turn it on in Settings", "কিওয়ার্ড ব্লকের URL ম্যাচিং-এর জন্য অ্যাক্সেসিবিলিটি লাগবে — Settings থেকে চালু করুন"))
+        } else {
+            toast(
+                if (v) L.t("Keyword block is on — any URL containing a keyword is blocked during a lock", "কিওয়ার্ড ব্লক চালু — লক চলাকালীন কিওয়ার্ড থাকা যেকোনো URL ব্লক হবে")
+                else L.t("Keyword block is off", "কিওয়ার্ড ব্লক বন্ধ")
+            )
+        }
+        SiteBlockService.sync(this) // reloads the keyword list in the running VPN
+        go(3)
+    }
+    c.addView(
+        row(
+            L.t("Keyword block", "কিওয়ার্ড ব্লক"),
+            L.t("Blocks any site whose address contains one of your keywords — anywhere in the URL, even a single word. Works during a lock even when the DNS option above is off. Needs accessibility for URL matching.", "যে সাইটের ঠিকানায় তোমার কোনো কিওয়ার্ড আছে তা ব্লক করে — URL-এর যেকোনো জায়গায় একটা শব্দ মিললেই হবে। ওপরের DNS অপশন বন্ধ থাকলেও লক চলাকালীন কাজ করে। URL ম্যাচিং-এর জন্য অ্যাক্সেসিবিলিটি লাগবে।"),
+            kwSw
+        ),
+        lp(MATCH, WRAP, t = dp(6))
+    )
     c.addView(
         tv(
             L.t(
@@ -1252,6 +1345,45 @@ fun MainActivity.siteBlockCard(): View {
     val add = outlineBtn(L.t("Add a domain", "ডোমেইন যোগ করুন"), C.primary)
     add.setOnClickListener { addSiteDomainDialog() }
     c.addView(add, lp(MATCH, dp(48), t = dp(10)))
+    // keyword list (same rules as the domain list: add-only while a session runs)
+    c.addView(
+        tv(L.t("Blocked keywords", "ব্লক করা কিওয়ার্ড"), 15f, C.text),
+        lp(MATCH, WRAP, t = dp(16))
+    )
+    c.addView(
+        tv(L.t("Any one of these words anywhere in a URL blocks the site.", "এই শব্দগুলোর যেকোনো একটা URL-এর যেকোনো জায়গায় থাকলেই সাইট ব্লক হয়।"), 12f, C.muted),
+        lp(MATCH, WRAP, t = dp(4))
+    )
+    val keywords = Extra.siteKeywords(this)
+    for (k in keywords) {
+        val r = LinearLayout(this)
+        r.gravity = Gravity.CENTER_VERTICAL
+        r.setPadding(0, dp(8), 0, dp(8))
+        r.addView(tv(k, 15f, C.text), lp(0, WRAP, weight = 1f))
+        val remove = tv(L.t("Remove", "সরান"), 13f, if (locked) C.muted else C.warn)
+        remove.setPadding(dp(8), dp(8), dp(8), dp(8))
+        remove.pressFeedback()
+        remove.setOnClickListener {
+            if (Store.isActive(this)) {
+                toast(L.t("Locked while a session is active — you can still add keywords", "সেশন চলাকালীন সরানো যাবে না — তবে নতুন কিওয়ার্ড যোগ করা যাবে"))
+            } else {
+                Extra.removeSiteKeyword(this, k)
+                SiteBlockService.sync(this) // reload the list in the running VPN
+                go(3)
+            }
+        }
+        r.addView(remove)
+        c.addView(r, lp(MATCH, WRAP, t = dp(4)))
+    }
+    if (locked) {
+        c.addView(
+            tv(L.t("While a session runs, keywords cannot be removed here — but new ones can be added below.", "সেশন চলাকালীন এখান থেকে সরানো যাবে না — তবে নিচে নতুন যোগ করা যাবে।"), 12f, C.warn),
+            lp(MATCH, WRAP, t = dp(8))
+        )
+    }
+    val addKw = outlineBtn(L.t("Add a keyword", "কিওয়ার্ড যোগ করুন"), C.primary)
+    addKw.setOnClickListener { addSiteKeywordDialog() }
+    c.addView(addKw, lp(MATCH, dp(48), t = dp(10)))
     return c
 }
 
@@ -1301,6 +1433,32 @@ private fun MainActivity.addSiteDomainDialog() {
             }, "siteblock-add-check")
             t.isDaemon = true
             t.start()
+        }
+        .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+        .show()
+}
+
+private fun MainActivity.addSiteKeywordDialog() {
+    val et = edit(L.t("keyword", "কিওয়ার্ড"), false)
+    val body = LinearLayout(this)
+    body.orientation = LinearLayout.VERTICAL
+    body.setPadding(dp(20), dp(12), dp(20), dp(4))
+    body.addView(et, lp(MATCH, WRAP))
+    body.addView(
+        tv(L.t("Any URL containing this word — anywhere in it — will be blocked during a lock.", "এই শব্দ থাকা যেকোনো URL — তার যেকোনো জায়গায় — লক চলাকালীন ব্লক হবে।"), 13f, C.muted),
+        lp(MATCH, WRAP, t = dp(10))
+    )
+    dlg()
+        .setTitle(L.t("Block a keyword", "কিওয়ার্ড ব্লক করুন"))
+        .setView(body)
+        .setPositiveButton(L.t("Add", "যোগ করুন")) { _, _ ->
+            if (Extra.addSiteKeyword(this, et.text.toString())) {
+                SiteBlockService.sync(this) // reload the list in the running VPN
+                toast(L.t("Keyword added", "কিওয়ার্ড যোগ হয়েছে"))
+                go(3)
+            } else {
+                toast(L.t("Empty, or already in the list", "খালি, অথবা তালিকায় আগেই আছে"))
+            }
         }
         .setNegativeButton(L.t("Cancel", "বাতিল"), null)
         .show()

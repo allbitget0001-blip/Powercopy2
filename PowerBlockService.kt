@@ -53,6 +53,8 @@ import java.util.Locale
  * domain it broadcasts, and this service covers the screen with the block
  * screen; and when URL detection is on, the browser address bar is watched
  * directly, so a blocked site is covered even when the DNS option is off.
+ * Keyword block rides the same address-bar watching: any keyword anywhere
+ * in the full URL covers the screen too.
  */
 class PowerBlockService : AccessibilityService() {
 
@@ -150,6 +152,13 @@ class PowerBlockService : AccessibilityService() {
     // off — it reads the browser address bar, not the network.
     @Volatile
     private var siteUrlOn = false
+    // Keyword block (third site-block option): any keyword anywhere in the
+    // address-bar URL blocks the site. Independent of the URL-detection
+    // switch — it rides the same address-bar watching.
+    @Volatile
+    private var siteKwOn = false
+    private var lastKwCheckAt = 0L
+    private var lastCheckedKwUrl = ""
     private var lastForegroundPkg: String? = null
     private var lastBrowserScanAt = 0L
     private var lastUrlCheckAt = 0L
@@ -310,6 +319,7 @@ class PowerBlockService : AccessibilityService() {
         blockMsg = Extra.blockMessage(this)
         siteUrlOn = st.getBoolean("site_url_on", false)
         if (siteUrlOn) SiteBlockService.preloadBlocklist(this)
+        siteKwOn = st.getBoolean("site_kw_on", false)
     }
 
     private fun protecting(): Boolean = (active && System.currentTimeMillis() < endAt) || locProtecting
@@ -344,9 +354,10 @@ class PowerBlockService : AccessibilityService() {
             if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && pkg != packageName) {
                 lastForegroundPkg = pkg
             }
-            // URL detection (site block, second option): the browser address
-            // bar changed, or a browser window just opened.
-            if (siteUrlOn && protecting() && urlDetectBrowsers.contains(pkg)) {
+            // URL detection (site block, second option) and keyword block
+            // (third option): the browser address bar changed, or a browser
+            // window just opened. Either switch enables the watching.
+            if ((siteUrlOn || siteKwOn) && protecting() && urlDetectBrowsers.contains(pkg)) {
                 if (e.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) onBrowserTextChanged(e)
                 else if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) onBrowserWindowChanged(pkg)
             }
@@ -799,12 +810,43 @@ class PowerBlockService : AccessibilityService() {
     }
 
     /**
+     * Keyword block: the FULL address-bar text (host + path + query) is
+     * checked for any keyword — a case-insensitive substring match, so a
+     * single word anywhere in the URL is enough. Runs synchronously: the
+     * list is tiny and the match is a short string scan. Deduped on the
+     * full text (not just the host), so navigating to a new path on the
+     * same host re-checks; throttled to one check per 2 s. On a match the
+     * shared onSiteBlocked path covers the screen, titled with the keyword.
+     */
+    private fun maybeCheckKeywords(pkg: String, rawText: String) {
+        val text = rawText.trim()
+        if (text.isEmpty()) return
+        val key = "$pkg|${text.lowercase()}"
+        if (key == lastCheckedKwUrl) return
+        val now = SystemClock.uptimeMillis()
+        if (now - lastKwCheckAt < 2000) return
+        lastKwCheckAt = now
+        lastCheckedKwUrl = key
+        val kw = try {
+            KeywordBlock.findMatch(text, Extra.siteKeywords(applicationContext))
+        } catch (ex: Exception) {
+            Log.e(TAG, "keyword check failed", ex)
+            return
+        } ?: return
+        if (protecting()) onSiteBlocked(L.t("Keyword: $kw", "কিওয়ার্ড: $kw"), pkg)
+    }
+
+    /**
      * The URL in a browser address bar may have changed: extract the host
      * and, if it is new, check it on a worker thread (the blocklist load may
      * block on first use). At most one check per 2 s, and only one running
      * at a time — the next URL change retries anything skipped.
      */
     private fun maybeCheckUrl(pkg: String, rawText: String) {
+        // keyword block first: it needs the full text, not just the host,
+        // and it is independent of the URL-detection switch
+        if (siteKwOn) maybeCheckKeywords(pkg, rawText)
+        if (!siteUrlOn) return
         val host = hostFromUrl(rawText) ?: return
         val key = "$pkg|$host"
         if (key == lastCheckedUrl) return

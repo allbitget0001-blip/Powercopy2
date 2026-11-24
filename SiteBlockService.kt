@@ -35,6 +35,9 @@ const val REQ_VPN_CONSENT = 1001
  *    covers the user's own list AND a built-in blocklist of ~100,000 adult
  *    domains shipped in the app (assets/adult_blocklist.txt), loaded once
  *    per process on a background thread;
+ *  - when the keyword block is on, a queried domain containing any keyword
+ *    (case-insensitive substring) also gets NXDOMAIN — so keyword blocking
+ *    works even if accessibility is off;
  *  - Google / Bing / DuckDuckGo / YouTube get their SafeSearch / restricted
  *    addresses, so search results stay filtered;
  *  - anything else is forwarded to an upstream resolver (8.8.8.8, then
@@ -252,6 +255,14 @@ class SiteBlockService : VpnService() {
     @Volatile
     private var blocked: List<String> = emptyList()
 
+    /** Blocked keywords, reloaded on every start (the user may have edited the list). */
+    @Volatile
+    private var keywords: List<String> = emptyList()
+
+    /** True when the keyword block is on (reloaded on every start). */
+    @Volatile
+    private var kwOn = false
+
     /** Throttles the blocked-site broadcast: browsers retry a failed lookup hard. */
     private var lastSiteBroadcastAt = 0L
 
@@ -259,6 +270,8 @@ class SiteBlockService : VpnService() {
         try {
             L.load(this)
             blocked = Extra.siteDomains(this)
+            keywords = Extra.siteKeywords(this)
+            kwOn = Extra.siteKwOn(this)
             ensureBlocklistLoaded(this) // background thread; the VPN never waits for it
             if (running.get()) return START_STICKY // already up: the list is refreshed, nothing else to do
             if (!Extra.siteOn(this) || !Store.isActive(this)) {
@@ -461,11 +474,12 @@ class SiteBlockService : VpnService() {
         }
     }
 
-    /** Exact match or any subdomain of a blocked domain — user list or built-in blocklist. */
+    /** Exact match or any subdomain of a blocked domain — user list or built-in blocklist — or any keyword in the domain when the keyword block is on. */
     private fun isBlocked(domain: String, list: List<String>): Boolean {
         for (d in list) {
             if (domain == d || domain.endsWith(".$d")) return true
         }
+        if (kwOn && KeywordBlock.matches(domain, keywords)) return true
         return isInBlocklist(domain)
     }
 
@@ -696,4 +710,26 @@ class SiteBlockService : VpnService() {
         }
         super.onDestroy()
     }
+}
+
+/**
+ * Keyword block: substring matching shared by the DNS path (this file) and
+ * the URL-detection path (PowerBlockService). Case-insensitive SUBSTRING:
+ * any single keyword appearing anywhere in the text blocks. No
+ * word-boundary logic — that is what the user asked for. Keywords are
+ * stored lowercased (see Extra.normalizeKeyword), so only the text is
+ * lowercased here.
+ */
+object KeywordBlock {
+    /** The first keyword found in [text], or null. Keywords must be lowercase. */
+    fun findMatch(text: String, keywords: List<String>): String? {
+        if (keywords.isEmpty()) return null
+        val lower = text.lowercase()
+        for (kw in keywords) {
+            if (kw.isNotEmpty() && lower.contains(kw)) return kw
+        }
+        return null
+    }
+
+    fun matches(text: String, keywords: List<String>): Boolean = findMatch(text, keywords) != null
 }
