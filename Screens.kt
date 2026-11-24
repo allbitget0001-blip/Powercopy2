@@ -1255,6 +1255,11 @@ class StatsScreen(private val a: MainActivity) {
         // temptation counter: blocked attempts (today / 7 days / total + per kind)
         col.addView(a.attemptsCard(), lp(MATCH, WRAP, b = a.dp(14)))
 
+        // companions: focus tree + garden + animals, pet Mimi, story
+        col.addView(a.treeGardenCard(), lp(MATCH, WRAP, b = a.dp(14)))
+        col.addView(a.petCard(), lp(MATCH, WRAP, b = a.dp(14)))
+        col.addView(a.storyCard(), lp(MATCH, WRAP, b = a.dp(14)))
+
         // record board: best-ever numbers, computed live from stored history
         recordCard = a.card()
         buildRecordBoardBody()

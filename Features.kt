@@ -83,7 +83,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "55"
+    const val BUILD_ID = "56"
 
     // ---------- extend time (never reduce) ----------
 
@@ -3107,4 +3107,270 @@ private fun MainActivity.newCapsuleDialog() {
         dialog.dismiss()
         go(0)
     }
+}
+
+// =====================================================================
+// COMPANIONS (build 56): focus tree + garden + animals, pet Mimi, story
+// =====================================================================
+
+/** Focus tree (grows with total focus minutes) + garden + animals. */
+fun MainActivity.treeGardenCard(): View {
+    val c = card()
+    c.addView(section(L.t("Focus tree & garden", "ফোকাস গাছ ও বাগান")))
+    val fs = Store.focusStats(this)
+    val stage = FocusTree.stageFor(fs.totalMin)
+    val next = FocusTree.nextAfter(stage)
+
+    val tree = TreeView(this, stage.index)
+    c.addView(tree, lp(MATCH, dp(200), t = dp(8)))
+
+    c.addView(
+        tv(L.t(stage.nameEn, stage.nameBn), 18f, C.text, 1),
+        lp(MATCH, WRAP, t = dp(4))
+    )
+    c.addView(
+        tv(L.t(stage.descEn, stage.descBn), 13f, C.muted),
+        lp(MATCH, WRAP, t = dp(2))
+    )
+    // progress toward the next stage
+    val progRow = LinearLayout(this)
+    progRow.orientation = LinearLayout.HORIZONTAL
+    progRow.background = rounded(C.card2, dp(6).toFloat())
+    val fill = View(this)
+    fill.background = rounded(C.primary, dp(6).toFloat())
+    val frac = FocusTree.progress(fs.totalMin)
+    progRow.addView(fill, lp(0, dp(10), weight = frac.coerceAtLeast(0.02f)))
+    progRow.addView(View(this), lp(0, dp(10), weight = 1f - frac.coerceAtLeast(0.02f)))
+    c.addView(progRow, lp(MATCH, WRAP, t = dp(10)))
+    val progText = if (next == null) {
+        L.t("Fully grown — an ancient tree!", "পুরোপুরি বড় হয়েছে — প্রাচীন গাছ!")
+    } else {
+        L.num(fs.totalMin.toString()) + " / " + L.num(next.minMinutes.toString()) +
+            L.t(" min to ", " মিনিট, পরের ধাপ: ") + L.t(next.nameEn, next.nameBn)
+    }
+    c.addView(tv(progText, 12f, C.muted), lp(MATCH, WRAP, t = dp(6)))
+
+    // garden: one plant per completed lock (newest 24 shown)
+    val plants = Garden.sync(this)
+    c.addView(
+        tv(
+            L.t("Garden", "বাগান") + " · " + L.num(plants.size.toString()) +
+                L.t(" plants", "টি গাছ"),
+            15f, C.text, 1
+        ),
+        lp(MATCH, WRAP, t = dp(16))
+    )
+    if (plants.isEmpty()) {
+        c.addView(
+            tv(
+                L.t("Complete a lock to plant your first flower.", "প্রথম ফুল লাগাতে একটা লক শেষ করুন।"),
+                13f, C.muted
+            ),
+            lp(MATCH, WRAP, t = dp(6))
+        )
+    } else {
+        val shown = plants.takeLast(24)
+        for (rowIdx in shown.indices step 6) {
+            val row = LinearLayout(this)
+            row.orientation = LinearLayout.HORIZONTAL
+            for (j in 0 until 6) {
+                val p = shown.getOrNull(rowIdx + j)
+                val cell = if (p != null) PlantView(this, p.kind, p.variant) else View(this)
+                row.addView(cell, lp(0, dp(44), weight = 1f))
+            }
+            c.addView(row, lp(MATCH, WRAP, t = dp(4)))
+        }
+        if (plants.size > 24) {
+            c.addView(
+                tv(
+                    L.t("and ", "আরও ") + L.num((plants.size - 24).toString()) +
+                        L.t(" more plants", "টি গাছ আছে"),
+                    12f, C.muted
+                ),
+                lp(MATCH, WRAP, t = dp(4))
+            )
+        }
+        c.addView(
+            tv(
+                L.t("Every lock plants a flower, every 5th a bush, every 10th a tree.", "প্রতি লকে একটা ফুল, প্রতি ৫ম লকে ঝোপ, প্রতি ১০ম লকে গাছ লাগে।"),
+                12f, C.muted
+            ),
+            lp(MATCH, WRAP, t = dp(6))
+        )
+    }
+
+    // garden animals: unlock at garden-size milestones
+    c.addView(tv(L.t("Garden animals", "বাগানের প্রাণী"), 15f, C.text, 1), lp(MATCH, WRAP, t = dp(16)))
+    for (a in GardenAnimals.ALL) {
+        val got = plants.size >= a.need
+        val r = LinearLayout(this)
+        r.gravity = Gravity.CENTER_VERTICAL
+        r.setPadding(0, dp(8), 0, dp(8))
+        r.alpha = if (got) 1f else 0.45f
+        r.addView(AnimalView(this, a.id), lp(dp(40), dp(40), r = dp(12)))
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.addView(tv(L.t(a.nameEn, a.nameBn), 14f, C.text, 1))
+        col.addView(
+            tv(
+                if (got) L.t(a.descEn, a.descBn)
+                else L.t("Unlocks at ", "খুলবে ") + L.num(a.need.toString()) +
+                    L.t(" plants", "টি গাছ হলে"),
+                12f, C.muted
+            )
+        )
+        r.addView(col, lp(0, WRAP, weight = 1f))
+        if (got) r.addView(tv("✓", 16f, C.mint, 1))
+        c.addView(r)
+    }
+    return c
+}
+
+/** Mimi the focus pet: level + mood from focus activity, feed/pet buttons. */
+fun MainActivity.petCard(): View {
+    val c = card()
+    c.addView(section(L.t("Mimi, your focus pet", "মিমি, তোমার ফোকাস পোষা প্রাণী")))
+    val fs = Store.focusStats(this)
+    val mood = Pet.mood(this)
+    val pet = PetView(this, mood)
+    c.addView(pet, lp(MATCH, dp(180), t = dp(8)))
+    val (moodEn, moodBn) = Pet.moodText(mood)
+    c.addView(
+        tv(
+            L.t("Level ", "লেভেল ") + L.num(Pet.level(fs.completed).toString()) +
+                " · " + L.t(moodEn, moodBn),
+            16f, C.text, 1
+        ),
+        lp(MATCH, WRAP, t = dp(4))
+    )
+    val st = Pet.state(this)
+    c.addView(
+        tv(
+            L.t("Fed ", "খাওয়ানো হয়েছে ") + L.num(st.fed.toString()) +
+                L.t(" times · petted ", " বার · আদর করা হয়েছে ") +
+                L.num(st.petted.toString()) + L.t(" times", " বার"),
+            13f, C.muted
+        ),
+        lp(MATCH, WRAP, t = dp(4))
+    )
+    if (st.lastFed > 0L) {
+        c.addView(
+            tv(L.t("Last fed: ", "শেষ খাওয়ানো: ") + fmtDate(st.lastFed) + " · " + fmtClock(st.lastFed), 12f, C.muted),
+            lp(MATCH, WRAP, t = dp(2))
+        )
+    }
+    c.addView(
+        tv(
+            L.t("Mimi grows with your focus — one level per 5 completed locks.", "মিমি তোমার ফোকাসের সাথে বড় হয় — প্রতি ৫টা লকে এক লেভেল।"),
+            12f, C.muted
+        ),
+        lp(MATCH, WRAP, t = dp(6))
+    )
+    val btnRow = LinearLayout(this)
+    btnRow.orientation = LinearLayout.HORIZONTAL
+    val feedBtn = outlineBtn(L.t("Feed", "খাওয়ান"), C.primary)
+    feedBtn.setOnClickListener {
+        if (Pet.feed(this)) {
+            toast(L.t("Mimi enjoyed the meal!", "মিমি খেয়ে খুশি!"))
+            go(2)
+        } else {
+            toast(L.t("Mimi just ate — try again in a bit", "মিমি এইমাত্র খেয়েছে — একটু পরে আবার চেষ্টা করুন"))
+        }
+    }
+    val petBtn = outlineBtn(L.t("Pet", "আদর করুন"), C.primary)
+    petBtn.setOnClickListener {
+        Pet.pet(this)
+        toast(L.t("Mimi purrs happily", "মিমি খুশিতে গরগর করছে"))
+        go(2)
+    }
+    btnRow.addView(feedBtn, lp(0, dp(48), r = dp(10), weight = 1f))
+    btnRow.addView(petBtn, lp(0, dp(48), weight = 1f))
+    c.addView(btnRow, lp(MATCH, WRAP, t = dp(12)))
+    return c
+}
+
+/** Story: 10 chapters, one unlocked per completed lock. Tap to read. */
+fun MainActivity.storyCard(): View {
+    val c = card()
+    c.addView(section(L.t("Story — The Quiet Garden", "গল্প — শান্ত বাগান")))
+    val unlocked = Story.unlockedCount(this)
+    val read = Story.readIds(this)
+    c.addView(
+        tv(
+            L.num(unlocked.toString()) + " / " + L.num(Story.TOTAL.toString()) +
+                L.t(" chapters unlocked · ", " অধ্যায় খোলা · ") +
+                L.num(read.size.toString()) + L.t(" read", "টি পড়া"),
+            13f, C.muted
+        ),
+        lp(MATCH, WRAP, t = dp(4))
+    )
+    c.addView(
+        tv(
+            L.t("Complete a lock to unlock the next chapter.", "পরের অধ্যায় খুলতে একটা লক শেষ করুন।"),
+            12f, C.muted
+        ),
+        lp(MATCH, WRAP, t = dp(2))
+    )
+    for (ch in Story.ALL) {
+        val open = unlocked >= ch.id
+        val wasRead = read.contains(ch.id)
+        val r = LinearLayout(this)
+        r.gravity = Gravity.CENTER_VERTICAL
+        r.setPadding(0, dp(10), 0, dp(10))
+        r.alpha = if (open) 1f else 0.45f
+        val num = tv(L.num(ch.id.toString()), 15f, if (open) C.mint else C.muted, 1)
+        num.gravity = Gravity.CENTER
+        num.background = rounded(C.card2, dp(16).toFloat())
+        r.addView(num, lp(dp(32), dp(32), r = dp(12)))
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.addView(tv(L.t(ch.titleEn, ch.titleBn), 14f, C.text, 1))
+        col.addView(
+            tv(
+                when {
+                    wasRead -> L.t("Read", "পড়া হয়েছে")
+                    open -> L.t("Tap to read", "পড়তে ট্যাপ করুন")
+                    else -> L.t("Unlocks after ", "খুলবে ") + L.num(ch.id.toString()) +
+                        L.t(" completed locks", "টি লক শেষ হলে")
+                },
+                12f, if (wasRead) C.primary else C.muted
+            )
+        )
+        r.addView(col, lp(0, WRAP, weight = 1f))
+        if (open) {
+            r.addView(tv(if (wasRead) "✓" else "›", 18f, C.mint, 1))
+            r.pressFeedback()
+            r.setOnClickListener { openChapterDialog(ch) }
+        } else {
+            r.addView(tv("🔒", 15f, C.muted))
+        }
+        c.addView(r)
+    }
+    return c
+}
+
+/** Chapter reader: scrollable dialog; marks the chapter read on close. */
+private fun MainActivity.openChapterDialog(ch: StoryChapter) {
+    val sv = ScrollView(this)
+    val body = LinearLayout(this)
+    body.orientation = LinearLayout.VERTICAL
+    body.setPadding(dp(20), dp(12), dp(20), dp(12))
+    body.addView(
+        tv(L.t("Chapter ", "অধ্যায় ") + L.num(ch.id.toString()), 13f, C.muted, 1),
+        lp(MATCH, WRAP)
+    )
+    body.addView(tv(L.t(ch.titleEn, ch.titleBn), 20f, C.text, 1), lp(MATCH, WRAP, t = dp(4)))
+    body.addView(
+        tv(L.t(ch.bodyEn, ch.bodyBn), 15f, C.textSoft),
+        lp(MATCH, WRAP, t = dp(12))
+    )
+    sv.addView(body)
+    dlg()
+        .setTitle(L.t("The Quiet Garden", "শান্ত বাগান"))
+        .setView(sv)
+        .setPositiveButton(L.t("Done", "ঠিক আছে")) { _, _ ->
+            Story.markRead(this, ch.id)
+            go(2)
+        }
+        .show()
 }

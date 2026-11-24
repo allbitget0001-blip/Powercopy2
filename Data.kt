@@ -696,6 +696,7 @@ object Store {
         if (s.ok) recordFocus(ctx, s)
         if (s.ok) saveSessionSummary(ctx, s)
         if (s.ok) Badges.check(ctx)
+        if (s.ok) Garden.onLockCompleted(ctx)
     }
 
     /** The last completed lock's summary (duration + blocks fired in its window),
