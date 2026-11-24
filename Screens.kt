@@ -24,6 +24,8 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.TextView
 import java.util.Calendar
 import java.util.Locale
@@ -204,10 +206,15 @@ class HomeScreen(private val a: MainActivity) {
         scd.addView(r2)
         col.addView(scd, lp(MATCH, WRAP, t = a.dp(22)))
 
+        // content: focus notes, fun facts, time capsule
+        col.addView(a.focusNotesCard(), lp(MATCH, WRAP, t = a.dp(14)))
+        col.addView(a.funFactsCard(), lp(MATCH, WRAP, t = a.dp(14)))
+        col.addView(a.timeCapsuleCard(), lp(MATCH, WRAP, t = a.dp(14)))
+
         refreshChips()
         refreshModeChips()
         tick()
-        return sv
+        return Wallpaper.wrap(a, sv)
     }
 
     private fun refreshChips(animate: Boolean = false) {
@@ -1029,6 +1036,11 @@ class StatsScreen(private val a: MainActivity) {
         col.addView(scoreCard, lp(MATCH, WRAP, b = a.dp(14)))
         refreshFocusScore()
 
+        // share: today's focus as an image card
+        val shareBtn = a.primaryBtn(L.t("Share my focus card", "আমার ফোকাস কার্ড শেয়ার করুন"))
+        shareBtn.setOnClickListener { FocusCardShare.share(a) }
+        col.addView(shareBtn, lp(MATCH, a.dp(52), b = a.dp(14)))
+
         // chart
         val chartCard = a.card()
         chartCard.addView(a.section(L.t("Last 7 days", "গত ৭ দিন")))
@@ -1627,27 +1639,126 @@ class SettingsScreen(private val a: MainActivity) {
         }, cur / 60, cur % 60, false).show()
     }
 
-    /** Pick the focus sound. Choosing one while a lock runs starts it right away. */
+    /** Pick the lock sound, mix sounds together, or hear today's quote spoken. */
     private fun focusSoundDialog() {
+        val body = LinearLayout(a)
+        body.orientation = LinearLayout.VERTICAL
+        body.setPadding(a.dp(20), a.dp(12), a.dp(20), a.dp(4))
+
+        // --- lock sound (single choice, plays during a lock) ---
+        body.addView(a.section(L.t("Lock sound", "লকের সাউন্ড")))
         val choices = listOf(FocusSound.OFF, FocusSound.WHITE, FocusSound.BROWN, FocusSound.RAIN)
-        val labels = choices.map { FocusSound.label(it) }.toTypedArray()
-        val current = choices.indexOf(FocusSound.choice(a)).coerceAtLeast(0)
+        val markers = HashMap<String, TextView>()
+        fun refreshMarkers() {
+            for ((ch, m) in markers) {
+                val sel = ch == FocusSound.choice(a)
+                m.text = if (sel) "●" else "○"
+                m.setTextColor(if (sel) C.primary else C.muted)
+            }
+        }
+        for (ch in choices) {
+            val marker = a.tv("○", 16f, C.muted, 1)
+            markers[ch] = marker
+            body.addView(
+                a.row(FocusSound.label(ch), null, marker) {
+                    FocusSound.setChoice(a, ch)
+                    if (ch == FocusSound.OFF) {
+                        FocusSound.stop()
+                    } else if (Store.isActive(a)) {
+                        // explicit choice: start even on silent/vibrate
+                        FocusSound.startExplicit(a)
+                    }
+                    refreshMarkers()
+                }
+            )
+        }
+        refreshMarkers()
+
+        // --- mixer: play sounds together, each with its own volume ---
+        body.addView(a.section(L.t("Sound mixer", "সাউন্ড মিক্সার")), lp(MATCH, WRAP, t = a.dp(18)))
+        body.addView(
+            a.tv(L.t("Play sounds together — each with its own volume.", "সাউন্ডগুলো একসাথে বাজান — প্রতিটার আলাদা ভলিউম।"), 12f, C.muted),
+            lp(MATCH, WRAP, t = a.dp(4))
+        )
+        val mix = FocusSound.mixVolumes(a)
+        for (ch in FocusSound.SOUNDS) {
+            val vol = mix[ch] ?: 0.6f
+            val row = LinearLayout(a)
+            row.gravity = Gravity.CENTER_VERTICAL
+            row.setPadding(0, a.dp(10), 0, a.dp(10))
+            row.addView(a.tv(FocusSound.label(ch), 15f, C.text, 1), lp(0, WRAP, weight = 1f))
+            lateinit var sw: PremiumSwitch
+            val seek = SeekBar(a)
+            seek.max = 100
+            seek.progress = (vol * 100).toInt()
+            seek.visibility = if (mix.containsKey(ch)) View.VISIBLE else View.GONE
+            sw = a.toggle(mix.containsKey(ch)) { v ->
+                if (v) {
+                    val started = FocusSound.startMixSound(a, ch, seek.progress / 100f)
+                    if (!started) {
+                        sw.setCheckedImmediate(false)
+                        a.toast(L.t("Could not play — another app is using audio", "বাজানো যায়নি — অন্য অ্যাপ অডিও ব্যবহার করছে"))
+                    } else {
+                        seek.visibility = View.VISIBLE
+                    }
+                } else {
+                    FocusSound.stopMixSound(a, ch)
+                    seek.visibility = View.GONE
+                }
+            }
+            row.addView(sw)
+            body.addView(row)
+            seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
+                    if (fromUser) FocusSound.setMixVolume(a, ch, progress / 100f)
+                }
+
+                override fun onStartTrackingTouch(sb: SeekBar) {}
+                override fun onStopTrackingTouch(sb: SeekBar) {}
+            })
+            body.addView(seek, lp(MATCH, WRAP))
+        }
+
+        // --- voice quote: today's quote, spoken aloud ---
+        body.addView(a.section(L.t("Voice quote", "ভয়েস উক্তি")), lp(MATCH, WRAP, t = a.dp(18)))
+        val quoteBtn = a.primaryBtn(L.t("Play today's quote", "আজকের উক্তি শুনুন"))
+        quoteBtn.setOnClickListener { VoiceQuotes.speak(a) }
+        body.addView(quoteBtn, lp(MATCH, a.dp(52), t = a.dp(10)))
+        body.addView(
+            a.tv(L.t("Spoken in Bengali when a Bengali voice is installed, otherwise in English.", "বাংলা ভয়েস থাকলে বাংলায়, না থাকলে ইংরেজিতে শোনাবে।"), 12f, C.muted),
+            lp(MATCH, WRAP, t = a.dp(8))
+        )
+
+        // the body is tall: wrap it in a ScrollView so small screens can reach the bottom
+        val scroll = ScrollView(a)
+        scroll.addView(body)
         a.dlg()
             .setTitle(L.t("Focus sounds", "ফোকাস সাউন্ড"))
-            .setSingleChoiceItems(labels, current) { dlg, which ->
-                val picked = choices[which]
-                FocusSound.setChoice(a, picked)
-                if (picked == FocusSound.OFF) {
-                    FocusSound.stop()
-                } else if (Store.isActive(a)) {
-                    // explicit choice: start even on silent/vibrate
-                    FocusSound.startExplicit(a)
-                }
-                dlg.dismiss()
+            .setView(scroll)
+            .setPositiveButton(L.t("Done", "ঠিক আছে"), null)
+            .setOnDismissListener { a.go(3) }
+            .show()
+    }
+
+    /** Pick a gallery photo as the Home background, or remove it. */
+    private fun wallpaperDialog() {
+        val has = Wallpaper.hasWallpaper(a)
+        val b = a.dlg()
+            .setTitle(L.t("Home wallpaper", "হোম ওয়ালপেপার"))
+            .setMessage(
+                if (has) L.t("A photo is set as your Home background.", "হোমের ব্যাকগ্রাউন্ডে একটা ছবি দেওয়া আছে।")
+                else L.t("Choose a photo from your gallery as the Home background.", "গ্যালারি থেকে একটা ছবি বেছে হোমের ব্যাকগ্রাউন্ড বানান।")
+            )
+            .setPositiveButton(L.t("Choose photo", "ছবি বাছুন")) { _, _ -> a.pickWallpaper() }
+            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+        if (has) {
+            b.setNeutralButton(L.t("Remove wallpaper", "ওয়ালপেপার সরান")) { _, _ ->
+                Wallpaper.clear(a)
+                a.toast(L.t("Wallpaper removed", "ওয়ালপেপার সরানো হয়েছে"))
                 a.go(3)
             }
-            .setNegativeButton(L.t("Cancel", "বাতিল"), null)
-            .show()
+        }
+        b.show()
     }
 
     fun build(): View {
@@ -1835,12 +1946,27 @@ class SettingsScreen(private val a: MainActivity) {
             ) { blockMessageDialog() }
         )
         // focus sound during a lock (generated in code — no downloads)
+        val mixN = FocusSound.mixVolumes(a).size
+        val soundSub = if (mixN > 0) {
+            L.t("Mixer: ", "মিক্সার: ") + L.num(mixN.toString()) + L.t(" sounds playing", "টা সাউন্ড বাজছে")
+        } else {
+            FocusSound.label(FocusSound.choice(a)) + " · " + L.t("plays during a lock", "লক চলাকালীন বাজবে")
+        }
         gen.addView(
             a.row(
                 L.t("Focus sounds", "ফোকাস সাউন্ড"),
-                FocusSound.label(FocusSound.choice(a)) + " · " + L.t("plays during a lock", "লক চলাকালীন বাজবে"),
+                soundSub,
                 a.tv("›", 22f, C.muted)
             ) { focusSoundDialog() }
+        )
+        // home wallpaper: a gallery photo behind the Home screen
+        gen.addView(
+            a.row(
+                L.t("Home wallpaper", "হোম ওয়ালপেপার"),
+                if (Wallpaper.hasWallpaper(a)) L.t("Photo set — tap to change or remove", "ছবি দেওয়া আছে — বদলাতে বা সরাতে চাপুন")
+                else L.t("Off — tap to choose a photo", "বন্ধ — ছবি বাছতে চাপুন"),
+                a.tv("›", 22f, C.muted)
+            ) { wallpaperDialog() }
         )
         // morning reminder: a daily nudge to start a focus session
         gen.addView(

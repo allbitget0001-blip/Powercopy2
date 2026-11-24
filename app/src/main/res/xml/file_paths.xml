@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Shared files live only in the cache dir: the focus-card image is written
+     there, shared once via FileProvider, and never kept permanently. -->
+<paths>
+    <cache-path name="shared" path="." />
+</paths>

@@ -6,6 +6,7 @@ import android.annotation.SuppressLint
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.app.AlertDialog
+import android.app.DatePickerDialog
 import android.app.Notification
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -23,6 +24,7 @@ import android.os.Looper
 import android.net.Uri
 import android.provider.Settings
 import android.text.Editable
+import android.text.InputType
 import android.text.TextWatcher
 import android.util.Log
 import android.view.Gravity
@@ -81,7 +83,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "54"
+    const val BUILD_ID = "55"
 
     // ---------- extend time (never reduce) ----------
 
@@ -2882,4 +2884,227 @@ fun MainActivity.attemptsCard(): View {
         lp(MATCH, WRAP, t = dp(10))
     )
     return c
+}
+
+// =====================================================================
+// SHARING & CONTENT (build 55): focus notes, fun facts, time capsule
+// =====================================================================
+
+/** Focus notes: write short notes about why you're focusing, newest first. */
+fun MainActivity.focusNotesCard(): View {
+    val c = card()
+    c.addView(section(L.t("Focus notes", "ফোকাস নোট")))
+    c.addView(
+        tv(L.t("Write why you're focusing today — a line to come back to.", "আজ কেন ফোকাস করছো তা লিখে রাখো — পরে ফিরে দেখার জন্য।"), 12f, C.muted),
+        lp(MATCH, WRAP, t = dp(4))
+    )
+    val et = edit(L.t("Why am I focusing today?", "আজ আমি কেন ফোকাস করছি?"), false)
+    et.gravity = Gravity.CENTER_VERTICAL or Gravity.START
+    val add = primaryBtn(L.t("Add", "যোগ করুন"))
+    val inputRow = LinearLayout(this)
+    inputRow.gravity = Gravity.CENTER_VERTICAL
+    inputRow.addView(et, lp(0, WRAP, r = dp(10), weight = 1f))
+    inputRow.addView(add, lp(dp(84), dp(48)))
+    c.addView(inputRow, lp(MATCH, WRAP, t = dp(12)))
+    add.setOnClickListener {
+        if (FocusNotes.add(this, et.text.toString())) {
+            go(0)
+        } else {
+            toast(L.t("Write something first", "আগে কিছু লিখুন"))
+        }
+    }
+    val notes = FocusNotes.list(this)
+    if (notes.isEmpty()) {
+        c.addView(
+            tv(L.t("No notes yet.", "এখনো কোনো নোট নেই।"), 13f, C.muted),
+            lp(MATCH, WRAP, t = dp(12))
+        )
+    } else {
+        for (n in notes.take(20)) {
+            val r = LinearLayout(this)
+            r.gravity = Gravity.CENTER_VERTICAL
+            r.setPadding(0, dp(10), 0, dp(10))
+            val col = LinearLayout(this)
+            col.orientation = LinearLayout.VERTICAL
+            col.addView(tv(n.text, 14f, C.text))
+            col.addView(tv(fmtDate(n.time) + " · " + fmtClock(n.time), 12f, C.muted))
+            r.addView(col, lp(0, WRAP, weight = 1f))
+            val del = tv("✕", 16f, C.muted)
+            del.setPadding(dp(10), dp(10), dp(10), dp(10))
+            del.pressFeedback()
+            del.setOnClickListener {
+                FocusNotes.delete(this, n.id)
+                go(0)
+            }
+            r.addView(del)
+            c.addView(r)
+        }
+        if (notes.size > 20) {
+            c.addView(
+                tv(L.num(L.t("and ${notes.size - 20} older notes", "আরও ${notes.size - 20}টি পুরোনো নোট")), 12f, C.muted),
+                lp(MATCH, WRAP, t = dp(4))
+            )
+        }
+    }
+    return c
+}
+
+/** Fun facts: one fresh fact per day; tap for the next one. */
+fun MainActivity.funFactsCard(): View {
+    val c = card()
+    c.addView(section(L.t("Did you know?", "জানতেন কি?")))
+    val factText = tv(FunFacts.current(this), 15f, C.textSoft)
+    c.addView(factText, lp(MATCH, WRAP, t = dp(10)))
+    val next = outlineBtn(L.t("Next fact", "পরের তথ্য"), C.primary)
+    next.setOnClickListener { factText.text = FunFacts.next(this) }
+    c.addView(next, lp(MATCH, dp(48), t = dp(12)))
+    return c
+}
+
+/** Time capsule: sealed messages to your future self. */
+fun MainActivity.timeCapsuleCard(): View {
+    val c = card()
+    c.addView(section(L.t("Time capsule", "টাইম ক্যাপসুল")))
+    c.addView(
+        tv(L.t("Write a message to your future self. It stays sealed until its open date.", "ভবিষ্যতের নিজেকে একটা মেসেজ লিখুন। খোলার তারিখ না আসা পর্যন্ত সিল করা থাকবে।"), 12f, C.muted),
+        lp(MATCH, WRAP, t = dp(4))
+    )
+    val now = System.currentTimeMillis()
+    val list = TimeCapsules.list(this)
+    for (cap in list) {
+        val r = LinearLayout(this)
+        r.gravity = Gravity.CENTER_VERTICAL
+        r.setPadding(0, dp(10), 0, dp(10))
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        if (cap.opened) {
+            col.addView(tv(cap.text, 14f, C.text))
+            col.addView(tv(L.t("Opened ", "খোলা হয়েছে ") + fmtDate(cap.openAt), 12f, C.muted))
+        } else if (cap.openAt <= now) {
+            col.addView(tv("✉️ " + L.t("Ready to open", "খোলার জন্য প্রস্তুত"), 14f, C.mint, 1))
+            col.addView(tv(L.t("Open date: ", "খোলার তারিখ: ") + fmtDate(cap.openAt), 12f, C.muted))
+        } else {
+            val daysLeft = ((cap.openAt - now + 86_400_000L - 1) / 86_400_000L).toInt().coerceAtLeast(1)
+            col.addView(tv("🔒 " + L.t("Sealed", "সিল করা"), 14f, C.text, 1))
+            col.addView(
+                tv(
+                    L.t("Opens ", "খুলবে ") + fmtDate(cap.openAt) + " · " +
+                        L.num(daysLeft.toString()) + L.t(" days left", " দিন বাকি"),
+                    12f, C.muted
+                )
+            )
+        }
+        r.addView(col, lp(0, WRAP, weight = 1f))
+        if (!cap.opened && cap.openAt <= now) {
+            val openBtn = outlineBtn(L.t("Open", "খুলুন"), C.primary)
+            openBtn.setOnClickListener { openCapsuleDialog(cap) }
+            r.addView(openBtn, lp(dp(84), dp(44)))
+        }
+        val del = tv("✕", 16f, C.muted)
+        del.setPadding(dp(10), dp(10), dp(4), dp(10))
+        del.pressFeedback()
+        del.setOnClickListener {
+            TimeCapsules.delete(this, cap.id)
+            go(0)
+        }
+        r.addView(del)
+        c.addView(r)
+    }
+    if (list.isEmpty()) {
+        c.addView(tv(L.t("No capsules yet.", "এখনো কোনো ক্যাপসুল নেই।"), 13f, C.muted), lp(MATCH, WRAP, t = dp(10)))
+    }
+    val add = outlineBtn(L.t("New capsule", "নতুন ক্যাপসুল"), C.primary)
+    add.setOnClickListener { newCapsuleDialog() }
+    c.addView(add, lp(MATCH, dp(48), t = dp(10)))
+    return c
+}
+
+private fun MainActivity.openCapsuleDialog(cap: Capsule) {
+    dlg()
+        .setTitle(L.t("Time capsule", "টাইম ক্যাপসুল"))
+        .setMessage(cap.text)
+        .setPositiveButton(L.t("Done", "ঠিক আছে")) { _, _ ->
+            TimeCapsules.markOpened(this, cap.id)
+            go(0)
+        }
+        .show()
+}
+
+private fun MainActivity.newCapsuleDialog() {
+    val et = edit(L.t("Message to your future self…", "ভবিষ্যতের নিজেকে মেসেজ…"), false)
+    et.gravity = Gravity.TOP or Gravity.START
+    et.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+    et.minLines = 3
+    // default open date: 30 days from now
+    val chosen = Calendar.getInstance()
+    chosen.add(Calendar.DAY_OF_YEAR, 30)
+    fun openDayStart(cal: Calendar): Long {
+        val c = cal.clone() as Calendar
+        c.set(Calendar.HOUR_OF_DAY, 0)
+        c.set(Calendar.MINUTE, 0)
+        c.set(Calendar.SECOND, 0)
+        c.set(Calendar.MILLISECOND, 0)
+        return c.timeInMillis
+    }
+    val dateText = tv("", 14f, C.text, 1)
+    fun refreshDate() {
+        dateText.text = L.t("Open date: ", "খোলার তারিখ: ") + fmtDate(openDayStart(chosen))
+    }
+    refreshDate()
+    val pickDate = outlineBtn(L.t("Pick a date", "তারিখ বাছুন"), C.primary)
+    pickDate.setOnClickListener {
+        val min = Calendar.getInstance()
+        min.add(Calendar.DAY_OF_YEAR, 1)
+        val max = Calendar.getInstance()
+        max.add(Calendar.YEAR, 1)
+        val dpd = DatePickerDialog(
+            this, android.R.style.Theme_DeviceDefault_Dialog,
+            { _, y, m, d ->
+                chosen.set(y, m, d)
+                refreshDate()
+            },
+            chosen.get(Calendar.YEAR), chosen.get(Calendar.MONTH), chosen.get(Calendar.DAY_OF_MONTH)
+        )
+        dpd.datePicker.minDate = openDayStart(min)
+        dpd.datePicker.maxDate = openDayStart(max)
+        dpd.show()
+    }
+    val body = LinearLayout(this)
+    body.orientation = LinearLayout.VERTICAL
+    body.setPadding(dp(20), dp(12), dp(20), dp(4))
+    body.addView(et, lp(MATCH, WRAP))
+    body.addView(dateText, lp(MATCH, WRAP, t = dp(14)))
+    body.addView(pickDate, lp(MATCH, dp(48), t = dp(10)))
+    body.addView(
+        tv(L.t("The message stays sealed until the open date. You'll get a notification that day.", "খোলার তারিখ না আসা পর্যন্ত মেসেজ সিল করা থাকবে। সেদিন নোটিফিকেশন পাবেন।"), 12f, C.muted),
+        lp(MATCH, WRAP, t = dp(10))
+    )
+    // The positive button is wired after show() so a failed validation keeps
+    // the dialog (and the typed message) instead of dismissing it.
+    val dialog = dlg()
+        .setTitle(L.t("New time capsule", "নতুন টাইম ক্যাপসুল"))
+        .setView(body)
+        .setPositiveButton(L.t("Seal it", "সিল করুন"), null)
+        .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+        .show()
+    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+        val text = et.text.toString()
+        if (text.isBlank()) {
+            toast(L.t("Write a message first", "আগে মেসেজ লিখুন"))
+            return@setOnClickListener
+        }
+        val openAt = openDayStart(chosen)
+        if (openAt <= System.currentTimeMillis()) {
+            toast(L.t("Pick a future date", "ভবিষ্যতের তারিখ বাছুন"))
+            return@setOnClickListener
+        }
+        val added = TimeCapsules.add(this, text, openAt)
+        if (added == null) {
+            toast(L.t("Too many capsules — delete an opened one first", "অনেক ক্যাপসুল হয়ে গেছে — আগে খোলা একটা মুছুন"))
+            return@setOnClickListener
+        }
+        toast(L.t("Capsule sealed", "ক্যাপসুল সিল করা হয়েছে"))
+        dialog.dismiss()
+        go(0)
+    }
 }

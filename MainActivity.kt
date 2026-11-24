@@ -21,6 +21,8 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 
+const val REQ_WALLPAPER = 1002
+
 class MainActivity : Activity() {
 
     private val handler = Handler(Looper.getMainLooper())
@@ -94,6 +96,7 @@ class MainActivity : Activity() {
         Store.kickService(this) // restart the foreground service if it was swiped away
         SiteBlockService.sync(this) // restart the site-block VPN if a lock is running
         Watchdog.enqueue(this) // safety net: restart the service every 15 min if it dies
+        CapsuleAlarms.rescheduleAll(this) // re-arm time-capsule alarms (force-stop cancels them)
         PlaceWatcher.checkNow(this) // already at a saved place? lock right away
         PlaceWatcher.checkUnlockNow(this) // location-unlock session? check arrival right away
     }
@@ -112,6 +115,37 @@ class MainActivity : Activity() {
             }
             if (tab == 3) go(3, false)
         }
+        if (requestCode == REQ_WALLPAPER) {
+            if (resultCode == RESULT_OK) {
+                val uri = data?.data
+                if (uri != null) {
+                    try {
+                        contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        Wallpaper.setUri(this, uri)
+                        toast(L.t("Wallpaper set", "ওয়ালপেপার দেওয়া হয়েছে"))
+                    } catch (e: Exception) {
+                        Log.e(TAG, "wallpaper permission failed", e)
+                        toast(L.t("Could not use that photo", "এই ছবিটা ব্যবহার করা যায়নি"))
+                    }
+                }
+            }
+            if (tab == 3) go(3, false)
+        }
+    }
+
+    /** Opens the system document picker for a Home wallpaper photo. */
+    fun pickWallpaper() {
+        try {
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "image/*"
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+            }
+            startActivityForResult(intent, REQ_WALLPAPER)
+        } catch (e: Exception) {
+            Log.e(TAG, "wallpaper picker failed", e)
+            toast(L.t("Could not open the gallery", "গ্যালারি খোলা যায়নি"))
+        }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -126,8 +160,14 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
+        VoiceQuotes.stop() // leaving the app stops any spoken quote
         handler.removeCallbacks(ticker)
         super.onPause()
+    }
+
+    override fun onDestroy() {
+        VoiceQuotes.shutdown()
+        super.onDestroy()
     }
 
     fun toast(m: String) {
@@ -191,6 +231,7 @@ class MainActivity : Activity() {
     }
 
     fun go(i: Int, animate: Boolean = true) {
+        VoiceQuotes.stop() // leaving a screen stops any spoken quote
         tab = i
         content.removeAllViews()
         home = null
@@ -219,7 +260,13 @@ class MainActivity : Activity() {
     private fun enter(v: View) {
         v.alpha = 0f
         v.animate().alpha(1f).setDuration(Motion.MED).setInterpolator(Motion.EASE).start()
-        val col = (v as? ScrollView)?.getChildAt(0) as? ViewGroup
+        // the Home page may be wrapped in a FrameLayout (wallpaper behind it)
+        val sv = when (v) {
+            is ScrollView -> v
+            is ViewGroup -> (0 until v.childCount).firstNotNullOfOrNull { v.getChildAt(it) as? ScrollView }
+            else -> null
+        }
+        val col = sv?.getChildAt(0) as? ViewGroup
         if (col != null) staggerIn(col)
     }
 

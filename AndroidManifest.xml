@@ -112,6 +112,22 @@
             android:name=".MorningReceiver"
             android:exported="false" />
 
+        <!-- Time capsule: fires when a sealed capsule reaches its open date. -->
+        <receiver
+            android:name=".CapsuleReceiver"
+            android:exported="false" />
+
+        <!-- Shares the focus-card image (cache dir only) with other apps. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="com.powerlock.app.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <receiver
             android:name=".LockWidget"
             android:exported="true"

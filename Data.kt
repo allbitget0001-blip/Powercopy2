@@ -119,6 +119,13 @@ object Quotes {
         val q = ALL[(day % ALL.size).toInt()]
         return L.t(q.first, q.second)
     }
+
+    /** Today's quote in both languages, so the voice player can speak the one
+     * its installed voice can actually pronounce. */
+    fun todayPair(): Pair<String, String> {
+        val day = System.currentTimeMillis() / 86_400_000L
+        return ALL[(day % ALL.size).toInt()]
+    }
 }
 
 data class Schedule(val id: Long, val days: Int, val startMin: Int, val endMin: Int, val enabled: Boolean)
