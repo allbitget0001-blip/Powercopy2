@@ -132,6 +132,24 @@ object Garden {
             Log.e(TAG, "garden sync failed", e)
         }
     }
+
+    /**
+     * A bonus plant (lucky wheel reward). Only appends — it never removes
+     * or replaces a lock plant, and it stays in the garden forever. (It
+     * does occupy a garden slot, so sync() adds the next lock plant only
+     * once completed locks outnumber the garden — the count catches up.)
+     */
+    fun addBonus(ctx: Context, kind: String) {
+        try {
+            val have = list(ctx).toMutableList()
+            if (have.size >= MAX) return
+            val variant = (System.currentTimeMillis() / 1000 % 5).toInt()
+            have.add(GardenPlant(kind, variant, System.currentTimeMillis()))
+            save(ctx, have)
+        } catch (e: Exception) {
+            Log.e(TAG, "garden bonus failed", e)
+        }
+    }
 }
 
 // =====================================================================
@@ -232,6 +250,15 @@ object Pet {
     fun pet(ctx: Context) {
         val s = state(ctx)
         save(ctx, s.copy(petted = s.petted + 1, lastPet = System.currentTimeMillis()))
+    }
+
+    /**
+     * A lucky-wheel treat: counts as one feeding, but does NOT touch
+     * lastFed, so it never resets the meal cooldown.
+     */
+    fun treat(ctx: Context) {
+        val s = state(ctx)
+        save(ctx, s.copy(fed = s.fed + 1))
     }
 }
 

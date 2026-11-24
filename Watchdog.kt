@@ -21,6 +21,10 @@ class WatchdogWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, param
         return try {
             val c = applicationContext
             L.load(c)
+            // daily routine: a missed day starts a strict 30-min consequence
+            // lock (fires at most once per day, morning only). Runs BEFORE
+            // the isActive check so a newly started lock gets its service restart.
+            Routine.checkDayEnd(c)
             LockWidget.refresh(c) // keep the widget countdown fresh (at least every 15 min)
             if (Store.isActive(c) || Store.isLocProtecting(c)) {
                 // startForegroundService from a background worker throws on Android 12+,

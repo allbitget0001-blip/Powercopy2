@@ -211,6 +211,9 @@ class HomeScreen(private val a: MainActivity) {
         col.addView(a.funFactsCard(), lp(MATCH, WRAP, t = a.dp(14)))
         col.addView(a.timeCapsuleCard(), lp(MATCH, WRAP, t = a.dp(14)))
 
+        // daily routine: task checklist + consequence lock
+        col.addView(a.routineCard(), lp(MATCH, WRAP, t = a.dp(14)))
+
         refreshChips()
         refreshModeChips()
         tick()
@@ -1260,6 +1263,11 @@ class StatsScreen(private val a: MainActivity) {
         col.addView(a.petCard(), lp(MATCH, WRAP, b = a.dp(14)))
         col.addView(a.storyCard(), lp(MATCH, WRAP, b = a.dp(14)))
 
+        // goals & play: lucky wheel, focus journey, mini-games
+        col.addView(a.wheelCard(), lp(MATCH, WRAP, b = a.dp(14)))
+        col.addView(a.journeyCard(), lp(MATCH, WRAP, b = a.dp(14)))
+        col.addView(a.gamesCard(), lp(MATCH, WRAP, b = a.dp(14)))
+
         // record board: best-ever numbers, computed live from stored history
         recordCard = a.card()
         buildRecordBoardBody()
@@ -1282,6 +1290,7 @@ class StatsScreen(private val a: MainActivity) {
                 left.addView(a.tv(fmtDate(s.start) + " · " + fmtClock(s.start), 14f, C.text, 1))
                 val src = when (s.src) {
                     "schedule" -> L.t("Scheduled", "সময়সূচি")
+                    "routine" -> L.t("Routine", "রুটিন")
                     "pomodoro" -> "Pomodoro"
                     else -> L.t("Manual", "ম্যানুয়াল")
                 }

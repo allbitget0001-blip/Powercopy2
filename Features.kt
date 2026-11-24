@@ -42,6 +42,7 @@ import android.widget.Toast
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Calendar
+import java.util.Locale
 
 // =====================================================================
 // DATA
@@ -83,7 +84,7 @@ object Extra {
 
     /** Build number, bumped on every push — shown in Settings so the user can
      * confirm which build is installed. A String because L.num takes a String. */
-    const val BUILD_ID = "56"
+    const val BUILD_ID = "57"
 
     // ---------- extend time (never reduce) ----------
 
@@ -3373,4 +3374,555 @@ private fun MainActivity.openChapterDialog(ch: StoryChapter) {
             go(2)
         }
         .show()
+}
+
+// =====================================================================
+// GOALS & PLAY (build 57): daily routine, lucky wheel, focus journey,
+// mini-games
+// =====================================================================
+
+/**
+ * Daily routine: a standing task checklist on Home. When the switch is on
+ * and the day ends with tasks undone, a strict 30-minute consequence lock
+ * starts the next morning (see Routine.checkDayEnd — it fires at most
+ * once per day, and only with a snapshot proving the tasks existed).
+ */
+fun MainActivity.routineCard(): View {
+    val c = card()
+    c.addView(section(L.t("Daily routine", "দৈনিক রুটিন")))
+    val on = Routine.isOn(this)
+    // enable toggle + what it means, up front
+    val toggleRow = LinearLayout(this)
+    toggleRow.gravity = Gravity.CENTER_VERTICAL
+    toggleRow.setPadding(0, dp(10), 0, dp(6))
+    val tcol = LinearLayout(this)
+    tcol.orientation = LinearLayout.VERTICAL
+    tcol.addView(tv(L.t("Routine + consequence lock", "রুটিন + শাস্তি লক"), 15f, C.text, 1))
+    tcol.addView(
+        tv(
+            L.t("Miss a task and a strict 30-minute lock starts tomorrow morning.", "কোনো কাজ বাকি থাকলে কাল সকালে কঠোর ৩০ মিনিটের লক শুরু হবে।"),
+            12f, C.muted
+        )
+    )
+    toggleRow.addView(tcol, lp(0, WRAP, weight = 1f))
+    toggleRow.addView(toggle(on) { checked ->
+        Routine.setOn(this, checked)
+        go(0)
+    })
+    c.addView(toggleRow)
+    if (!on) {
+        c.addView(
+            tv(L.t("Turn it on to plan your day — and mean it.", "দিনের পরিকল্পনা করতে চালু করুন — আর সত্যিই মেনে চলুন।"), 13f, C.muted),
+            lp(MATCH, WRAP, t = dp(4))
+        )
+        return c
+    }
+    Routine.snapshotToday(this)
+    val tasks = Routine.list(this)
+    val done = Routine.doneToday(this)
+    val doneCount = tasks.count { it.id in done }
+    // progress line (+ a small celebration when the whole day is done)
+    if (tasks.isNotEmpty()) {
+        val allDone = doneCount == tasks.size
+        c.addView(
+            tv(
+                if (allDone) L.t("All tasks done today — well done!", "আজকের সব কাজ শেষ — দারুণ!")
+                else L.num(doneCount.toString()) + " / " + L.num(tasks.size.toString()) +
+                    L.t(" tasks done", "টি কাজ শেষ"),
+                14f, if (allDone) C.mint else C.text, 1
+            ),
+            lp(MATCH, WRAP, t = dp(8))
+        )
+        val full7 = Routine.fullDaysLast7(this)
+        if (full7 > 0) {
+            c.addView(
+                tv(
+                    L.t("Full routine days this week: ", "এই সপ্তাহে সম্পূর্ণ রুটিন দিন: ") +
+                        L.num(full7.toString()),
+                    12f, C.muted
+                ),
+                lp(MATCH, WRAP, t = dp(2))
+            )
+        }
+    }
+    // task rows: tap the row to tick it off, ✎ to edit, ✕ to delete
+    for (t in tasks) {
+        val isDone = t.id in done
+        val r = LinearLayout(this)
+        r.gravity = Gravity.CENTER_VERTICAL
+        r.setPadding(0, dp(8), 0, dp(8))
+        val box = tv(if (isDone) "✓" else "○", 18f, if (isDone) C.mint else C.muted, 1)
+        box.gravity = Gravity.CENTER
+        box.background = rounded(if (isDone) C.selFill else C.card2, dp(10).toFloat())
+        r.addView(box, lp(dp(32), dp(32), r = dp(12)))
+        r.addView(tv(t.text, 15f, if (isDone) C.muted else C.text), lp(0, WRAP, weight = 1f))
+        val editBtn = tv("✎", 16f, C.muted)
+        editBtn.setPadding(dp(8), dp(8), dp(8), dp(8))
+        editBtn.pressFeedback()
+        editBtn.setOnClickListener { editTaskDialog(t) }
+        r.addView(editBtn)
+        val del = tv("✕", 16f, C.muted)
+        del.setPadding(dp(8), dp(8), dp(4), dp(8))
+        del.pressFeedback()
+        del.setOnClickListener {
+            Routine.delete(this, t.id)
+            go(0)
+        }
+        r.addView(del)
+        r.pressFeedback()
+        r.setOnClickListener {
+            Routine.toggleDone(this, t.id)
+            go(0)
+        }
+        c.addView(r)
+    }
+    if (tasks.isEmpty()) {
+        c.addView(
+            tv(L.t("No tasks yet — add your first one below.", "এখনো কোনো কাজ নেই — নিচে প্রথমটা যোগ করুন।"), 13f, C.muted),
+            lp(MATCH, WRAP, t = dp(8))
+        )
+    }
+    // add row
+    val et = edit(L.t("New task…", "নতুন কাজ…"), false)
+    et.gravity = Gravity.CENTER_VERTICAL or Gravity.START
+    val addBtn = primaryBtn(L.t("Add", "যোগ করুন"))
+    val inputRow = LinearLayout(this)
+    inputRow.gravity = Gravity.CENTER_VERTICAL
+    inputRow.addView(et, lp(0, WRAP, r = dp(10), weight = 1f))
+    inputRow.addView(addBtn, lp(dp(84), dp(48)))
+    c.addView(inputRow, lp(MATCH, WRAP, t = dp(12)))
+    addBtn.setOnClickListener {
+        if (Routine.add(this, et.text.toString())) {
+            go(0)
+        } else {
+            toast(L.t("Write a task first (max 20)", "আগে কাজ লিখুন (সর্বোচ্চ ২০টি)"))
+        }
+    }
+    return c
+}
+
+/** Edit one routine task's text (the done state for today is kept). */
+private fun MainActivity.editTaskDialog(t: RoutineTask) {
+    val et = edit(L.t("Task", "কাজ"), false)
+    et.setText(t.text)
+    et.gravity = Gravity.CENTER_VERTICAL or Gravity.START
+    val body = LinearLayout(this)
+    body.orientation = LinearLayout.VERTICAL
+    body.setPadding(dp(20), dp(12), dp(20), dp(4))
+    body.addView(et, lp(MATCH, WRAP))
+    // The positive button is wired after show() so a failed validation keeps
+    // the dialog (and the typed text) instead of dismissing it.
+    val dialog = dlg()
+        .setTitle(L.t("Edit task", "কাজ সম্পাদনা"))
+        .setView(body)
+        .setPositiveButton(L.t("Save", "সংরক্ষণ"), null)
+        .setNegativeButton(L.t("Cancel", "বাতিল"), null)
+        .show()
+    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+        if (Routine.update(this, t.id, et.text.toString())) {
+            dialog.dismiss()
+            go(0)
+        } else {
+            toast(L.t("Write something first", "আগে কিছু লিখুন"))
+        }
+    }
+}
+
+/**
+ * Lucky wheel: 1 spin per completed lock (max 5 banked). The spin is spent
+ * only when the wheel actually lands; rewards are cosmetic only — never
+ * break minutes, never lock time.
+ */
+fun MainActivity.wheelCard(): View {
+    val c = card()
+    c.addView(section(L.t("Lucky wheel", "ভাগ্যের চাকা")))
+    val spins = LuckyWheel.spinsAvailable(this)
+    c.addView(
+        tv(
+            L.t("Spins: ", "স্পিন: ") + L.num(spins.toString()) +
+                L.t("  ·  1 spin per completed lock (max 5)", "  ·  প্রতি লকে ১টি স্পিন (সর্বোচ্চ ৫টি)"),
+            13f, C.muted
+        ),
+        lp(MATCH, WRAP, t = dp(6))
+    )
+    val wheel = WheelView(this, LuckyWheel.REWARDS)
+    c.addView(wheel, lp(MATCH, dp(300), t = dp(10)))
+    val spinBtn = primaryBtn(L.t("Spin the wheel", "চাকা ঘুরান"))
+    spinBtn.alpha = if (spins > 0) 1f else 0.45f
+    spinBtn.setOnClickListener {
+        if (wheel.isSpinning) return@setOnClickListener
+        if (LuckyWheel.spinsAvailable(this) <= 0) {
+            toast(L.t("No spins left — complete a lock to earn one", "স্পিন নেই — স্পিন পেতে একটা লক শেষ করুন"))
+            return@setOnClickListener
+        }
+        val target = (0 until LuckyWheel.REWARDS.size).random()
+        spinBtn.alpha = 0.45f
+        wheel.spinTo(target) {
+            if (!LuckyWheel.useSpin(this)) return@spinTo
+            val reward = LuckyWheel.REWARDS[target]
+            val line = LuckyWheel.applyReward(this, reward)
+            dlg()
+                .setTitle(L.t("You won: ", "আপনি জিতলেন: ") + L.t(reward.labelEn, reward.labelBn))
+                .setMessage(line)
+                .setPositiveButton(L.t("Nice!", "দারুণ!")) { _, _ -> go(2) }
+                .setOnCancelListener { go(2) }
+                .show()
+        }
+    }
+    c.addView(spinBtn, lp(MATCH, dp(52), t = dp(12)))
+    val stars = LuckyWheel.stars(this)
+    if (stars > 0) {
+        c.addView(
+            tv(L.t("Lucky stars: ", "ভাগ্যের তারা: ") + L.num(stars.toString()), 13f, C.muted),
+            lp(MATCH, WRAP, t = dp(8))
+        )
+    }
+    val last = LuckyWheel.lastReward(this)
+    if (last != null) {
+        val def = LuckyWheel.REWARDS.firstOrNull { it.id == last.first }
+        if (def != null) {
+            c.addView(
+                tv(
+                    L.t("Last win: ", "শেষ জয়: ") + L.t(def.labelEn, def.labelBn) +
+                        " · " + fmtDate(last.second),
+                    12f, C.muted
+                ),
+                lp(MATCH, WRAP, t = dp(4))
+            )
+        }
+    }
+    c.addView(
+        tv(
+            L.t("Rewards: garden plants, a pet treat, a lucky quote, a fun fact, or a lucky star. Never break minutes.", "পুরস্কার: বাগানের গাছ, পোষা প্রাণীর ট্রিট, ভাগ্যের উক্তি, মজার তথ্য বা ভাগ্যের তারা। কখনো বিরতির মিনিট নয়।"),
+            12f, C.muted
+        ),
+        lp(MATCH, WRAP, t = dp(8))
+    )
+    return c
+}
+
+/** Focus journey: Dhaka to Cox's Bazar, 400 km, driven by travelled distance. */
+fun MainActivity.journeyCard(): View {
+    val c = card()
+    c.addView(section(L.t("Focus journey — Dhaka to Cox's Bazar", "ফোকাস যাত্রা — ঢাকা থেকে কক্সবাজার")))
+    val km = Journey.totalKm(this)
+    val arrived = km >= Journey.TOTAL_KM
+    c.addView(JourneyTrackView(this, km), lp(MATCH, dp(56), t = dp(12)))
+    c.addView(
+        tv(
+            L.num(String.format(Locale.US, "%.1f", km)) + " / " +
+                L.num(Journey.TOTAL_KM.toString()) + L.t(" km", " কিমি"),
+            20f, C.text, 1
+        ),
+        lp(MATCH, WRAP, t = dp(8))
+    )
+    val status = if (arrived) {
+        L.t("You arrived in Cox's Bazar! The sea is yours.", "তুমি কক্সবাজার পৌঁছে গেছ! সমুদ্র এখন তোমার।")
+    } else {
+        val next = Journey.nextStop(km)
+        val prev = Journey.reached(km).lastOrNull()
+        val prevName = if (prev != null) L.t(prev.nameEn, prev.nameBn) else L.t("Dhaka", "ঢাকা")
+        val nextName = if (next != null) L.t(next.nameEn, next.nameBn) else ""
+        val left = if (next != null) next.km - km else 0.0
+        L.t("Past ", "পার হয়েছ ") + prevName +
+            L.t(" · next: ", " · পরের গন্তব্য: ") + nextName +
+            " · " + L.num(String.format(Locale.US, "%.1f", left)) +
+            L.t(" km to go", " কিমি বাকি")
+    }
+    c.addView(tv(status, 13f, if (arrived) C.mint else C.muted), lp(MATCH, WRAP, t = dp(4)))
+    // progress bar toward the destination
+    val progRow = LinearLayout(this)
+    progRow.orientation = LinearLayout.HORIZONTAL
+    progRow.background = rounded(C.card2, dp(6).toFloat())
+    val fill = View(this)
+    fill.background = rounded(C.primary, dp(6).toFloat())
+    val frac = (km / Journey.TOTAL_KM).toFloat().coerceIn(0f, 1f)
+    progRow.addView(fill, lp(0, dp(10), weight = frac.coerceAtLeast(0.02f)))
+    progRow.addView(View(this), lp(0, dp(10), weight = 1f - frac.coerceAtLeast(0.02f)))
+    c.addView(progRow, lp(MATCH, WRAP, t = dp(10)))
+    // milestone stops
+    for (s in Journey.STOPS) {
+        val got = km >= s.km
+        val r = LinearLayout(this)
+        r.gravity = Gravity.CENTER_VERTICAL
+        r.setPadding(0, dp(6), 0, dp(6))
+        r.alpha = if (got) 1f else 0.5f
+        r.addView(tv(if (got) "●" else "○", 14f, if (got) C.mint else C.muted, 1), lp(dp(24), WRAP))
+        r.addView(tv(L.t(s.nameEn, s.nameBn), 14f, C.text, 1), lp(0, WRAP, weight = 1f))
+        r.addView(tv(L.num(s.km.toString()) + L.t(" km", " কিমি"), 13f, C.muted))
+        c.addView(r)
+    }
+    c.addView(
+        tv(L.t("Distance counts while the location lock records your route.", "লোকেশন লক তোমার রুট রেকর্ড করার সময় দূরত্ব গোনা হয়।"), 12f, C.muted),
+        lp(MATCH, WRAP, t = dp(8))
+    )
+    return c
+}
+
+/** Mini-games: tiny breathers. Best scores are kept per game. */
+fun MainActivity.gamesCard(): View {
+    val c = card()
+    c.addView(section(L.t("Mini-games", "মিনি গেম")))
+    c.addView(
+        tv(L.t("Tiny breathers — nothing here can break a lock.", "ছোট্ট বিরতি — এখানে কিছুই লক ভাঙতে পারে না।"), 12f, C.muted),
+        lp(MATCH, WRAP, t = dp(4))
+    )
+    fun gameRow(name: String, desc: String, best: String, play: () -> Unit) {
+        val r = LinearLayout(this)
+        r.gravity = Gravity.CENTER_VERTICAL
+        r.setPadding(0, dp(10), 0, dp(10))
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.addView(tv(name, 15f, C.text, 1))
+        col.addView(tv(desc, 12f, C.muted))
+        if (best.isNotEmpty()) col.addView(tv(best, 12f, C.primary, 1))
+        r.addView(col, lp(0, WRAP, weight = 1f))
+        val playBtn = outlineBtn(L.t("Play", "খেলুন"), C.primary)
+        playBtn.setOnClickListener { play() }
+        r.addView(playBtn, lp(dp(88), dp(44)))
+        c.addView(r)
+    }
+    val memBest = MiniGames.memoryBest(this)
+    gameRow(
+        L.t("Memory match", "মেমরি ম্যাচ"),
+        L.t("Find all 6 pairs in as few moves as you can.", "কম চালে ৬ জোড়া কার্ড মিলাও।"),
+        if (memBest > 0) L.t("Best: ", "সেরা: ") + L.num(memBest.toString()) + L.t(" moves", " চালে") else ""
+    ) { openMemoryGame() }
+    val reactBest = MiniGames.reactionBest(this)
+    gameRow(
+        L.t("Reaction tap", "রিঅ্যাকশন ট্যাপ"),
+        L.t("Tap the moment it turns green.", "সবুজ হলেই ট্যাপ করো।"),
+        if (reactBest > 0) L.t("Best: ", "সেরা: ") + L.num(reactBest.toString()) + L.t(" ms", " মি.সে.") else ""
+    ) { openReactionGame() }
+    val guessBest = MiniGames.guessBest(this)
+    gameRow(
+        L.t("Number guess", "সংখ্যা অনুমান"),
+        L.t("Guess the number from 1 to 50.", "১ থেকে ৫০-এর মধ্যে সংখ্যাটা অনুমান করো।"),
+        if (guessBest > 0) L.t("Best: ", "সেরা: ") + L.num(guessBest.toString()) + L.t(" guesses", " বার অনুমানে") else ""
+    ) { openGuessGame() }
+    return c
+}
+
+/** Memory match: 12 cards, 6 pairs. Fewest moves wins. */
+private fun MainActivity.openMemoryGame() {
+    val emojis = listOf("🌸", "🌿", "⭐", "🐱", "🦋", "🐝")
+    val deck = (emojis + emojis).shuffled()
+    // alive[] guards the delayed flip-back: the dialog may be dismissed
+    // while a mismatch is still waiting to flip back.
+    val alive = booleanArrayOf(true)
+    val handler = Handler(Looper.getMainLooper())
+    var first: Int? = null
+    var lockBoard = false
+    var moves = 0
+    var matched = 0
+    val tiles = ArrayList<TextView>()
+    val movesText = tv(L.t("Moves: ", "চাল: ") + L.num("0"), 14f, C.muted, 1)
+    val grid = LinearLayout(this)
+    grid.orientation = LinearLayout.VERTICAL
+    for (row in 0 until 3) {
+        val r = LinearLayout(this)
+        r.orientation = LinearLayout.HORIZONTAL
+        for (colI in 0 until 4) {
+            val idx = row * 4 + colI
+            val tile = tv("?", 22f, C.text, 1)
+            tile.gravity = Gravity.CENTER
+            tile.background = rounded(C.card2, dp(10).toFloat())
+            tile.pressFeedback()
+            tile.setOnClickListener {
+                // Matched tiles and the already-flipped first tile can't be
+                // picked again (tapping the first tile twice must not count
+                // as a match with itself).
+                if (lockBoard || tile.tag == true || first == idx) return@setOnClickListener
+                tile.text = deck[idx]
+                tile.background = rounded(C.selFill, dp(10).toFloat())
+                val f = first
+                if (f == null) {
+                    first = idx
+                } else {
+                    moves++
+                    movesText.text = L.t("Moves: ", "চাল: ") + L.num(moves.toString())
+                    if (deck[f] == deck[idx]) {
+                        tiles[f].tag = true
+                        tile.tag = true
+                        tiles[f].background = rounded(C.primary, dp(10).toFloat())
+                        tile.background = rounded(C.primary, dp(10).toFloat())
+                        matched++
+                        first = null
+                        if (matched == 6) {
+                            MiniGames.recordMemory(this, moves)
+                            movesText.text = L.t("You did it in ", "তুমি পেরেছ ") +
+                                L.num(moves.toString()) + L.t(" moves!", " চালে!")
+                        }
+                    } else {
+                        lockBoard = true
+                        val fTile = tiles[f]
+                        handler.postDelayed({
+                            if (!alive[0]) return@postDelayed
+                            fTile.text = "?"
+                            fTile.background = rounded(C.card2, dp(10).toFloat())
+                            tile.text = "?"
+                            tile.background = rounded(C.card2, dp(10).toFloat())
+                            first = null
+                            lockBoard = false
+                        }, 700)
+                        first = null
+                    }
+                }
+            }
+            tiles.add(tile)
+            r.addView(tile, lp(0, dp(64), r = if (colI < 3) dp(8) else 0, t = if (row > 0) dp(8) else 0, weight = 1f))
+        }
+        grid.addView(r)
+    }
+    val body = LinearLayout(this)
+    body.orientation = LinearLayout.VERTICAL
+    body.setPadding(dp(20), dp(12), dp(20), dp(4))
+    body.addView(movesText, lp(MATCH, WRAP, b = dp(12)))
+    body.addView(grid)
+    val dialog = dlg()
+        .setTitle(L.t("Memory match", "মেমরি ম্যাচ"))
+        .setView(body)
+        .setPositiveButton(L.t("Done", "ঠিক আছে"), null)
+        .show()
+    dialog.setOnDismissListener { alive[0] = false }
+    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+        dialog.dismiss()
+        go(2)
+    }
+}
+
+/** Reaction tap: wait for green, then tap as fast as you can. */
+private fun MainActivity.openReactionGame() {
+    val alive = booleanArrayOf(true)
+    val handler = Handler(Looper.getMainLooper())
+    var state = 0 // 0 idle, 1 waiting for green, 2 ready to tap
+    var readyAt = 0L
+    val statusText = tv(L.t("Tap Start, wait for green, then tap fast!", "স্টার্ট ট্যাপ করো, সবুজের অপেক্ষা করো, তারপর দ্রুত ট্যাপ করো!"), 14f, C.muted)
+    val pad = tv(L.t("Tap to start", "শুরু করতে ট্যাপ করো"), 18f, C.text, 1)
+    pad.gravity = Gravity.CENTER
+    pad.background = rounded(C.card2, dp(16).toFloat())
+    pad.pressFeedback()
+    val startBtn = primaryBtn(L.t("Start", "শুরু"))
+    fun resetPad() {
+        state = 0
+        pad.text = L.t("Tap to start", "শুরু করতে ট্যাপ করো")
+        pad.background = rounded(C.card2, dp(16).toFloat())
+        startBtn.alpha = 1f
+    }
+    startBtn.setOnClickListener {
+        if (state != 0) return@setOnClickListener
+        state = 1
+        startBtn.alpha = 0.45f
+        pad.text = L.t("Wait for green…", "সবুজের অপেক্ষা…")
+        pad.background = rounded(C.danger, dp(16).toFloat())
+        statusText.text = L.t("Don't tap yet!", "এখনো ট্যাপ কোরো না!")
+        val delay = (1200L..3200L).random()
+        handler.postDelayed({
+            if (!alive[0] || state != 1) return@postDelayed
+            state = 2
+            readyAt = System.currentTimeMillis()
+            pad.text = L.t("TAP NOW!", "এখন ট্যাপ করো!")
+            pad.background = rounded(C.primary, dp(16).toFloat())
+        }, delay)
+    }
+    pad.setOnClickListener {
+        when (state) {
+            1 -> {
+                // Too soon: the pending green is ignored (state is no longer 1).
+                state = 0
+                statusText.text = L.t("Too soon! Tap Start and try again.", "খুব তাড়াতাড়ি! স্টার্ট ট্যাপ করে আবার চেষ্টা করো।")
+                resetPad()
+            }
+            2 -> {
+                val ms = System.currentTimeMillis() - readyAt
+                MiniGames.recordReaction(this, ms)
+                val best = MiniGames.reactionBest(this)
+                statusText.text = L.t("Your time: ", "তোমার সময়: ") + L.num(ms.toString()) +
+                    L.t(" ms", " মি.সে.") +
+                    if (best == ms) L.t(" — new best!", " — নতুন সেরা!") else ""
+                resetPad()
+            }
+            else -> { /* idle: use the Start button */ }
+        }
+    }
+    val body = LinearLayout(this)
+    body.orientation = LinearLayout.VERTICAL
+    body.setPadding(dp(20), dp(12), dp(20), dp(4))
+    body.addView(statusText, lp(MATCH, WRAP))
+    body.addView(pad, lp(MATCH, dp(160), t = dp(14)))
+    body.addView(startBtn, lp(MATCH, dp(52), t = dp(14)))
+    val dialog = dlg()
+        .setTitle(L.t("Reaction tap", "রিঅ্যাকশন ট্যাপ"))
+        .setView(body)
+        .setPositiveButton(L.t("Done", "ঠিক আছে"), null)
+        .show()
+    dialog.setOnDismissListener { alive[0] = false }
+    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+        dialog.dismiss()
+        go(2)
+    }
+}
+
+/** Number guess: 1–50, higher/lower hints, fewest guesses wins. */
+private fun MainActivity.openGuessGame() {
+    var target = (1..50).random()
+    var tries = 0
+    var won = false
+    val hintText = tv(L.t("I'm thinking of a number from 1 to 50.", "আমি ১ থেকে ৫০-এর মধ্যে একটা সংখ্যা ভাবছি।"), 14f, C.muted)
+    val triesText = tv(L.t("Guesses: ", "অনুমান: ") + L.num("0"), 13f, C.muted, 1)
+    val et = edit(L.t("Your guess", "তোমার অনুমান"), true)
+    et.gravity = Gravity.CENTER
+    val guessBtn = primaryBtn(L.t("Guess", "অনুমান করো"))
+    val againBtn = outlineBtn(L.t("Play again", "আবার খেলুন"), C.primary)
+    againBtn.visibility = View.GONE
+    guessBtn.setOnClickListener {
+        if (won) return@setOnClickListener
+        val g = et.text.toString().trim().toIntOrNull()
+        if (g == null || g !in 1..50) {
+            toast(L.t("Enter a number from 1 to 50", "১ থেকে ৫০-এর মধ্যে সংখ্যা লিখুন"))
+            return@setOnClickListener
+        }
+        tries++
+        triesText.text = L.t("Guesses: ", "অনুমান: ") + L.num(tries.toString())
+        et.text.clear()
+        when {
+            g < target -> hintText.text = L.t("Higher!", "আরও বড়!")
+            g > target -> hintText.text = L.t("Lower!", "আরও ছোট!")
+            else -> {
+                won = true
+                MiniGames.recordGuess(this, tries)
+                hintText.text = L.t("Correct! The number was ", "ঠিক! সংখ্যাটা ছিল ") +
+                    L.num(target.toString()) + L.t(" — ", " — ") +
+                    L.num(tries.toString()) + L.t(" guesses.", " বার অনুমানে।")
+                guessBtn.alpha = 0.45f
+                againBtn.visibility = View.VISIBLE
+            }
+        }
+    }
+    againBtn.setOnClickListener {
+        target = (1..50).random()
+        tries = 0
+        won = false
+        triesText.text = L.t("Guesses: ", "অনুমান: ") + L.num("0")
+        hintText.text = L.t("I'm thinking of a new number from 1 to 50.", "আমি ১ থেকে ৫০-এর মধ্যে নতুন সংখ্যা ভাবছি।")
+        guessBtn.alpha = 1f
+        againBtn.visibility = View.GONE
+    }
+    val body = LinearLayout(this)
+    body.orientation = LinearLayout.VERTICAL
+    body.setPadding(dp(20), dp(12), dp(20), dp(4))
+    body.addView(hintText, lp(MATCH, WRAP))
+    body.addView(triesText, lp(MATCH, WRAP, t = dp(6)))
+    body.addView(et, lp(MATCH, WRAP, t = dp(14)))
+    body.addView(guessBtn, lp(MATCH, dp(52), t = dp(12)))
+    body.addView(againBtn, lp(MATCH, dp(48), t = dp(10)))
+    val dialog = dlg()
+        .setTitle(L.t("Number guess", "সংখ্যা অনুমান"))
+        .setView(body)
+        .setPositiveButton(L.t("Done", "ঠিক আছে"), null)
+        .show()
+    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+        dialog.dismiss()
+        go(2)
+    }
 }

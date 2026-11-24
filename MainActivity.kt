@@ -92,6 +92,7 @@ class MainActivity : Activity() {
         applyChrome()
         navHolder.addView(buildNav())
         Scheduler.onAlarm(this)
+        Routine.checkDayEnd(this) // daily routine: settle yesterday on app open
         go(tab, false)
         Store.kickService(this) // restart the foreground service if it was swiped away
         SiteBlockService.sync(this) // restart the site-block VPN if a lock is running
